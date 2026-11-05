@@ -1,4 +1,4 @@
-import type { Document, IndexDescription } from 'mongodb'
+import type { Document, DriverInfo, IndexDescription, MongoClientOptions } from 'mongodb'
 
 type Filter = Record<string, unknown>
 type SortSpec = Record<string, 1 | -1>
@@ -133,7 +133,28 @@ export class FakeCollection {
 /** In-memory stand-in for `MongoClient`, handing out one {@link FakeCollection} per namespace. */
 export class FakeMongoClient {
   readonly collections = new Map<string, FakeCollection>()
-  closed = false
+  readonly options: { retryWrites: boolean; metadata: { driver: { name: string; version: string } } }
+  readonly appended: DriverInfo[] = []
+  closeCount = 0
+
+  constructor(options: { retryWrites?: boolean } = {}) {
+    this.options = {
+      retryWrites: options.retryWrites ?? true,
+      metadata: { driver: { name: 'nodejs', version: '7.8.0' } },
+    }
+  }
+
+  get closed(): boolean {
+    return this.closeCount > 0
+  }
+
+  // Does not dedupe, unlike the driver, so a test can count this package's own appends.
+  appendMetadata(info: DriverInfo): void {
+    this.appended.push(info)
+    const { driver } = this.options.metadata
+    driver.name += `|${info.name ?? ''}`
+    driver.version += `|${info.version ?? ''}`
+  }
 
   db(dbName: string): { databaseName: string; collection(name: string): FakeCollection } {
     return {
@@ -151,6 +172,24 @@ export class FakeMongoClient {
   }
 
   async close(): Promise<void> {
-    this.closed = true
+    this.closeCount += 1
+  }
+}
+
+/** Stand-in for the `MongoClient` constructor, recording what it was built with. */
+export class ConstructedMongoClient extends FakeMongoClient {
+  static readonly built: ConstructedMongoClient[] = []
+
+  constructor(
+    readonly url: string,
+    readonly clientOptions: MongoClientOptions = {}
+  ) {
+    super({ retryWrites: clientOptions.retryWrites ?? !/[?&]retryWrites=false/i.test(url) })
+    const { driverInfo } = clientOptions
+    if (driverInfo !== undefined) {
+      this.options.metadata.driver.name += `|${driverInfo.name ?? ''}`
+      this.options.metadata.driver.version += `|${driverInfo.version ?? ''}`
+    }
+    ConstructedMongoClient.built.push(this)
   }
 }

@@ -1,0 +1,464 @@
+import { Buffer } from 'node:buffer'
+import { readFileSync } from 'node:fs'
+import { URL } from 'node:url'
+import { inspect } from 'node:util'
+import { context, trace } from '@opentelemetry/api'
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
+import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
+import type { Logger } from '@strands-agents/sdk'
+import type { MongoClient, MongoClientOptions } from 'mongodb'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ConstructedMongoClient, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
+import { close, type Connection, DRIVER_NAME, packageVersion, resolve } from '../client.js'
+import type { MongoDBConfig } from '../types.js'
+
+vi.mock('mongodb', async () => ({
+  MongoClient: (await import('../__fixtures__/fake-mongo.js')).ConstructedMongoClient,
+}))
+
+const exporter = new InMemorySpanExporter()
+
+beforeAll(() => {
+  trace.setGlobalTracerProvider(new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] }))
+  context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable())
+})
+
+afterAll(() => {
+  trace.disable()
+  context.disable()
+})
+
+const resolved: MongoDBConfig[] = []
+
+beforeEach(() => {
+  ConstructedMongoClient.built.length = 0
+})
+
+afterEach(async () => {
+  exporter.reset()
+  await Promise.all(resolved.splice(0).map((config) => close(config)))
+})
+
+let port = 0
+
+// A fresh address per call, so registry entries never leak between tests.
+function uri(query = ''): string {
+  port += 1
+  return `mongodb://127.0.0.1:${port}/${query}`
+}
+
+function silentLogger(): Logger {
+  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+}
+
+function track(config: MongoDBConfig): Connection {
+  resolved.push(config)
+  return resolve(config)
+}
+
+function injected(options: { retryWrites?: boolean } = {}): FakeMongoClient & MongoClient {
+  return new FakeMongoClient(options) as FakeMongoClient & MongoClient
+}
+
+function built(connection: Connection): ConstructedMongoClient {
+  expect(connection.client).toBeInstanceOf(ConstructedMongoClient)
+  return connection.client as unknown as ConstructedMongoClient
+}
+
+function errorOf(run: () => unknown): Error {
+  try {
+    run()
+  } catch (error) {
+    return error as Error
+  }
+  throw new Error('expected a throw')
+}
+
+function warnings(logger: Logger): string[] {
+  return vi.mocked(logger.warn).mock.calls.map((call) => String(call[0]))
+}
+
+describe('resolve', () => {
+  describe('AT-015: construction requires a way to reach the database', () => {
+    it('throws a TypeError naming both fields when neither is set', () => {
+      const error = errorOf(() => resolve({ database: 'appdb' }))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toBe(
+        "strands_mongodb: a MongoDB connection is required, but neither 'client' nor 'connectionString' was set in the configuration. Set 'connectionString' to a MongoDB URI, or set 'client' to a MongoClient you already have."
+      )
+    })
+
+    it('treats an empty connection string as missing', () => {
+      expect(() => resolve({ database: 'appdb', connectionString: '' })).toThrow(TypeError)
+    })
+
+    it('builds no client for a rejected config', () => {
+      expect(() => resolve({ database: 'appdb' })).toThrow(TypeError)
+
+      expect(ConstructedMongoClient.built).toEqual([])
+    })
+  })
+
+  describe('AT-010, AT-011: ownership decides who may close', () => {
+    it('never closes an injected client, however often close runs', async () => {
+      const client = injected()
+      const config = { database: 'appdb', client }
+
+      resolve(config)
+      await close(config)
+      await close(config)
+
+      expect(client.closeCount).toBe(0)
+    })
+
+    it('treats closing a config that never resolved as a no-op', async () => {
+      await expect(close({ database: 'appdb' })).resolves.toBeUndefined()
+      await expect(close({ database: 'appdb', connectionString: uri() })).resolves.toBeUndefined()
+    })
+
+    it('closes a client it constructed exactly once', async () => {
+      const config = { database: 'appdb', connectionString: uri() }
+      const client = built(resolve(config))
+
+      await Promise.all([close(config), close(config)])
+      await close(config)
+
+      expect(client.closeCount).toBe(1)
+    })
+
+    it('records ownership from the field that supplied the client', () => {
+      expect(track({ database: 'appdb', client: injected() }).owned).toBe(false)
+      expect(track({ database: 'appdb', connectionString: uri() }).owned).toBe(true)
+    })
+
+    it('lets an injected client win over a connection string, which is never read', () => {
+      const client = injected()
+      const config = {
+        database: 'appdb',
+        client,
+        get connectionString(): string {
+          throw new Error('the connection string was read')
+        },
+      }
+
+      const connection = track(config)
+
+      expect(connection.client).toBe(client)
+      expect(connection.owned).toBe(false)
+      expect(ConstructedMongoClient.built).toEqual([])
+    })
+  })
+
+  describe('AT-012: one client per connection identity', () => {
+    it('returns one connection for a hundred resolutions of one config', () => {
+      const config = { database: 'appdb', connectionString: uri() }
+
+      const connections = new Set(Array.from({ length: 100 }, () => track(config)))
+
+      expect(connections.size).toBe(1)
+      expect(ConstructedMongoClient.built).toHaveLength(1)
+    })
+
+    it('shares across separate configs with the same string, whatever their database', () => {
+      const connectionString = uri()
+
+      const first = track({ database: 'appdb', connectionString })
+      const second = track({ database: 'otherdb', connectionString })
+
+      expect(second).toBe(first)
+    })
+
+    it('does not share across different connection strings', () => {
+      const first = track({ database: 'appdb', connectionString: uri() })
+      const second = track({ database: 'appdb', connectionString: uri() })
+
+      expect(second.client).not.toBe(first.client)
+    })
+
+    it('does not share across different client options, and each client gets its own', () => {
+      const connectionString = uri()
+
+      const patient = built(track({ database: 'appdb', connectionString, clientOptions: { connectTimeoutMS: 20000 } }))
+      const impatient = built(track({ database: 'appdb', connectionString, clientOptions: { connectTimeoutMS: 500 } }))
+
+      expect(impatient).not.toBe(patient)
+      expect(patient.clientOptions.connectTimeoutMS).toBe(20000)
+      expect(impatient.clientOptions.connectTimeoutMS).toBe(500)
+    })
+
+    it('keys empty and absent client options the same', () => {
+      const connectionString = uri()
+
+      const absent = track({ database: 'appdb', connectionString })
+      const empty = track({ database: 'appdb', connectionString, clientOptions: {} })
+
+      expect(empty).toBe(absent)
+    })
+
+    it('ignores the key order of client options', () => {
+      const connectionString = uri()
+
+      const first = track({
+        database: 'appdb',
+        connectionString,
+        clientOptions: { connectTimeoutMS: 500, auth: { username: 'u', password: 'p' } },
+      })
+      const second = track({
+        database: 'appdb',
+        connectionString,
+        clientOptions: { auth: { password: 'p', username: 'u' }, connectTimeoutMS: 500 },
+      })
+
+      expect(second).toBe(first)
+    })
+
+    it('keys distinct non-JSON option values distinctly and one value the same', () => {
+      const connectionString = uri()
+      const options = (): MongoClientOptions => ({ ca: Buffer.from('pem') })
+      const sharedOptions = options()
+
+      const first = track({ database: 'appdb', connectionString, clientOptions: options() })
+      const second = track({ database: 'appdb', connectionString, clientOptions: options() })
+      const third = track({ database: 'appdb', connectionString, clientOptions: sharedOptions })
+      const fourth = track({ database: 'appdb', connectionString, clientOptions: sharedOptions })
+
+      expect(second).not.toBe(first)
+      expect(third).not.toBe(first)
+      expect(fourth).toBe(third)
+    })
+
+    it('keys injected clients by identity', () => {
+      const firstClient = injected()
+      const secondClient = injected()
+
+      const first = track({ database: 'appdb', client: firstClient })
+      const second = track({ database: 'appdb', client: secondClient })
+      const again = track({ database: 'otherdb', client: firstClient })
+
+      expect(first.client).toBe(firstClient)
+      expect(second.client).toBe(secondClient)
+      expect(again).toBe(first)
+    })
+
+    it('opens a fresh client after close', async () => {
+      const config = { database: 'appdb', connectionString: uri() }
+      const first = resolve(config)
+
+      await close(config)
+      const second = track(config)
+
+      expect(second.client).not.toBe(first.client)
+    })
+
+    it('starts a connection with no capabilities and an empty binary-key cache', () => {
+      const connection = track({ database: 'appdb', connectionString: uri() })
+
+      expect(connection.capabilities).toBeUndefined()
+      expect(connection.binaryKeys).toEqual(new Set())
+    })
+  })
+
+  describe('AT-013a, AT-013b, AT-230: driver attribution', () => {
+    it('pins the driver name exactly', () => {
+      expect(DRIVER_NAME).toBe('Strands-MongoDB')
+    })
+
+    it('reports the version in package.json', () => {
+      const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
+        version: string
+      }
+
+      expect(packageVersion()).toBe(pkg.version)
+    })
+
+    it('builds a client with driverInfo alongside the caller options', () => {
+      const connectionString = uri()
+
+      const client = built(track({ database: 'appdb', connectionString, clientOptions: { appName: 'mine' } }))
+
+      expect(client.url).toBe(connectionString)
+      expect(client.clientOptions).toEqual({
+        appName: 'mine',
+        driverInfo: { name: 'Strands-MongoDB', version: packageVersion() },
+      })
+      expect(client.appended).toEqual([])
+    })
+
+    it('attributes an injected client through appendMetadata', () => {
+      const client = injected()
+
+      track({ database: 'appdb', client })
+
+      expect(client.appended).toEqual([{ name: 'Strands-MongoDB', version: packageVersion() }])
+      expect(client.options.metadata.driver.name).toBe('nodejs|Strands-MongoDB')
+    })
+
+    it('AT-190: appends once per client across repeated resolves and close cycles', async () => {
+      const client = injected()
+      const config = { database: 'appdb', client }
+
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        resolve(config)
+        resolve({ database: 'otherdb', client })
+        await close(config)
+      }
+
+      expect(client.appended).toHaveLength(1)
+    })
+  })
+
+  describe('AT-016: disabled retryWrites is worth saying', () => {
+    it('warns for a connection string disabling retries', () => {
+      const logger = silentLogger()
+
+      track({ database: 'appdb', connectionString: uri('?retryWrites=false'), logger })
+
+      expect(warnings(logger)).toEqual([
+        "strands_mongodb: retryWrites is disabled on this MongoDB connection; this package relies on the driver's retries for its single-document writes, so a write interrupted by a primary election surfaces to the caller instead of being replayed. Nothing is corrupted; remove retryWrites=false to restore the designed behavior. | event=retry_writes_disabled",
+      ])
+    })
+
+    it('warns for client options disabling retries', () => {
+      const logger = silentLogger()
+
+      track({ database: 'appdb', connectionString: uri(), clientOptions: { retryWrites: false }, logger })
+
+      expect(warnings(logger)).toHaveLength(1)
+    })
+
+    it('warns for an injected client with retries disabled', () => {
+      const logger = silentLogger()
+
+      track({ database: 'appdb', client: injected({ retryWrites: false }), logger })
+
+      expect(warnings(logger)).toHaveLength(1)
+    })
+
+    it('warns once per connection however many stores resolve it', () => {
+      const logger = silentLogger()
+      const client = injected({ retryWrites: false })
+      const constructed = { database: 'appdb', connectionString: uri('?retryWrites=false'), logger }
+
+      for (let store = 0; store < 100; store += 1) {
+        track(constructed)
+        track({ database: 'appdb', client, logger })
+      }
+
+      expect(warnings(logger)).toHaveLength(2)
+    })
+
+    it('warns about nothing on the default configuration', () => {
+      const logger = silentLogger()
+
+      track({ database: 'appdb', connectionString: uri(), logger })
+      track({ database: 'appdb', client: injected(), logger })
+
+      expect(logger.warn).not.toHaveBeenCalled()
+    })
+
+    it('falls back to console.warn without a logger', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      track({ database: 'appdb', connectionString: uri('?retryWrites=false') })
+
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0]?.[0])).toContain('event=retry_writes_disabled')
+    })
+  })
+
+  describe('AT-014: the password never leaves the config', () => {
+    it('keeps the password out of the logs and the connection state', () => {
+      const logger = silentLogger()
+      const connectionString = 'mongodb://user:SUPERSECRET@127.0.0.1:1/?retryWrites=false'
+
+      const connection = track({ database: 'appdb', connectionString, logger })
+
+      const logged = Object.values(logger).flatMap((method) => vi.mocked(method).mock.calls.flat().map(String))
+      expect(logged.join('\n')).not.toContain('SUPERSECRET')
+      const { client: _client, ...state } = connection
+      expect(inspect(state, { depth: 5 })).not.toContain('SUPERSECRET')
+    })
+  })
+
+  describe('AT-117: the acquired span event', () => {
+    async function eventsOf(run: () => void): Promise<{ name: string; attributes: unknown }[]> {
+      await trace.getTracer('test').startActiveSpan('outer', async (outer) => {
+        run()
+        outer.end()
+      })
+      const [outer] = exporter.getFinishedSpans()
+      return (outer?.events ?? []).map(({ name, attributes }) => ({ name, attributes }))
+    }
+
+    it('records a constructed client as not injected, once per connection', async () => {
+      const config = { database: 'appdb', connectionString: 'mongodb://user:SUPERSECRET@127.0.0.1:1/' }
+
+      const events = await eventsOf(() => {
+        track(config)
+        track(config)
+      })
+
+      expect(events).toEqual([
+        { name: 'strands_mongodb.client.acquired', attributes: { 'strands_mongodb.client.injected': false } },
+      ])
+      expect(JSON.stringify(exporter.getFinishedSpans()[0]?.events)).not.toContain('SUPERSECRET')
+    })
+
+    it('records an injected client as injected, once per connection', async () => {
+      const config = { database: 'appdb', client: injected() }
+
+      const events = await eventsOf(() => {
+        track(config)
+        track(config)
+      })
+
+      expect(events).toEqual([
+        { name: 'strands_mongodb.client.acquired', attributes: { 'strands_mongodb.client.injected': true } },
+      ])
+    })
+  })
+})
+
+describe('Connection.locked', () => {
+  it('runs one call at a time, in call order', async () => {
+    const connection = track({ database: 'appdb', connectionString: uri() })
+    const order: string[] = []
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate
+    })
+
+    const first = connection.locked(async () => {
+      order.push('first:start')
+      await gate
+      order.push('first:end')
+      return 1
+    })
+    const second = connection.locked(async () => {
+      order.push('second')
+      return 2
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(order).toEqual(['first:start'])
+
+    release()
+
+    await expect(Promise.all([first, second])).resolves.toEqual([1, 2])
+    expect(order).toEqual(['first:start', 'first:end', 'second'])
+  })
+
+  it('keeps serving callers after one rejects', async () => {
+    const connection = track({ database: 'appdb', connectionString: uri() })
+    const failure = new Error('boom')
+
+    const first = connection.locked(async () => {
+      throw failure
+    })
+    const second = connection.locked(async () => 'ok')
+
+    await expect(first).rejects.toBe(failure)
+    await expect(second).resolves.toBe('ok')
+  })
+})
