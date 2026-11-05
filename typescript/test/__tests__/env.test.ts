@@ -2,20 +2,17 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { loadDotEnv, tierUri } from '../env.js'
+import { loadDotEnv, TIER_VARIABLES, tierUri } from '../env.js'
 
 describe('loadDotEnv', () => {
   let dir: string
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'strands-mongodb-env-'))
-    vi.stubEnv('MONGODB_URI', undefined)
-    vi.stubEnv('MONGODB_ATLAS_URI', undefined)
-    vi.stubEnv('MONGODB_AUTOEMBED_URI', undefined)
+    for (const name of Object.values(TIER_VARIABLES)) vi.stubEnv(name, undefined)
   })
 
   afterEach(() => {
-    vi.unstubAllEnvs()
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -45,7 +42,6 @@ describe('loadDotEnv', () => {
   })
 
   it('never sets the build tier flag', () => {
-    vi.stubEnv('STRANDS_MONGODB_BUILD_TIER', undefined)
     const path = writeEnv('.env', 'STRANDS_MONGODB_BUILD_TIER=1\n')
     loadDotEnv([path])
     expect(process.env.STRANDS_MONGODB_BUILD_TIER).toBeUndefined()
@@ -96,8 +92,8 @@ describe('loadDotEnv', () => {
     expect(process.env.MONGODB_ATLAS_URI).toBeUndefined()
   })
 
-  it('does nothing when no file exists', () => {
-    loadDotEnv([join(dir, 'missing.env')])
+  it('does not throw when no file exists', () => {
+    expect(() => loadDotEnv([join(dir, 'missing.env')])).not.toThrow()
     expect(tierUri('contract')).toBeUndefined()
   })
 })
