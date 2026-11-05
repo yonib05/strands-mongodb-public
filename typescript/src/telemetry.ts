@@ -110,6 +110,39 @@ export function event(name: EventName, attributes: Partial<Record<Attribute, Att
   trace.getActiveSpan()?.addEvent(name, allowed(attributes))
 }
 
+/** A span ended by hand, for work that spans several rounds of a loop rather than one function. */
+export interface OpenSpan {
+  /** Sets an allow-listed attribute; any other name is dropped. */
+  set(name: Attribute, value: AttributeValue): void
+  /** Ends the span with its status unset. */
+  end(): void
+  /** Marks the span as failed by `error`'s class and ends it. */
+  fail(error: unknown): void
+}
+
+/**
+ * Opens an `INTERNAL` child span under the active one and hands it back for the caller to end.
+ *
+ * @param name - An index span name
+ * @param attributes - Its starting attributes; names off the allow-list are dropped
+ * @returns The handle that ends the span
+ */
+export function open(name: SpanName, attributes: Partial<Record<Attribute, AttributeValue>>): OpenSpan {
+  const current = trace
+    .getTracer('strands_mongodb')
+    .startSpan(name, { kind: SpanKind.INTERNAL, attributes: allowed(attributes) })
+  return {
+    set: (attribute, value): void => {
+      if (ALLOWED.has(attribute)) current.setAttribute(attribute, value)
+    },
+    end: (): void => current.end(),
+    fail: (error): void => {
+      mark(current, error)
+      current.end()
+    },
+  }
+}
+
 async function run<T>(
   name: string,
   attributes: Partial<Record<Attribute, AttributeValue>>,

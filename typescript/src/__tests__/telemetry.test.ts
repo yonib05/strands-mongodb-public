@@ -6,7 +6,7 @@ import type { Logger } from '@strands-agents/sdk'
 import { describe, expect, it, vi } from 'vitest'
 import { oneSpan, recordSpans } from '../__fixtures__/spans.js'
 import type { Attribute } from '../telemetry.js'
-import { annotate, ATTRIBUTES, event, span, traced } from '../telemetry.js'
+import { annotate, ATTRIBUTES, event, open, span, traced } from '../telemetry.js'
 
 const exporter = recordSpans()
 
@@ -149,6 +149,41 @@ describe('span', () => {
       await span('strands_mongodb.indexes.probe', attributes, async () => {})
 
       expect(one('strands_mongodb.indexes.probe').attributes).toEqual({})
+    })
+  })
+})
+
+describe('open', () => {
+  describe('AT-204: a span ended by hand still sits under the operation that caused it', () => {
+    it('opens under the active span, keeps allow-listed attributes, and ends unset', async () => {
+      const base = { database: 'appdb', collection: 'things', logger: silentLogger() }
+
+      await traced('memory', 'initialize', base, async () => {
+        const wait = open('strands_mongodb.indexes.wait', { 'strands_mongodb.collection': 'things' })
+        await Promise.resolve()
+        wait.set('strands_mongodb.indexes.outcome', 'ready')
+        wait.set('strands_mongodb.query' as Attribute, 'MARKER-KEY')
+        wait.end()
+      })
+
+      const recorded = one('strands_mongodb.indexes.wait')
+      expect(recorded.kind).toBe(SpanKind.INTERNAL)
+      expect(recorded.parentSpanContext?.spanId).toBe(one('strands_mongodb.memory.initialize').spanContext().spanId)
+      expect(recorded.attributes).toEqual({
+        'strands_mongodb.collection': 'things',
+        'strands_mongodb.indexes.outcome': 'ready',
+      })
+      expect(recorded.status.code).toBe(SpanStatusCode.UNSET)
+    })
+
+    it('marks a failure by class alone', () => {
+      const wait = open('strands_mongodb.indexes.wait', {})
+
+      wait.fail(new StorageError('strands_mongodb: MARKER-KEY'))
+
+      const recorded = one('strands_mongodb.indexes.wait')
+      expect(recorded.status).toEqual({ code: SpanStatusCode.ERROR, message: 'StorageError' })
+      expect(recorded.attributes).toEqual({ 'error.type': 'StorageError' })
     })
   })
 })

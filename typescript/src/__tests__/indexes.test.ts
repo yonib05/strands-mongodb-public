@@ -1320,6 +1320,58 @@ describe('indexes', () => {
         )
       })
 
+      it('AT-209: times out two indexes under one deadline, naming both, with both wait spans timed_out', async () => {
+        vi.useFakeTimers()
+        const collection = fakeCollection()
+        collection.addSearchIndex(vectorSpec().toDescription(), 'BUILDING')
+        collection.addSearchIndex(textSpec().toDescription(), 'PENDING')
+
+        const error = await rejectionOf(ensureSearch(collection, [vectorSpec(), textSpec()], { timeout: 0 }))
+
+        expect(error).toBeInstanceOf(SearchIndexNotReady)
+        expect(error.message).toContain('2 search index(es)')
+        expect(error.message).toContain('vector_index is BUILDING')
+        expect(error.message).toContain('text_index is PENDING')
+        // Each index was read on the cold pass and once more in the single poll round.
+        expect(collection.searchIndexReads).toBe(4)
+        const waits = spansNamed(exporter, 'strands_mongodb.indexes.wait')
+        expect(waits.map((wait) => wait.attributes['strands_mongodb.indexes.outcome'])).toEqual([
+          'timed_out',
+          'timed_out',
+        ])
+        expect(waits.map((wait) => wait.status.code)).toEqual([SpanStatusCode.UNSET, SpanStatusCode.UNSET])
+        expect(oneSpan(exporter, 'strands_mongodb.indexes.ensure').status.code).toBe(SpanStatusCode.ERROR)
+      })
+
+      it('surfaces a sibling that fails on the first poll within one round, abandoning the other without an outcome', async () => {
+        vi.useFakeTimers()
+        const collection = fakeCollection()
+        collection.addSearchIndex(vectorSpec().toDescription(), 'BUILDING')
+        collection.addSearchIndex(textSpec().toDescription(), 'BUILDING')
+        const read = collection.listSearchIndexes.bind(collection)
+        vi.spyOn(collection, 'listSearchIndexes').mockImplementation((name) => {
+          // Two cold reads, then the first poll round: the text index fails on its first polled read.
+          if (collection.searchIndexReads === 3) collection.setSearchIndexStatus('text_index', 'FAILED')
+          return read(name)
+        })
+
+        // Awaited without advancing the fake clock: a wait that only noticed after the deadline would hang here.
+        const error = await rejectionOf(ensureSearch(collection, [vectorSpec(), textSpec()], { timeout: 300 }))
+
+        expect(error).not.toBeInstanceOf(SearchIndexNotReady)
+        expect(error.message).toContain("'text_index'")
+        expect(error.message).toContain('FAILED')
+        const waits = spansNamed(exporter, 'strands_mongodb.indexes.wait')
+        expect(waits).toHaveLength(2)
+        const failed = waits.filter((wait) => wait.status.code === SpanStatusCode.ERROR)
+        const abandoned = waits.filter((wait) => wait.status.code === SpanStatusCode.UNSET)
+        expect(failed).toHaveLength(1)
+        expect(abandoned).toHaveLength(1)
+        // The vector index was abandoned because its sibling failed, so its span ends with no outcome at all.
+        expect(abandoned[0]?.attributes).not.toHaveProperty('strands_mongodb.indexes.outcome')
+        expect(oneSpan(exporter, 'strands_mongodb.indexes.ensure').status.code).toBe(SpanStatusCode.ERROR)
+      })
+
       it('marks a failing ensure as an error carrying the count so far', async () => {
         const collection = fakeCollection()
         collection.addSearchIndex(textSpec().toDescription(), 'FAILED')

@@ -11,7 +11,7 @@ import {
 } from 'mongodb'
 import { BAKED_IN_FILTER_FIELDS } from './filter.js'
 import { logFields } from './logging.js'
-import { annotate, type Attribute, span } from './telemetry.js'
+import { annotate, type Attribute, open, type OpenSpan, span } from './telemetry.js'
 import type { MongoDBConfig, VectorMode } from './types.js'
 
 /** Document field holding the text a memory is about, indexed for vector and full-text search. */
@@ -821,7 +821,15 @@ function missingSearchMessage(collectionName: string, namespace: string, missing
   return `strands_mongodb: ${missing.length} required search index(es) are absent from ${namespace} and ensureIndexes is false, so nothing was created. A search against an absent index returns no results rather than an error, so this is reported instead of ignored. Run these, wait for each to report status READY, then call initialize() again:\n${commands}\nAbsent: ${names}.`
 }
 
-// One wait span per index under a shared deadline. A timeout is the wait's outcome; the error belongs to `ensure`.
+interface Waiting {
+  spec: SearchIndexSpec
+  span: OpenSpan
+  last?: string
+}
+
+// Every pending index is read each round, so a failure surfaces within one interval whatever its siblings are
+// doing. One span per index, opened before its first read and ended by the read that settles it. A timeout is the
+// wait's outcome; the error belongs to `ensure`.
 async function waitUntilReady(
   collection: Collection,
   specs: SearchIndexSpec[],
@@ -830,49 +838,67 @@ async function waitUntilReady(
   logger: Logger
 ): Promise<string[]> {
   const deadline = Date.now() + timeout * 1000
-  const stuck: string[] = []
-  for (const spec of specs) {
-    const last = await span('strands_mongodb.indexes.wait', namespaceAttributes(collection), async () => {
-      const status = await waitForOne(collection, spec, namespace, deadline, logger)
-      annotate('strands_mongodb.indexes.outcome', status === undefined ? 'ready' : 'timed_out', logger)
-      return status
-    })
-    if (last !== undefined) stuck.push(`${spec.name} is ${last}`)
+  const pending: Waiting[] = specs.map((spec) => ({
+    spec,
+    span: open('strands_mongodb.indexes.wait', namespaceAttributes(collection)),
+  }))
+  try {
+    for (;;) {
+      for (const entry of [...pending]) {
+        let ready: boolean
+        try {
+          ready = await readStatus(collection, entry, namespace, logger)
+        } catch (error) {
+          settle(pending, entry).fail(error)
+          throw error
+        }
+        if (ready) {
+          const ended = settle(pending, entry)
+          ended.set('strands_mongodb.indexes.outcome', 'ready')
+          ended.end()
+        }
+      }
+      if (pending.length === 0) return []
+      if (Date.now() >= deadline) {
+        return pending.splice(0).map((entry) => {
+          entry.span.set('strands_mongodb.indexes.outcome', 'timed_out')
+          entry.span.end()
+          return `${entry.spec.name} is ${entry.last}`
+        })
+      }
+      await sleep(POLL_INTERVAL_SECONDS * 1000)
+    }
+  } finally {
+    // Abandoned because a sibling failed: ended with no outcome, as Python's single span is on an error.
+    for (const entry of pending) entry.span.end()
   }
-  return stuck
 }
 
-// Resolves with nothing once the index is READY, or with its last status at the deadline.
-async function waitForOne(
-  collection: Collection,
-  spec: SearchIndexSpec,
-  namespace: string,
-  deadline: number,
-  logger: Logger
-): Promise<string | undefined> {
-  let last: string | undefined
-  for (;;) {
-    const document = await readSearchIndex(collection, spec.name, namespace)
-    // A vanished index reads as building: someone else dropped it, and recreating it would race whoever did.
-    const status = document === undefined ? 'absent' : statusOf(document, 'unreported')
-    if (status !== last) {
-      logger.info(
-        `strands_mongodb: search index '${spec.name}' on ${namespace} is ${status} | ${logFields('search_index_status', { namespace })}`
-      )
-      last = status
-    }
-    const state = readiness(status)
-    if (state === 'failed') {
-      throw new StorageError(failedMessage(collection.collectionName, namespace, spec, document ?? {}))
-    }
-    if (state === 'ready') {
-      // Rechecked here: the index may have been recreated during the wait, and one this call created was never read.
-      checkDefinition(collection.collectionName, namespace, spec, document ?? {})
-      return undefined
-    }
-    if (Date.now() >= deadline) return status
-    await sleep(POLL_INTERVAL_SECONDS * 1000)
+function settle(pending: Waiting[], entry: Waiting): OpenSpan {
+  pending.splice(pending.indexOf(entry), 1)
+  return entry.span
+}
+
+// Reads one index once: `true` when READY with a covering definition, `false` while building.
+async function readStatus(collection: Collection, entry: Waiting, namespace: string, logger: Logger): Promise<boolean> {
+  const { spec } = entry
+  const document = await readSearchIndex(collection, spec.name, namespace)
+  // A vanished index reads as building: someone else dropped it, and recreating it would race whoever did.
+  const status = document === undefined ? 'absent' : statusOf(document, 'unreported')
+  if (status !== entry.last) {
+    logger.info(
+      `strands_mongodb: search index '${spec.name}' on ${namespace} is ${status} | ${logFields('search_index_status', { namespace })}`
+    )
+    entry.last = status
   }
+  const state = readiness(status)
+  if (state === 'failed') {
+    throw new StorageError(failedMessage(collection.collectionName, namespace, spec, document ?? {}))
+  }
+  if (state !== 'ready') return false
+  // Rechecked here: the index may have been recreated during the wait, and one this call created was never read.
+  checkDefinition(collection.collectionName, namespace, spec, document ?? {})
+  return true
 }
 
 function sleep(ms: number): Promise<void> {
