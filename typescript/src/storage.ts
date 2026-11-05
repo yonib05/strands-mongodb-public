@@ -76,7 +76,8 @@ function hasIndexSpec(strategy: unknown): strategy is { indexSpec(): SearchIndex
 export class MongoDBStorage implements Storage {
   // Declared only: the SDK tests `NAMESPACED in storage`, so the property must be absent until `namespace()` sets it.
   declare [NAMESPACED]?: true
-  private readonly _config: MongoDBConfig
+  // Non-enumerable, so `util.inspect` and `JSON.stringify` of a store never render the connection string.
+  declare private readonly _config: MongoDBConfig
   private readonly _databaseName: string
   private readonly _collectionName: string
   private readonly _prefix: string
@@ -102,7 +103,7 @@ export class MongoDBStorage implements Storage {
     this._prefix = normalized ? `${normalized}/` : ''
     this._ttlSeconds = options.ttlSeconds
     this._searchStrategy = options.searchStrategy
-    this._config = config
+    Object.defineProperty(this, '_config', { value: config, enumerable: false })
     this._logger = config.logger ?? defaultLogger
     // Called only to fail fast on a config with no client or connection string.
     resolve(config)

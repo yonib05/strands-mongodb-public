@@ -823,6 +823,20 @@ describe('MongoDBStorage', () => {
       expect(inspect(error, { depth: 2 })).not.toContain('SUPERSECRET')
     })
 
+    it('renders neither the password nor the host from the store or its namespaced view', () => {
+      const { storage } = leaky()
+
+      for (const rendered of [
+        inspect(storage, { depth: 5 }),
+        inspect(storage.namespace('tenant-a'), { depth: 5 }),
+        JSON.stringify(storage),
+        JSON.stringify(storage.namespace('tenant-a')),
+      ]) {
+        expect(rendered).not.toContain('SUPERSECRET')
+        expect(rendered).not.toContain('db.example.com')
+      }
+    })
+
     it.each([
       ['k'.repeat(1025), bytes('x')],
       ['a/b', new Uint8Array(17 * 1024 * 1024)],
