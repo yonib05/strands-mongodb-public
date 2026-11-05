@@ -26,6 +26,8 @@ function matches(doc: Document, filter: Filter): boolean {
       switch (op) {
         case '$gte':
           return compare(value, operand) >= 0
+        case '$gt':
+          return compare(value, operand) > 0
         case '$lt':
           return compare(value, operand) < 0
         default:
@@ -35,14 +37,118 @@ function matches(doc: Document, filter: Filter): boolean {
   })
 }
 
+function isPlainData(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return true
+  const prototype: unknown = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null || Array.isArray(value) || value instanceof Date
+}
+
+// `structuredClone` strips the prototype off a BSON value such as `Binary`, so those are kept by reference.
+function clone(doc: Document): Document {
+  return Object.fromEntries(
+    Object.entries(doc).map(([field, value]) => [field, isPlainData(value) ? structuredClone(value) : value])
+  )
+}
+
+function sortBy(docs: Document[], spec: SortSpec): Document[] {
+  const keys = Object.entries(spec)
+  return [...docs].sort((a, b) => {
+    for (const [field, direction] of keys) {
+      const order = compare(a[field], b[field]) * direction
+      if (order !== 0) return order
+    }
+    return 0
+  })
+}
+
+// `1` copies the field; anything else is an aggregation expression. `_id` stays unless excluded.
+function project(doc: Document, spec: Document): Document {
+  const out: Document = { _id: doc._id }
+  for (const [field, value] of Object.entries(spec)) {
+    if (field === '_id') {
+      if (!value) delete out._id
+      continue
+    }
+    out[field] = value === 1 || value === true ? doc[field] : evaluate(value, doc, {})
+  }
+  return out
+}
+
+function variable(path: string, vars: Document): unknown {
+  const [name, ...rest] = path.split('.')
+  return rest.reduce<unknown>((value, segment) => (value as Document)[segment], vars[name!])
+}
+
+// Only the operators the storage search pipeline uses, so a test cannot pass on an unmodelled stage.
+function evaluate(expression: unknown, doc: Document, vars: Document): unknown {
+  if (typeof expression === 'string' && expression.startsWith('$$')) return variable(expression.slice(2), vars)
+  if (typeof expression === 'string' && expression.startsWith('$')) return doc[expression.slice(1)]
+  if (Array.isArray(expression)) return expression.map((item) => evaluate(item, doc, vars))
+  if (!isOperatorObject(expression)) return expression
+  const [op, operand] = Object.entries(expression)[0]!
+  const text = (value: unknown): string => String(evaluate(value, doc, vars))
+  switch (op) {
+    case '$toLower':
+      return text(operand).toLowerCase()
+    case '$strLenCP':
+      return Array.from(text(operand)).length
+    case '$substrCP': {
+      const [input, start, count] = (operand as unknown[]).map((item) => evaluate(item, doc, vars))
+      return Array.from(String(input))
+        .slice(start as number, (start as number) + (count as number))
+        .join('')
+    }
+    case '$regexFindAll': {
+      const { input, regex } = operand as { input: unknown; regex: string }
+      return [...text(input).matchAll(new RegExp(regex, 'gu'))].map((found) => ({ match: found[0] }))
+    }
+    case '$map': {
+      const { input, in: mapped } = operand as { input: unknown; in: unknown }
+      return (evaluate(input, doc, vars) as unknown[]).map((item) => evaluate(mapped, doc, { ...vars, this: item }))
+    }
+    case '$setIntersection': {
+      const sets = (operand as unknown[]).map((item) => new Set(evaluate(item, doc, vars) as unknown[]))
+      return [...sets[0]!].filter((member) => sets.every((set) => set.has(member)))
+    }
+    case '$size':
+      return (evaluate(operand, doc, vars) as unknown[]).length
+    default:
+      throw new Error(`FakeCollection does not support ${op}`)
+  }
+}
+
+function runPipeline(docs: Document[], pipeline: Document[]): Document[] {
+  return pipeline.reduce<Document[]>((current, stage) => {
+    const [name, spec] = Object.entries(stage)[0]!
+    switch (name) {
+      case '$match':
+        return current.filter((doc) => matches(doc, spec as Filter))
+      case '$project':
+        return current.map((doc) => project(doc, spec as Document))
+      case '$sort':
+        return sortBy(current, spec as SortSpec)
+      default:
+        throw new Error(`FakeCollection does not support the ${name} stage`)
+    }
+  }, docs)
+}
+
+/** One recorded driver call: the method name and the positional arguments it received. */
+export interface FakeCall {
+  method: string
+  args: unknown[]
+}
+
 /** The database half of the fake: `createCollection`, `listCollections` and `command` for `buildInfo`. */
 export class FakeDb {
   readonly createCollectionCalls: string[] = []
   readonly commandCalls: Document[] = []
+  readonly listCollectionsCalls: Document[] = []
   // 8.0.23 unless a test says otherwise: what the target deployments report.
   buildInfo: Document = { version: '8.0.23', versionArray: [8, 0, 23, 0] }
   createCollectionError: Error | undefined
   commandError: Error | undefined
+  listCollectionsError: Error | undefined
 
   constructor(
     readonly databaseName: string,
@@ -57,8 +163,10 @@ export class FakeDb {
 
   listCollections(filter: { name: string }): { toArray(): Promise<Document[]> } {
     const { collection } = this
+    this.listCollectionsCalls.push(filter)
     return {
       toArray: async () => {
+        if (this.listCollectionsError !== undefined) throw this.listCollectionsError
         if (filter.name !== collection.collectionName || !collection.exists) return []
         return [{ name: collection.collectionName, type: 'collection', options: collection.collectionOptions }]
       },
@@ -76,24 +184,23 @@ export class FakeDb {
 export class FakeCursor {
   private sortSpec: SortSpec = {}
 
-  constructor(private readonly docs: Document[]) {}
+  constructor(
+    private readonly docs: Document[],
+    private readonly projection: Document | undefined,
+    private readonly drainFailure: Error | undefined
+  ) {}
 
   sort(spec: SortSpec): this {
     this.sortSpec = spec
     return this
   }
 
+  // The failure comes after the documents, as a connection dying mid-scan would surface.
   async toArray(): Promise<Document[]> {
-    const keys = Object.entries(this.sortSpec)
-    return this.docs
-      .map((doc) => structuredClone(doc))
-      .sort((a, b) => {
-        for (const [field, direction] of keys) {
-          const order = compare(a[field], b[field]) * direction
-          if (order !== 0) return order
-        }
-        return 0
-      })
+    if (this.drainFailure !== undefined) throw this.drainFailure
+    const sorted = sortBy(this.docs.map(clone), this.sortSpec)
+    const { projection } = this
+    return projection === undefined ? sorted : sorted.map((doc) => project(doc, projection))
   }
 }
 
@@ -107,6 +214,12 @@ export class FakeCollection {
   /** Whether `listCollections` reports this collection. Set by `createCollection` and `setCollation`. */
   exists = false
   collectionOptions: Document = {}
+  /** Every data and index call, in order, with its arguments. */
+  readonly calls: FakeCall[] = []
+  /** Thrown by every recorded call once set, as a dead connection would. */
+  failure: Error | undefined
+  /** Thrown while a `find` cursor drains, after `find` itself returned. */
+  drainFailure: Error | undefined
   private listSearchIndexesFailures: Error[] = []
   private listSearchIndexReads = 0
 
@@ -120,6 +233,16 @@ export class FakeCollection {
   /** How many times `listSearchIndexes().toArray()` ran. */
   get searchIndexReads(): number {
     return this.listSearchIndexReads
+  }
+
+  /** The recorded method names, in order. */
+  get namesCalled(): string[] {
+    return this.calls.map((call) => call.method)
+  }
+
+  private record(method: string, ...args: unknown[]): void {
+    this.calls.push({ method, args })
+    if (this.failure !== undefined) throw this.failure
   }
 
   /** Marks the collection present with the given default collation, as `createCollection` would. */
@@ -178,8 +301,9 @@ export class FakeCollection {
   }
 
   async findOne(filter: Filter = {}): Promise<Document | null> {
+    this.record('findOne', filter)
     const doc = this.docs.find((candidate) => matches(candidate, filter))
-    return doc === undefined ? null : structuredClone(doc)
+    return doc === undefined ? null : clone(doc)
   }
 
   async replaceOne(
@@ -187,18 +311,21 @@ export class FakeCollection {
     replacement: Document,
     options: { upsert?: boolean } = {}
   ): Promise<{ acknowledged: true; matchedCount: number; modifiedCount: number; upsertedCount: number }> {
+    this.record('replaceOne', filter, replacement, options)
     const index = this.docs.findIndex((candidate) => matches(candidate, filter))
     if (index !== -1) {
-      this.docs[index] = { ...structuredClone(replacement), _id: this.docs[index]!._id }
+      this.docs[index] = { ...clone(replacement), _id: this.docs[index]!._id }
       return { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedCount: 0 }
     }
     if (!options.upsert) return { acknowledged: true, matchedCount: 0, modifiedCount: 0, upsertedCount: 0 }
     const _id = replacement._id ?? filter._id
-    this.docs.push({ ...structuredClone(replacement), _id })
+    this.docs.push({ ...clone(replacement), _id })
+    this.exists = true
     return { acknowledged: true, matchedCount: 0, modifiedCount: 0, upsertedCount: 1 }
   }
 
   async deleteOne(filter: Filter): Promise<{ acknowledged: true; deletedCount: number }> {
+    this.record('deleteOne', filter)
     const index = this.docs.findIndex((candidate) => matches(candidate, filter))
     if (index === -1) return { acknowledged: true, deletedCount: 0 }
     this.docs.splice(index, 1)
@@ -206,21 +333,32 @@ export class FakeCollection {
   }
 
   async deleteMany(filter: Filter = {}): Promise<{ acknowledged: true; deletedCount: number }> {
+    this.record('deleteMany', filter)
     const kept = this.docs.filter((candidate) => !matches(candidate, filter))
     const deletedCount = this.docs.length - kept.length
     this.docs.splice(0, this.docs.length, ...kept)
     return { acknowledged: true, deletedCount }
   }
 
-  find(filter: Filter = {}): FakeCursor {
-    return new FakeCursor(this.docs.filter((candidate) => matches(candidate, filter)))
+  find(filter: Filter = {}, options: { projection?: Document } = {}): FakeCursor {
+    this.record('find', filter, options)
+    const found = this.docs.filter((candidate) => matches(candidate, filter))
+    return new FakeCursor(found, options.projection, this.drainFailure)
+  }
+
+  /** Runs the pipeline over the stored documents; only the stages the storage search emits are understood. */
+  aggregate(pipeline: Document[]): { toArray(): Promise<Document[]> } {
+    this.record('aggregate', pipeline)
+    return { toArray: async () => runPipeline(this.docs.map(clone), pipeline) }
   }
 
   listIndexes(): { toArray(): Promise<IndexDescription[]> } {
+    this.record('listIndexes')
     return { toArray: async () => structuredClone(this.indexes) }
   }
 
   async createIndexes(specs: IndexDescription[]): Promise<string[]> {
+    this.record('createIndexes', specs)
     this.exists = true
     return Promise.all(specs.map((spec) => this.createIndex(spec.key as Document, spec)))
   }
