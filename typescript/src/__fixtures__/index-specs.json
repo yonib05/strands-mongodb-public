@@ -1,0 +1,225 @@
+{
+  "memory_specs": [
+    {
+      "dateOnly": false,
+      "keys": [
+        [
+          "scope",
+          1
+        ],
+        [
+          "store_name",
+          1
+        ],
+        [
+          "content_hash",
+          1
+        ]
+      ],
+      "name": "strands_scope_store_content_hash_unique",
+      "options": {
+        "partialFilterExpression": {
+          "content_hash": {
+            "$exists": true
+          }
+        },
+        "unique": true
+      }
+    },
+    {
+      "dateOnly": false,
+      "keys": [
+        [
+          "scope",
+          1
+        ],
+        [
+          "store_name",
+          1
+        ],
+        [
+          "created_at",
+          -1
+        ]
+      ],
+      "name": "strands_scope_store_created_at",
+      "options": {}
+    },
+    {
+      "dateOnly": true,
+      "keys": [
+        [
+          "expires_at",
+          1
+        ]
+      ],
+      "name": "strands_expires_at_ttl",
+      "options": {
+        "expireAfterSeconds": 0
+      }
+    }
+  ],
+  "storage_specs": [
+    {
+      "dateOnly": true,
+      "keys": [
+        [
+          "expires_at",
+          1
+        ]
+      ],
+      "name": "strands_expires_at_ttl",
+      "options": {
+        "expireAfterSeconds": 0
+      }
+    }
+  ],
+  "text_index_definition": {
+    "mappings": {
+      "dynamic": false,
+      "fields": {
+        "content": [
+          {
+            "type": "string"
+          }
+        ]
+      }
+    }
+  },
+  "vector_index_definition": [
+    {
+      "definition": {
+        "fields": [
+          {
+            "modality": "text",
+            "model": "voyage-4-lite",
+            "path": "content",
+            "type": "autoEmbed"
+          },
+          {
+            "path": "scope",
+            "type": "filter"
+          },
+          {
+            "path": "store_name",
+            "type": "filter"
+          }
+        ]
+      },
+      "input": {
+        "filterFields": [],
+        "mode": {
+          "autoEmbed": true,
+          "dimensions": null,
+          "model": "voyage-4-lite",
+          "similarity": null
+        }
+      },
+      "name": "vector_index_definition/auto/baked"
+    },
+    {
+      "definition": {
+        "fields": [
+          {
+            "modality": "text",
+            "model": "voyage-4-lite",
+            "path": "content",
+            "type": "autoEmbed"
+          },
+          {
+            "path": "scope",
+            "type": "filter"
+          },
+          {
+            "path": "store_name",
+            "type": "filter"
+          },
+          {
+            "path": "metadata.topic",
+            "type": "filter"
+          }
+        ]
+      },
+      "input": {
+        "filterFields": [
+          "metadata.topic",
+          "scope"
+        ],
+        "mode": {
+          "autoEmbed": true,
+          "dimensions": null,
+          "model": "voyage-4-lite",
+          "similarity": null
+        }
+      },
+      "name": "vector_index_definition/auto/extra"
+    },
+    {
+      "definition": {
+        "fields": [
+          {
+            "numDimensions": 3,
+            "path": "embedding",
+            "similarity": "cosine",
+            "type": "vector"
+          },
+          {
+            "path": "scope",
+            "type": "filter"
+          },
+          {
+            "path": "store_name",
+            "type": "filter"
+          }
+        ]
+      },
+      "input": {
+        "filterFields": [],
+        "mode": {
+          "autoEmbed": false,
+          "dimensions": 3,
+          "model": null,
+          "similarity": "cosine"
+        }
+      },
+      "name": "vector_index_definition/manual/baked"
+    },
+    {
+      "definition": {
+        "fields": [
+          {
+            "numDimensions": 3,
+            "path": "embedding",
+            "similarity": "cosine",
+            "type": "vector"
+          },
+          {
+            "path": "scope",
+            "type": "filter"
+          },
+          {
+            "path": "store_name",
+            "type": "filter"
+          },
+          {
+            "path": "metadata.topic",
+            "type": "filter"
+          }
+        ]
+      },
+      "input": {
+        "filterFields": [
+          "metadata.topic",
+          "scope"
+        ],
+        "mode": {
+          "autoEmbed": false,
+          "dimensions": 3,
+          "model": null,
+          "similarity": "cosine"
+        }
+      },
+      "name": "vector_index_definition/manual/extra"
+    }
+  ]
+}

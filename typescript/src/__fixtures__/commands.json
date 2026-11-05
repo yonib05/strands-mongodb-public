@@ -1,0 +1,156 @@
+{
+  "memory_search_specs": [
+    {
+      "collection": "memory",
+      "creation_command": "db.runCommand({\"createSearchIndexes\": \"memory\", \"indexes\": [{\"name\": \"vector_index\", \"type\": \"vectorSearch\", \"definition\": {\"fields\": [{\"type\": \"autoEmbed\", \"path\": \"content\", \"model\": \"voyage-4-lite\", \"modality\": \"text\"}, {\"type\": \"filter\", \"path\": \"scope\"}, {\"type\": \"filter\", \"path\": \"store_name\"}]}}]})",
+      "drop_command": "db.runCommand({\"dropSearchIndex\": \"memory\", \"name\": \"vector_index\"})",
+      "input": {
+        "config": {
+          "connection_string": "mongodb://h",
+          "database": "x",
+          "embedding_model": "voyage-4-lite"
+        }
+      },
+      "name": "auto/baked/vectorSearch"
+    },
+    {
+      "collection": "memory",
+      "creation_command": "db.runCommand({\"createSearchIndexes\": \"memory\", \"indexes\": [{\"name\": \"text_index\", \"type\": \"search\", \"definition\": {\"mappings\": {\"dynamic\": false, \"fields\": {\"content\": [{\"type\": \"string\"}]}}}}]})",
+      "drop_command": "db.runCommand({\"dropSearchIndex\": \"memory\", \"name\": \"text_index\"})",
+      "input": {
+        "config": {
+          "connection_string": "mongodb://h",
+          "database": "x",
+          "embedding_model": "voyage-4-lite"
+        }
+      },
+      "name": "auto/baked/search"
+    },
+    {
+      "collection": "memory",
+      "creation_command": "db.runCommand({\"createSearchIndexes\": \"memory\", \"indexes\": [{\"name\": \"vector_index\", \"type\": \"vectorSearch\", \"definition\": {\"fields\": [{\"type\": \"autoEmbed\", \"path\": \"content\", \"model\": \"voyage-4-lite\", \"modality\": \"text\"}, {\"type\": \"filter\", \"path\": \"scope\"}, {\"type\": \"filter\", \"path\": \"store_name\"}, {\"type\": \"filter\", \"path\": \"metadata.topic\"}]}}]})",
+      "drop_command": "db.runCommand({\"dropSearchIndex\": \"memory\", \"name\": \"vector_index\"})",
+      "input": {
+        "config": {
+          "connection_string": "mongodb://h",
+          "database": "x",
+          "embedding_model": "voyage-4-lite",
+          "filter_fields": [
+            "metadata.topic",
+            "scope"
+          ]
+        }
+      },
+      "name": "auto/extra/vectorSearch"
+    },
+    {
+      "collection": "memory",
+      "creation_command": "db.runCommand({\"createSearchIndexes\": \"memory\", \"indexes\": [{\"name\": \"text_index\", \"type\": \"search\", \"definition\": {\"mappings\": {\"dynamic\": false, \"fields\": {\"content\": [{\"type\": \"string\"}]}}}}]})",
+      "drop_command": "db.runCommand({\"dropSearchIndex\": \"memory\", \"name\": \"text_index\"})",
+      "input": {
+        "config": {
+          "connection_string": "mongodb://h",
+          "database": "x",
+          "embedding_model": "voyage-4-lite",
+          "filter_fields": [
+            "metadata.topic",
+            "scope"
+          ]
+        }
+      },
+      "name": "auto/extra/search"
+    },
+    {
+      "collection": "memory",
+      "creation_command": "db.runCommand({\"createSearchIndexes\": \"memory\", \"indexes\": [{\"name\": \"vector_index\", \"type\": \"vectorSearch\", \"definition\": {\"fields\": [{\"type\": \"vector\", \"path\": \"embedding\", \"numDimensions\": 3, \"similarity\": \"cosine\"}, {\"type\": \"filter\", \"path\": \"scope\"}, {\"type\": \"filter\", \"path\": \"store_name\"}]}}]})",
+      "drop_command": "db.runCommand({\"dropSearchIndex\": \"memory\", \"name\": \"vector_index\"})",
+      "input": {
+        "config": {
+          "connection_string": "mongodb://h",
+          "database": "x",
+          "embedding_dimensions": 3,
+          "similarity": "cosine"
+        }
+      },
+      "name": "manual/baked/vectorSearch"
+    },
+    {
+      "collection": "memory",
+      "creation_command": "db.runCommand({\"createSearchIndexes\": \"memory\", \"indexes\": [{\"name\": \"text_index\", \"type\": \"search\", \"definition\": {\"mappings\": {\"dynamic\": false, \"fields\": {\"content\": [{\"type\": \"string\"}]}}}}]})",
+      "drop_command": "db.runCommand({\"dropSearchIndex\": \"memory\", \"name\": \"text_index\"})",
+      "input": {
+        "config": {
+          "connection_string": "mongodb://h",
+          "database": "x",
+          "embedding_dimensions": 3,
+          "similarity": "cosine"
+        }
+      },
+      "name": "manual/baked/search"
+    },
+    {
+      "collection": "memory",
+      "creation_command": "db.runCommand({\"createSearchIndexes\": \"memory\", \"indexes\": [{\"name\": \"vector_index\", \"type\": \"vectorSearch\", \"definition\": {\"fields\": [{\"type\": \"vector\", \"path\": \"embedding\", \"numDimensions\": 3, \"similarity\": \"cosine\"}, {\"type\": \"filter\", \"path\": \"scope\"}, {\"type\": \"filter\", \"path\": \"store_name\"}, {\"type\": \"filter\", \"path\": \"metadata.topic\"}]}}]})",
+      "drop_command": "db.runCommand({\"dropSearchIndex\": \"memory\", \"name\": \"vector_index\"})",
+      "input": {
+        "config": {
+          "connection_string": "mongodb://h",
+          "database": "x",
+          "embedding_dimensions": 3,
+          "filter_fields": [
+            "metadata.topic",
+            "scope"
+          ],
+          "similarity": "cosine"
+        }
+      },
+      "name": "manual/extra/vectorSearch"
+    },
+    {
+      "collection": "memory",
+      "creation_command": "db.runCommand({\"createSearchIndexes\": \"memory\", \"indexes\": [{\"name\": \"text_index\", \"type\": \"search\", \"definition\": {\"mappings\": {\"dynamic\": false, \"fields\": {\"content\": [{\"type\": \"string\"}]}}}}]})",
+      "drop_command": "db.runCommand({\"dropSearchIndex\": \"memory\", \"name\": \"text_index\"})",
+      "input": {
+        "config": {
+          "connection_string": "mongodb://h",
+          "database": "x",
+          "embedding_dimensions": 3,
+          "filter_fields": [
+            "metadata.topic",
+            "scope"
+          ],
+          "similarity": "cosine"
+        }
+      },
+      "name": "manual/extra/search"
+    }
+  ],
+  "memory_specs": [
+    {
+      "collection": "memory",
+      "creation_command": "db.runCommand({\"createIndexes\": \"memory\", \"indexes\": [{\"key\": {\"scope\": 1, \"store_name\": 1, \"content_hash\": 1}, \"name\": \"strands_scope_store_content_hash_unique\", \"unique\": true, \"partialFilterExpression\": {\"content_hash\": {\"$exists\": true}}}]})",
+      "drop_command": "db.runCommand({\"dropIndexes\": \"memory\", \"index\": \"strands_scope_store_content_hash_unique\"})",
+      "name": "strands_scope_store_content_hash_unique"
+    },
+    {
+      "collection": "memory",
+      "creation_command": "db.runCommand({\"createIndexes\": \"memory\", \"indexes\": [{\"key\": {\"scope\": 1, \"store_name\": 1, \"created_at\": -1}, \"name\": \"strands_scope_store_created_at\"}]})",
+      "drop_command": "db.runCommand({\"dropIndexes\": \"memory\", \"index\": \"strands_scope_store_created_at\"})",
+      "name": "strands_scope_store_created_at"
+    },
+    {
+      "collection": "memory",
+      "creation_command": "db.runCommand({\"createIndexes\": \"memory\", \"indexes\": [{\"key\": {\"expires_at\": 1}, \"name\": \"strands_expires_at_ttl\", \"expireAfterSeconds\": 0}]})",
+      "drop_command": "db.runCommand({\"dropIndexes\": \"memory\", \"index\": \"strands_expires_at_ttl\"})",
+      "name": "strands_expires_at_ttl"
+    }
+  ],
+  "storage_specs": [
+    {
+      "collection": "storage",
+      "creation_command": "db.runCommand({\"createIndexes\": \"storage\", \"indexes\": [{\"key\": {\"expires_at\": 1}, \"name\": \"strands_expires_at_ttl\", \"expireAfterSeconds\": 0}]})",
+      "drop_command": "db.runCommand({\"dropIndexes\": \"storage\", \"index\": \"strands_expires_at_ttl\"})",
+      "name": "strands_expires_at_ttl"
+    }
+  ]
+}
