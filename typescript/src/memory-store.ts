@@ -345,18 +345,22 @@ export class MongoDBMemoryStore implements MemoryStore {
     return wait
   }
 
-  // Every tier is waited on together, so a quick text build is not held behind a slow vector one.
+  // Every tier is waited on together, so a quick text build is not held behind a slow vector one. The losers are
+  // aborted once the first is ready, as Python cancels them, so no poll outlives the caller's interest.
   private async _waitForTheFirstReadyTier(): Promise<void> {
     const collection = this._collection()
+    const losers = new AbortController()
     const waits = this._specs.map(([, spec]) =>
       ensure(collection, {
         search: [spec],
         create: this._ensureIndexes,
         timeout: this._indexReadyTimeout,
         logger: this._logger,
+        signal: losers.signal,
       })
     )
     const ready = await anyReady(waits)
+    losers.abort()
     await this._retrySearchTiers({ waited: !ready })
     this._waitedForATier = true
   }

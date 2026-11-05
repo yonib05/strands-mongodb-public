@@ -830,18 +830,28 @@ describe('MongoDBMemoryStore', () => {
         expect(store['_waitedForATier']).toBe(true)
       })
 
-      it('does not hold a ready tier behind one still building', async () => {
-        const { store, collection, logger } = withoutFusion({ config: { indexReadyTimeout: 1 } })
+      it('does not hold a ready tier behind one still building, and stops waiting on the loser', async () => {
+        vi.useFakeTimers()
+        const { store, collection, logger } = withoutFusion({ config: { indexReadyTimeout: 60 } })
         reporting(collection, 'PENDING', 'vector_index', 'text_index')
         await store.initialize()
         logger.records.length = 0
 
         collection.setSearchIndexStatus('text_index', 'READY')
         await store['_waitForATier']()
+        const reads = collection.searchIndexReads
+        await vi.advanceTimersByTimeAsync(10_000)
 
         expect(tiers(store)).toEqual(['text'])
         expect(skipped(logger)).toEqual([['info', 'tier_building', 'vector']])
         expect(store['_tierRetryAt']).toBeDefined()
+        expect(collection.searchIndexReads).toBe(reads)
+        const outcomes = spansNamed(exporter, 'strands_mongodb.indexes.wait').map(
+          (span) => span.attributes['strands_mongodb.indexes.outcome']
+        )
+        // Two timed-out reads from initialize, the retry's one, and the loser's abandoned wait; text was READY on its cold read.
+        expect(outcomes.filter((outcome) => outcome === undefined)).toHaveLength(1)
+        expect(outcomes).toHaveLength(4)
       })
 
       it('warns each tier when the wait runs out', async () => {

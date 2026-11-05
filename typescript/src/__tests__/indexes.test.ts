@@ -96,10 +96,10 @@ function ensureOrdinary(collection: FakeCollection, ordinary: IndexSpec[], creat
 function ensureSearch(
   collection: FakeCollection,
   search: SearchIndexSpec[],
-  options: { create?: boolean; timeout?: number; logger?: Logger } = {}
+  options: { create?: boolean; timeout?: number; logger?: Logger; signal?: AbortSignal } = {}
 ): Promise<void> {
-  const { create = true, timeout = 5, logger = silentLogger() } = options
-  return ensure(driver(collection), { search, create, timeout, logger })
+  const { create = true, timeout = 5, logger = silentLogger(), signal } = options
+  return ensure(driver(collection), { search, create, timeout, logger, signal })
 }
 
 function userIndexes(collection: FakeCollection): IndexDescription[] {
@@ -1370,6 +1370,49 @@ describe('indexes', () => {
         // The vector index was abandoned because its sibling failed, so its span ends with no outcome at all.
         expect(abandoned[0]?.attributes).not.toHaveProperty('strands_mongodb.indexes.outcome')
         expect(oneSpan(exporter, 'strands_mongodb.indexes.ensure').status.code).toBe(SpanStatusCode.ERROR)
+      })
+
+      it('stops reading within one round when the caller aborts, ending the wait span with no outcome', async () => {
+        vi.useFakeTimers()
+        const collection = fakeCollection()
+        collection.addSearchIndex(textSpec().toDescription(), 'PENDING')
+        const losers = new AbortController()
+        const settled = rejectionOf(ensureSearch(collection, [textSpec()], { timeout: 60, signal: losers.signal }))
+        await polls(1)
+        const reads = collection.searchIndexReads
+        expect(reads).toBeGreaterThan(1)
+
+        const reason = new Error('another tier came up first')
+        losers.abort(reason)
+        const error = await settled
+        await polls(10)
+
+        expect(error).toBeInstanceOf(StorageError)
+        expect(error).not.toBeInstanceOf(SearchIndexNotReady)
+        expect(error.message).toContain('abandoned')
+        expect(error.message).toContain('text_index')
+        expect(error.cause).toBe(reason)
+        expect(collection.searchIndexReads).toBe(reads)
+        const wait = oneSpan(exporter, 'strands_mongodb.indexes.wait')
+        expect(wait.status.code).toBe(SpanStatusCode.UNSET)
+        expect(wait.attributes).not.toHaveProperty('strands_mongodb.indexes.outcome')
+        expect(oneSpan(exporter, 'strands_mongodb.indexes.ensure').status.code).toBe(SpanStatusCode.ERROR)
+      })
+
+      it('reads at most once for a signal that is already aborted, and still ends its spans', async () => {
+        const collection = fakeCollection()
+        collection.addSearchIndex(textSpec().toDescription(), 'PENDING')
+
+        const error = await rejectionOf(
+          ensureSearch(collection, [textSpec()], { timeout: 60, signal: AbortSignal.abort() })
+        )
+
+        expect(error).toBeInstanceOf(StorageError)
+        expect(error.message).toContain('abandoned')
+        expect(collection.searchIndexReads).toBe(1)
+        expect(oneSpan(exporter, 'strands_mongodb.indexes.wait').attributes).not.toHaveProperty(
+          'strands_mongodb.indexes.outcome'
+        )
       })
 
       it('marks a failing ensure as an error carrying the count so far', async () => {

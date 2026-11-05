@@ -9,6 +9,8 @@ const nodeGlobals = {
   setTimeout: 'readonly',
   clearTimeout: 'readonly',
   structuredClone: 'readonly',
+  AbortController: 'readonly',
+  AbortSignal: 'readonly',
 }
 
 const unusedVars = ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }]

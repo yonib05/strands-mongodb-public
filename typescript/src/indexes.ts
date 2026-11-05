@@ -401,6 +401,8 @@ export interface EnsureOptions {
   timeout: number
   /** Receives the `creating_indexes`, `creating_search_index` and `search_index_status` events. */
   logger: Logger
+  /** Ends a wait for a build early, within one poll round, when the caller no longer needs its outcome. */
+  signal?: AbortSignal | undefined
 }
 
 type Attributes = Partial<Record<Attribute, AttributeValue>>
@@ -505,7 +507,7 @@ export function rankFusionSupport(collection: Collection, _logger: Logger): Prom
  * missing and `create` is `false`, or a driver call fails; {@link SearchIndexNotReady} if a build outlives `timeout`
  */
 export function ensure(collection: Collection, options: EnsureOptions): Promise<void> {
-  const { ordinary = [], search = [], create, timeout, logger } = options
+  const { ordinary = [], search = [], create, timeout, logger, signal } = options
   const attributes: Attributes = {
     ...namespaceAttributes(collection),
     'strands_mongodb.indexes.mode': create ? 'ensure' : 'verify',
@@ -515,7 +517,7 @@ export function ensure(collection: Collection, options: EnsureOptions): Promise<
   return span('strands_mongodb.indexes.ensure', attributes, async () => {
     try {
       if (ordinary.length > 0) await ensureOrdinary(collection, ordinary, { create, created, logger })
-      if (search.length > 0) await ensureSearch(collection, search, { create, timeout, created, logger })
+      if (search.length > 0) await ensureSearch(collection, search, { create, timeout, created, logger, signal })
     } finally {
       annotate('strands_mongodb.indexes.created', created.count, logger)
     }
@@ -703,7 +705,7 @@ function missingOrdinaryMessage(collectionName: string, namespace: string, missi
 async function ensureSearch(
   collection: Collection,
   specs: SearchIndexSpec[],
-  progress: Progress & { timeout: number }
+  progress: Progress & { timeout: number; signal?: AbortSignal | undefined }
 ): Promise<void> {
   const namespace = namespaceOf(collection)
   const name = collection.collectionName
@@ -740,7 +742,7 @@ async function ensureSearch(
   }
 
   if (waiting.length === 0) return
-  const stuck = await waitUntilReady(collection, waiting, namespace, progress.timeout, progress.logger)
+  const stuck = await waitUntilReady(collection, waiting, namespace, progress, progress.logger)
   if (stuck.length === 0) return
   throw new SearchIndexNotReady(
     `strands_mongodb: waited ${progress.timeout}s for ${stuck.length} search index(es) on ${namespace} to report READY and they did not: ${stuck.join(', ')}. BUILDING at this point means a build slower than the timeout. A store with a named searchType can call initialize() again to keep waiting; under 'auto' the store answers from its other tiers and tries this one again later. Any other status is worth reading directly with db.${name}.getSearchIndexes().`
@@ -829,14 +831,15 @@ interface Waiting {
 
 // Every pending index is read each round, so a failure surfaces within one interval whatever its siblings are
 // doing. One span per index, opened before its first read and ended by the read that settles it. A timeout is the
-// wait's outcome; the error belongs to `ensure`.
+// wait's outcome; the error belongs to `ensure`. An abort is checked once per round, so it too lands within one.
 async function waitUntilReady(
   collection: Collection,
   specs: SearchIndexSpec[],
   namespace: string,
-  timeout: number,
+  budget: { timeout: number; signal?: AbortSignal | undefined },
   logger: Logger
 ): Promise<string[]> {
+  const { timeout, signal } = budget
   const deadline = Date.now() + timeout * 1000
   const pending: Waiting[] = specs.map((spec) => ({
     spec,
@@ -844,6 +847,7 @@ async function waitUntilReady(
   }))
   try {
     for (;;) {
+      if (signal?.aborted) throw abandoned(pending, namespace, signal)
       for (const entry of [...pending]) {
         let ready: boolean
         try {
@@ -866,12 +870,20 @@ async function waitUntilReady(
           return `${entry.spec.name} is ${entry.last}`
         })
       }
-      await sleep(POLL_INTERVAL_SECONDS * 1000)
+      await sleep(POLL_INTERVAL_SECONDS * 1000, signal)
     }
   } finally {
-    // Abandoned because a sibling failed: ended with no outcome, as Python's single span is on an error.
+    // Abandoned because a sibling failed or the caller aborted: ended with no outcome, as Python's single span is on an error.
     for (const entry of pending) entry.span.end()
   }
+}
+
+function abandoned(pending: Waiting[], namespace: string, signal: AbortSignal): StorageError {
+  const names = pending.map((entry) => entry.spec.name).join(', ')
+  return new StorageError(
+    `strands_mongodb: the wait for ${pending.length} search index(es) on ${namespace} to report READY was abandoned before they did: ${names}. The caller no longer needed the outcome; the builds themselves continue on the server.`,
+    { cause: signal.reason }
+  )
 }
 
 function settle(pending: Waiting[], entry: Waiting): OpenSpan {
@@ -901,6 +913,15 @@ async function readStatus(collection: Collection, entry: Waiting, namespace: str
   return true
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+// Resolves early on abort, so the caller's next check sees it within the round rather than after the full interval.
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal?.addEventListener('abort', done, { once: true })
+  })
 }
