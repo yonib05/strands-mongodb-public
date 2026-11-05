@@ -9,7 +9,8 @@
 #
 # There is deliberately no `pip` entry. The package's dependencies are floors (`>=`, no upper bound),
 # and raising a floor drops support for users on older releases. That is a decision about the support
-# window, so nothing should open it automatically. A test asserts the entry is absent.
+# window, so nothing should open it automatically. A test asserts the entry is absent. The `npm` entry
+# below is limited to development dependencies for the same reason: the peer ranges are floors.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -27,3 +28,19 @@ updates:
           - "*"
     commit-message:
       prefix: "ci"
+  - package-ecosystem: "npm"
+    directory: "/typescript"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    allow:
+      - dependency-type: "development"
+    groups:
+      npm-development:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore"

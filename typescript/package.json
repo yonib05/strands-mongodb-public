@@ -1,0 +1,90 @@
+{
+  "name": "strands-mongodb",
+  "version": "0.0.1-development",
+  "description": "MongoDB storage and memory backends for the Strands Agents SDK",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "default": "./dist/storage/index.js"
+    },
+    "./memory": {
+      "types": "./dist/memory/index.d.ts",
+      "default": "./dist/memory/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src test scripts",
+    "lint:fix": "eslint src test scripts --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/*.mjs\" \"*.{js,ts}\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/*.mjs\" \"*.{js,ts}\"",
+    "test": "vitest run --project unit",
+    "test:contract": "vitest run --project contract",
+    "test:integration": "vitest run --project integration",
+    "test:autoembed": "vitest run --project autoembed",
+    "test:build": "vitest run --project build",
+    "test:compat": "vitest run --project compat",
+    "test:interop": "vitest run --project interop",
+    "test:coverage": "vitest run --project unit --coverage && node scripts/check-file-coverage.mjs",
+    "check": "npm run format:check && npm run lint && npm run type-check && npm run test:coverage",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "strands",
+    "strands-agents",
+    "mongodb",
+    "atlas",
+    "storage",
+    "memory",
+    "vector-search"
+  ],
+  "author": "MongoDB, Inc.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mongodb/strands-mongodb.git",
+    "directory": "typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/mongodb/strands-mongodb/issues"
+  },
+  "homepage": "https://github.com/mongodb/strands-mongodb#readme",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@strands-agents/sdk": ">=1.23.0",
+    "mongodb": "^7.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@opentelemetry/api": "^1.10.0",
+    "@strands-agents/sdk": "^1.24.0",
+    "@types/node": "^26.6.6",
+    "@typescript-eslint/eslint-plugin": "^8.72.1",
+    "@typescript-eslint/parser": "^8.72.1",
+    "@vitest/coverage-v8": "^5.1.0",
+    "eslint": "^10.14.0",
+    "eslint-plugin-tsdoc": "^0.5.4",
+    "mongodb": "^7.8.0",
+    "prettier": "^3.9.10",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "vitest": "^5.1.0",
+    "yaml": "^2.9.1"
+  }
+}

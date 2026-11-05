@@ -1,0 +1,10 @@
+strands-mongodb
+Copyright 2026-present MongoDB, Inc.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product integrates with the Strands Agents SDK
+(https://github.com/strands-agents/harness-sdk), Copyright Amazon.com, Inc. or its
+affiliates, licensed under the Apache License, Version 2.0. The Strands Agents SDK is
+not distributed as part of this product; it is declared as a dependency and installed
+separately.
