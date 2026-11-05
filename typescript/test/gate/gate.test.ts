@@ -12,14 +12,18 @@ const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const LEADING_IDS = /^(?:AT|CH|MP)-\d{1,3}[a-z]*(?:,\s*(?:AT|CH|MP)-\d{1,3}[a-z]*)*/
 
 // A regex over the source, so the static half needs no prior run; `.each(...)` and `.skipIf(...)` may sit between.
-const TITLE = /\b(?:it|test|describe)(?:\.\w+(?:\((?:[^()]|\([^()]*\))*\))?)*\(\s*(['"`])(.*?)\1/gs
+const TITLE = /(?<![.\w])(?:it|test|describe)(?:\.\w+(?:\((?:[^()]|\([^()]*\))*\))?)*\(\s*(['"`])(.*?)\1/gs
 
 function leadingIds(title: string): string[] {
   return title.match(LEADING_IDS)?.[0].split(/,\s*/) ?? []
 }
 
+// Strings are matched first so a `//` inside one is not read as a comment.
+const STRING_OR_COMMENT = /(['"`])(?:\\.|(?!\1)[^\\])*\1|\/\/[^\n]*|\/\*[\s\S]*?\*\//g
+
 function titleIds(source: string): string[] {
-  return [...source.matchAll(TITLE)].flatMap((match) => leadingIds(match[2]!))
+  const code = source.replace(STRING_OR_COMMENT, (token) => (token.startsWith('/') ? '' : token))
+  return [...code.matchAll(TITLE)].flatMap((match) => leadingIds(match[2]!))
 }
 
 function testFiles(): string[] {
@@ -57,6 +61,15 @@ function tierOf(project: string): Tier | undefined {
   return Object.hasOwn(TIER_VARIABLES, project) ? (project as Tier) : undefined
 }
 
+function projectOf(file: string): string {
+  return /^test\/integ\/([^/]+)\//.exec(file)?.[1] ?? 'unit'
+}
+
+function enabledIn(run: RecordedRun, project: string): boolean {
+  const tier = tierOf(project)
+  return tier === undefined || run.enabled[tier]
+}
+
 function label(test: RecordedTest): string {
   return `${test.file} > ${test.titlePath.join(' > ')}`
 }
@@ -66,13 +79,29 @@ function skipReason(test: RecordedTest): string {
   return test.note ?? (tier === undefined ? 'skipped' : `${TIER_VARIABLES[tier]} is unset`)
 }
 
-function verdict(run: RecordedRun, items: readonly Item[]): { problems: string[]; unverified: Map<number, string[]> } {
+function verdict(
+  run: RecordedRun,
+  items: readonly Item[],
+  index: ReadonlyMap<string, ReadonlySet<string>> = new Map()
+): { problems: string[]; unverified: Map<number, string[]> } {
   const problems: string[] = []
   const unverified = new Map<number, string[]>()
+  const ran = new Set(run.tests.map((test) => test.project))
   for (const item of items) {
     const found = carriers(run.tests, item)
     if (found.length === 0) {
-      unverified.set(item.number, ['no test for it in this run'])
+      // A carrier file whose project ran, enabled, should have reported a test.
+      const missing = [...new Set(item.ids.flatMap((id) => [...(index.get(id) ?? [])]))].filter((file) => {
+        const project = projectOf(file)
+        return ran.has(project) && enabledIn(run, project)
+      })
+      if (missing.length > 0) {
+        problems.push(
+          `item ${item.number} has no test in this run although its project ran: ${missing.sort().join('; ')}`
+        )
+      } else {
+        unverified.set(item.number, ['no test for it in this run'])
+      }
       continue
     }
     const failed = found.filter((test) => test.state === 'failed')
@@ -83,10 +112,7 @@ function verdict(run: RecordedRun, items: readonly Item[]): { problems: string[]
     if (found.some((test) => test.state === 'passed')) continue
     const skipped = found.filter((test) => test.state === 'skipped')
     // A projectless or ungated test, or a tier whose variable was set, had no reason to skip.
-    const refused = skipped.filter((test) => {
-      const tier = tierOf(test.project)
-      return tier === undefined || run.enabled[tier]
-    })
+    const refused = skipped.filter((test) => enabledIn(run, test.project))
     if (refused.length > 0) {
       problems.push(
         `item ${item.number} skipped every test although its tier was enabled: ${refused.map(label).join('; ')}`
@@ -138,6 +164,18 @@ describe('every checklist id', () => {
       expect(titleIds(source)).toEqual(['AT-901', 'AT-902b', 'AT-903', 'AT-904'])
     })
 
+    it('reads no title out of a comment or a .test( method call', () => {
+      const source = [
+        "// it('AT-911: commented out', () => {})",
+        "/* test('AT-912') */",
+        "/*\n  describe('AT-913: a block', () => {})\n*/",
+        "expect(ID.test('AT-914')).toBe(true)",
+        "it('AT-915: a url mongodb://host/db in the title', () => {})",
+      ].join('\n')
+
+      expect(titleIds(source)).toEqual(['AT-915'])
+    })
+
     it('reaches both the unit and the tier suites', () => {
       const files = testFiles()
 
@@ -155,7 +193,8 @@ describe('the release gate', () => {
 
     const { problems, unverified } = verdict(
       run,
-      CHECKLIST.filter((item) => item.gate)
+      CHECKLIST.filter((item) => item.gate),
+      collectedIds()
     )
 
     expect(problems).toEqual([])
@@ -231,6 +270,24 @@ describe('the release gate', () => {
       expect(verdict({ enabled: ALL_OFF, tests: [] }, [ITEM]).unverified).toEqual(
         new Map([[1, ['no test for it in this run']]])
       )
+    })
+
+    it("fails an item absent from a run where its carrier file's project ran enabled", () => {
+      const index = new Map([['AT-999', new Set(['test/integ/contract/t.test.ts'])]])
+      const other = recorded('passed', 'contract', ['unrelated'])
+
+      expect(verdict({ enabled: { ...ALL_OFF, contract: true }, tests: [other] }, [ITEM], index).problems).toEqual([
+        'item 1 has no test in this run although its project ran: test/integ/contract/t.test.ts',
+      ])
+    })
+
+    it("leaves an absent item unverified where its carrier file's project did not run or was not enabled", () => {
+      const index = new Map([['AT-999', new Set(['test/integ/contract/t.test.ts', 'src/__tests__/t.test.ts'])]])
+
+      expect(verdict({ enabled: { ...ALL_OFF, contract: true }, tests: [] }, [ITEM], index).problems).toEqual([])
+      expect(
+        verdict({ enabled: ALL_OFF, tests: [recorded('skipped', 'contract', ['unrelated'])] }, [ITEM], index).problems
+      ).toEqual([])
     })
 
     it('blames a test declaring the id over the tests of a describe declaring it too', () => {

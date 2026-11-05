@@ -170,10 +170,14 @@ describe('AT-115: the house conventions hold in src/', () => {
       expect(calls.filter((call) => call.event === undefined).map((call) => call.at)).toEqual([])
     })
 
-    it('logs only events LogEvent declares', () => {
+    it('logs only events LogEvent declares, and reports the declared ones nothing logs', () => {
       const declared = logEvents()
+      const calls = logCalls()
+      const used = new Set(calls.map((call) => call.event))
 
-      expect(logCalls().filter((call) => call.event !== undefined && !declared.has(call.event))).toEqual([])
+      expect(calls.filter((call) => call.event !== undefined && !declared.has(call.event))).toEqual([])
+      // Reported rather than failed: an event can be declared for parity before anything logs it.
+      console.info(`LogEvent members no call logs: ${[...declared].filter((event) => !used.has(event)).join(', ')}`)
     })
   })
 
