@@ -15,6 +15,7 @@ export default defineConfig({
     unstubEnvs: true,
     restoreMocks: true,
     setupFiles: ['./test/setup.ts'],
+    reporters: ['default', './test/gate/reporter.ts'],
     projects: [
       {
         extends: true,
@@ -32,6 +33,7 @@ export default defineConfig({
         test: { name: 'build', include: ['test/build/**/*.test.ts'], testTimeout: 600_000, hookTimeout: 600_000 },
       },
       { extends: true, test: { name: 'compat', include: ['test/compat/**/*.test.ts'] } },
+      { extends: true, test: { name: 'gate', include: ['test/gate/**/*.test.ts'] } },
     ],
     coverage: {
       provider: 'v8',
