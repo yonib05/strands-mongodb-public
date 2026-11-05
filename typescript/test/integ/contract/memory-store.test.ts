@@ -1,11 +1,29 @@
-import { randomUUID } from 'node:crypto'
+import { Buffer } from 'node:buffer'
+import { createHash, randomUUID } from 'node:crypto'
 import { inspect } from 'node:util'
-import { type Logger, StorageError } from '@strands-agents/sdk'
-import { type Db, type Document, MongoClient } from 'mongodb'
+import {
+  Agent,
+  type BaseModelConfig,
+  type Logger,
+  MemoryManager,
+  Message,
+  Model,
+  ModelContentBlockDeltaEvent,
+  ModelContentBlockStartEvent,
+  ModelContentBlockStopEvent,
+  ModelMessageStartEvent,
+  ModelMessageStopEvent,
+  type ModelStreamEvent,
+  SessionManager,
+  StorageError,
+  TextBlock,
+} from '@strands-agents/sdk'
+import { type Db, type Document, MongoClient, MongoServerError, ObjectId } from 'mongodb'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { close } from '../../../src/client.js'
-import { ensure } from '../../../src/indexes.js'
-import { MongoDBMemoryStore } from '../../../src/memory-store.js'
+import { ensure, EXPIRES_FIELD, searchSupport } from '../../../src/indexes.js'
+import { MongoDBMemoryStore, UNSCOPED } from '../../../src/memory-store.js'
+import { MongoDBStorage } from '../../../src/storage.js'
 import type { MongoDBConfig, MongoDBMemoryStoreConfig } from '../../../src/types.js'
 import { tierUri } from '../../env.js'
 import { describeTier } from '../../tiers.js'
@@ -23,6 +41,43 @@ const ORDINARY_INDEXES = [
   'strands_scope_store_created_at',
   'strands_expires_at_ttl',
 ]
+
+const CONTENT = 'the user prefers dark mode'
+
+// How long the server's TTL monitor gets to sweep a document stamped to expire at once; its cycle is 60 s by default.
+const TTL_SWEEP_BUDGET_MS = 150_000
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// The smallest `Model` the SDK allows: one text block and a stop, so an `Agent` can complete a turn with no provider.
+class OneLineModel extends Model<BaseModelConfig> {
+  private _config: BaseModelConfig = { modelId: 'one-line' }
+
+  updateConfig(config: BaseModelConfig): void {
+    this._config = config
+  }
+
+  getConfig(): BaseModelConfig {
+    return this._config
+  }
+
+  async *stream(): AsyncIterable<ModelStreamEvent> {
+    yield new ModelMessageStartEvent({ type: 'modelMessageStartEvent', role: 'assistant' })
+    yield new ModelContentBlockStartEvent({ type: 'modelContentBlockStartEvent' })
+    yield new ModelContentBlockDeltaEvent({
+      type: 'modelContentBlockDeltaEvent',
+      delta: { type: 'textDelta', text: 'noted' },
+    })
+    yield new ModelContentBlockStopEvent({ type: 'modelContentBlockStopEvent' })
+    yield new ModelMessageStopEvent({ type: 'modelMessageStopEvent', stopReason: 'endTurn' })
+  }
+}
 
 class RecordingLogger implements Logger {
   readonly records: Array<[string, string]> = []
@@ -289,5 +344,361 @@ describeTier('contract', 'memory store', () => {
     ]) {
       expect(rendered).not.toContain(SECRET)
     }
+  })
+
+  it('AT-042, AT-043: add stores the same content once, the second call reporting the first id and leaving created_at alone', async () => {
+    const { store: facts, name } = store('dedup', { store: { writable: true, scope: 'tenant-a' } })
+
+    const first = await facts.add(CONTENT)
+    const before = (await db.collection(name).findOne({}))!.created_at as Date
+    const second = await facts.add(CONTENT)
+
+    expect(first).toEqual({ ids: [expect.stringMatching(/^[0-9a-f]{24}$/)], inserted: 1, duplicates: 0 })
+    expect(second).toEqual({ ids: first.ids, inserted: 0, duplicates: 1 })
+    expect(await db.collection(name).countDocuments({})).toBe(1)
+    expect((await db.collection(name).findOne({}))!.created_at).toEqual(before)
+  })
+
+  it('AT-043: a lost insert race is reported as the duplicate of the winner', async () => {
+    const { store: facts, name } = store('race', { store: { writable: true, scope: 'tenant-a' } })
+    const first = await facts.add(CONTENT)
+    const real = facts['_collection']()
+    let raised = false
+    const raisingOnce = Object.create(real, {
+      updateOne: {
+        value: async (...args: Parameters<typeof real.updateOne>) => {
+          if (raised) return real.updateOne(...args)
+          raised = true
+          throw new MongoServerError({ message: 'E11000 duplicate key error collection: injected', code: 11000 })
+        },
+      },
+    }) as typeof real
+    facts['_collection'] = () => raisingOnce
+
+    const second = await facts.add(CONTENT)
+
+    expect(raised).toBe(true)
+    expect(second).toEqual({ ids: first.ids, inserted: 0, duplicates: 1 })
+    expect(await db.collection(name).countDocuments({})).toBe(1)
+  })
+
+  it('AT-043: ten concurrent adds of one fact store one document', async () => {
+    const { store: facts, name } = store('concurrent', { store: { writable: true, scope: 'tenant-a' } })
+
+    const results = await Promise.all(Array.from({ length: 10 }, () => facts.add(CONTENT)))
+
+    expect(results.reduce((sum, result) => sum + result.inserted, 0)).toBe(1)
+    expect(results.reduce((sum, result) => sum + result.duplicates, 0)).toBe(9)
+    expect(new Set(results.flatMap((result) => result.ids)).size).toBe(1)
+    expect(await db.collection(name).countDocuments({})).toBe(1)
+  })
+
+  it('AT-046, AT-048a: the stored document carries the scope the store stamps, never one from metadata or the filter', async () => {
+    const { store: scoped, name } = store('stamps', { store: { writable: true, scope: 'tenant-a' } })
+    const filtered = new MongoDBMemoryStore({
+      name: 'filtered',
+      config: scoped['_connectionConfig'],
+      collection: name,
+      writable: true,
+      scope: 'tenant-a',
+      filter: { scope: 'tenant-b' },
+    })
+    const unscoped = new MongoDBMemoryStore({
+      name: 'nobody',
+      config: scoped['_connectionConfig'],
+      collection: name,
+      writable: true,
+    })
+
+    await scoped.add(CONTENT, { scope: 'tenant-b', _scope: 'tenant-b' })
+    await filtered.add('a fact')
+    await unscoped.add('a fact from a store nobody scoped')
+
+    const document = (await db.collection(name).findOne({ store_name: 'facts' }))!
+    expect(document.scope).toBe('tenant-a')
+    expect(document.content).toBe(CONTENT)
+    expect(document.content_hash).toBe(sha256(CONTENT))
+    expect(document.created_at).toBeInstanceOf(Date)
+    expect(document.metadata).toEqual({ scope: 'tenant-b', _scope: 'tenant-b' })
+    expect(await db.collection(name).countDocuments({ scope: 'tenant-b' })).toBe(0)
+    expect((await db.collection(name).findOne({ store_name: 'filtered' }))!.scope).toBe('tenant-a')
+    expect(unscoped.scope).toBe(UNSCOPED)
+    expect((await db.collection(name).findOne({ store_name: 'nobody' }))!.scope).toBe('__unscoped__')
+  })
+
+  it('AT-047b: the same fact in two scopes is two documents', async () => {
+    const { store: first, name } = store('two_scopes', { store: { writable: true, scope: 'tenant-a' } })
+    const second = new MongoDBMemoryStore({
+      name: 'facts',
+      config: first['_connectionConfig'],
+      collection: name,
+      writable: true,
+      scope: 'tenant-b',
+    })
+
+    const a = await first.add(CONTENT)
+    const b = await second.add(CONTENT)
+
+    expect([a.inserted, b.inserted]).toEqual([1, 1])
+    expect(a.ids).not.toEqual(b.ids)
+    expect(await db.collection(name).countDocuments({ scope: 'tenant-a' })).toBe(1)
+    expect(await db.collection(name).countDocuments({ scope: 'tenant-b' })).toBe(1)
+  })
+
+  it('AT-085: delete and deleteAll reach only this store, in one collection shared with a sibling and another scope', async () => {
+    const { store: mine, name } = store('deletes', { store: { writable: true, scope: 'tenant-a' } })
+    const sibling = new MongoDBMemoryStore({
+      name: 'notes',
+      config: mine['_connectionConfig'],
+      collection: name,
+      writable: true,
+      scope: 'tenant-a',
+    })
+    const elsewhere = new MongoDBMemoryStore({
+      name: 'facts',
+      config: mine['_connectionConfig'],
+      collection: name,
+      writable: true,
+      scope: 'tenant-b',
+    })
+    const first = await mine.add(CONTENT)
+    await mine.add('the user works in emea')
+    const theirs = await sibling.add(CONTENT)
+    const far = await elsewhere.add(CONTENT)
+    const collection = db.collection(name)
+
+    expect(await mine.delete(first.ids[0]!)).toBe(1)
+    expect(await mine.delete(first.ids[0]!)).toBe(0)
+    expect(await mine.delete(theirs.ids[0]!)).toBe(0)
+    expect(await mine.delete(far.ids[0]!)).toBe(0)
+    expect(await mine.delete(new ObjectId().toHexString())).toBe(0)
+    expect(await collection.countDocuments({})).toBe(3)
+
+    await mine.add(CONTENT)
+    expect(await mine.deleteAll()).toBe(2)
+    expect(await collection.countDocuments({ store_name: 'facts', scope: 'tenant-a' })).toBe(0)
+    expect(await collection.countDocuments({ store_name: 'notes' })).toBe(1)
+    expect(await collection.countDocuments({ scope: 'tenant-b' })).toBe(1)
+  })
+
+  it('AT-053c: search on a deployment without Atlas Search throws naming the code and what to connect to', async () => {
+    const { store: auto } = store('nosearch_auto', { store: { writable: true } })
+    const { store: vector } = store('nosearch_vector', { connection: { ...MANUAL_VECTOR, searchType: 'vector' } })
+    await auto.initialize()
+    const support = await searchSupport(auto['_collection'](), auto['_logger'])
+
+    if (support.available) {
+      expect(await vector.search({ vector: [0, 0, 0, 1] })).toEqual([])
+      return
+    }
+    expect((await auto.add(CONTENT)).inserted).toBe(1)
+    for (const facts of [auto, vector]) {
+      const error = await rejectionOf(facts.search('dark mode'))
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain(`server error code ${support.code}`)
+      expect(error.message).toContain('Atlas')
+      expect(error.message).not.toContain('createSearchIndexes')
+      expect(error.message).not.toContain('NOT READY')
+    }
+  })
+
+  it('AT-152: a memory written with ttlSeconds 0 is gone after the sweep, with no index call by the caller', async () => {
+    await client
+      .db('admin')
+      .command({ setParameter: 1, ttlMonitorSleepSecs: 1 })
+      .catch(() => undefined)
+    const { store: facts, name } = store('ttl', { store: { writable: true, scope: 'tenant-a', ttlSeconds: 0 } })
+    const collection = db.collection(name)
+
+    expect((await facts.add('this memory is written to be forgotten')).inserted).toBe(1)
+
+    const stamped = await collection.findOne({ scope: 'tenant-a' })
+    expect(stamped?.[EXPIRES_FIELD]).toBeInstanceOf(Date)
+    const deadline = Date.now() + TTL_SWEEP_BUDGET_MS
+    while ((await collection.countDocuments({ scope: 'tenant-a' })) > 0 && Date.now() < deadline) await sleep(1000)
+    expect(await collection.countDocuments({ scope: 'tenant-a' })).toBe(0)
+  })
+
+  it('AT-014: add and search on a wrong password fail without rendering it', async () => {
+    const config: MongoDBConfig = {
+      database: DATABASE,
+      connectionString: withPassword(tierUri('contract')!),
+      clientOptions: { serverSelectionTimeoutMS: 5000 },
+    }
+    configs.push(config)
+    const facts = new MongoDBMemoryStore({ name: 'facts', config, collection: fresh('leaky_ops'), writable: true })
+
+    for (const pending of [facts.add('a fact'), facts.search('dark mode')]) {
+      const error = await rejectionOf(pending)
+      expect(error).toBeInstanceOf(StorageError)
+      for (const rendered of [error.message, inspect(error, { depth: 4 })]) expect(rendered).not.toContain(SECRET)
+    }
+  })
+
+  it('AT-014: the succeeding path renders no password at debug, with an injected client beside a leaky string', async () => {
+    const injected = new MongoClient(tierUri('contract')!)
+    const logger = new RecordingLogger()
+    const config: MongoDBConfig = {
+      database: DATABASE,
+      client: injected,
+      connectionString: withPassword(tierUri('contract')!),
+      logger,
+    }
+    const facts = new MongoDBMemoryStore({ name: 'facts', config, collection: fresh('leaky_debug'), writable: true })
+
+    try {
+      await facts.initialize()
+      await facts.add(CONTENT)
+      facts.getTools()
+    } finally {
+      await facts.close()
+      await injected.close()
+    }
+
+    for (const rendered of [
+      ...logger.records.map(([, line]) => line),
+      inspect(facts, { depth: 5 }),
+      inspect(facts['_connection'], { depth: 5 }),
+    ]) {
+      expect(rendered).not.toContain(SECRET)
+    }
+  })
+
+  it('AT-052a, AT-044b: a MemoryManager over a writable store adds only its own two tools and initializes the store through the Agent', async () => {
+    const { store: facts } = store('manager', { store: { writable: true } })
+    const manager = new MemoryManager({ stores: [facts], addToolConfig: true })
+    const agent = new Agent({ model: new OneLineModel(), memoryManager: manager, printer: false })
+
+    await agent.initialize()
+
+    expect(facts['_initialized']).toBe(true)
+    expect(manager.getTools().map((tool) => tool.name)).toEqual(['search_memory', 'add_memory'])
+    expect(agent.tools.map((tool) => tool.name).sort()).toEqual(['add_memory', 'search_memory'])
+  })
+})
+
+describeTier('contract', 'session manager wiring through MongoDBStorage', () => {
+  const run = randomUUID().slice(0, 8)
+  const created: string[] = []
+  let client: MongoClient
+  let db: Db
+  let config: MongoDBConfig
+
+  function fresh(label: string): string {
+    const name = `session_${label}_${run}`
+    created.push(name)
+    return name
+  }
+
+  // The layout `SnapshotStorageAdapter` writes under the `session` namespace the manager applies to raw storage.
+  function snapshotsPrefix(sessionId: string, agentId: string): string {
+    return `${sessionId}/scopes/agent/${agentId}/snapshots/`
+  }
+
+  beforeAll(() => {
+    client = new MongoClient(tierUri('contract')!)
+    db = client.db(DATABASE)
+    config = { database: DATABASE, connectionString: tierUri('contract')! }
+  })
+
+  afterAll(async () => {
+    await close(config)
+    await Promise.all(
+      created.map((name) =>
+        db
+          .collection(name)
+          .drop()
+          .catch(() => false)
+      )
+    )
+    await client.close()
+  })
+
+  it('AT-027: a uuid7 snapshot set the SDK generates lists chronologically', async () => {
+    const storage = new MongoDBStorage(config, { collection: fresh('uuid7') }).namespace('session')
+    const manager = new SessionManager({ sessionId: 's1', storage })
+    const agent = new Agent({ id: 'a1', model: new OneLineModel(), printer: false })
+    const prefix = `${snapshotsPrefix('s1', 'a1')}immutable_history/`
+    const written: string[] = []
+
+    for (let index = 0; index < 25; index += 1) {
+      await manager.saveSnapshot({ target: agent, isLatest: false })
+      const keys = await storage.list(prefix)
+      written.push(...keys.filter((key) => !written.includes(key)))
+    }
+
+    expect(written).toHaveLength(25)
+    expect(await storage.list(prefix)).toEqual(written)
+    expect(await manager.listSnapshotIds({ target: agent })).toEqual(
+      written.map((key) => /snapshot_([\w-]+)\.json$/.exec(key)![1])
+    )
+  })
+
+  it('AT-081: the snapshots directory round-trips on the keys the SDK builds, scoped once whichever storage it is handed', async () => {
+    const name = fresh('layout')
+    const raw = new MongoDBStorage(config, { collection: name })
+    const scoped = raw.namespace('session')
+    const latest = `${snapshotsPrefix('s1', 'a1')}snapshot_latest.json`
+    const viaRaw = new SessionManager({ sessionId: 's1', storage: raw })
+    const viaScoped = new SessionManager({ sessionId: 's1', storage: scoped })
+    const agent = new Agent({ id: 'a1', model: new OneLineModel(), printer: false })
+
+    await viaRaw.saveSnapshot({ target: agent, isLatest: true })
+    const first = await scoped.read(latest)
+    agent.messages.push(new Message({ role: 'user', content: [new TextBlock('hello again')] }))
+    await viaScoped.saveSnapshot({ target: agent, isLatest: true })
+    const second = await scoped.read(latest)
+
+    expect(first).not.toBeNull()
+    expect(second).not.toBeNull()
+    expect(first).not.toEqual(second)
+    expect(Buffer.from(second!).toString('utf8')).toContain('hello again')
+    expect(await db.collection(name).findOne({ _id: `session/${latest}` } as Document)).not.toBeNull()
+    expect(await db.collection(name).countDocuments({})).toBe(1)
+
+    for (let index = 0; index < 3; index += 1) await viaScoped.saveSnapshot({ target: agent, isLatest: false })
+    const found = await scoped.list(snapshotsPrefix('s1', 'a1'))
+    expect(found).toHaveLength(4)
+    expect(found.slice(0, 3).every((key) => key.includes('/immutable_history/snapshot_'))).toBe(true)
+    expect(found[3]).toBe(latest)
+
+    const restored = new Agent({ id: 'a1', model: new OneLineModel(), printer: false })
+    expect(await viaScoped.restoreSnapshot({ target: restored })).toBe(true)
+    expect(restored.messages.map((message) => message.toJSON())).toEqual(
+      agent.messages.map((message) => message.toJSON())
+    )
+  })
+
+  it('AT-081: an Agent saves its session through MongoDBStorage and a second Agent restores it', async () => {
+    const name = fresh('agent')
+    const sessionId = `s_${run}`
+    const first = new Agent({
+      id: 'a1',
+      model: new OneLineModel(),
+      storage: new MongoDBStorage(config, { collection: name }),
+      sessionManager: new SessionManager({ sessionId }),
+      printer: false,
+    })
+
+    const result = await first.invoke('hello')
+    expect(String(result)).toContain('noted')
+    expect(first.messages).toHaveLength(2)
+
+    const second = new Agent({
+      id: 'a1',
+      model: new OneLineModel(),
+      storage: new MongoDBStorage(config, { collection: name }),
+      sessionManager: new SessionManager({ sessionId }),
+      printer: false,
+    })
+    await second.initialize()
+
+    expect(second.messages.map((message) => message.toJSON())).toEqual(
+      first.messages.map((message) => message.toJSON())
+    )
+    expect(await db.collection(name).countDocuments({})).toBe(1)
+    expect((await db.collection(name).findOne({}))!._id).toBe(
+      `session/${snapshotsPrefix(sessionId, 'a1')}snapshot_latest.json`
+    )
   })
 })
