@@ -33,11 +33,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        uses: actions/setup-node@v7.1.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -55,6 +54,9 @@ jobs:
       - name: Type check
         run: npm run type-check
 
+      - name: Build
+        run: npm run build
+
   test:
     name: Test - Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
@@ -68,11 +70,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
@@ -81,9 +82,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # No tier variable is set, so this is the unit tier with both coverage floors.
       - name: Run tests with coverage
         run: npm run test:coverage
-
-      - name: Build
-        run: npm run build
