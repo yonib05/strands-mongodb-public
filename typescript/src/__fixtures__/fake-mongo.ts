@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import type { Document, DriverInfo, IndexDescription, MongoClientOptions, SearchIndexDescription } from 'mongodb'
 
 type Filter = Record<string, unknown>
@@ -17,13 +18,29 @@ function compare(a: unknown, b: unknown): number {
   return (a as string | number) < (b as string | number) ? -1 : 1
 }
 
+// Only a type import of `mongodb` here: a runtime one would cycle through the tests that mock `MongoClient` with this file.
+function objectIdHex(value: unknown): string | undefined {
+  const bsonType: unknown = typeof value === 'object' && value !== null ? (value as Document)._bsontype : undefined
+  return bsonType === 'ObjectId' ? String(value) : undefined
+}
+
+// An `ObjectId` equals another, or the hex string the fake stores as `_id`, by its hex form.
+function equals(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  const [left, right] = [objectIdHex(a), objectIdHex(b)]
+  return (left ?? right) !== undefined && (left ?? a) === (right ?? b)
+}
+
 function matches(doc: Document, filter: Filter): boolean {
   return Object.entries(filter).every(([field, condition]) => {
+    if (field === '$and') return (condition as Filter[]).every((term) => matches(doc, term))
     const value = doc[field]
-    if (!isOperatorObject(condition)) return value === condition
+    if (!isOperatorObject(condition)) return equals(value, condition)
     return Object.entries(condition).every(([op, operand]) => {
       if (value === undefined) return false
       switch (op) {
+        case '$eq':
+          return equals(value, operand)
         case '$gte':
           return compare(value, operand) >= 0
         case '$gt':
@@ -37,17 +54,21 @@ function matches(doc: Document, filter: Filter): boolean {
   })
 }
 
-function isPlainData(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null) return true
+function isPlainObject(value: unknown): value is Document {
+  if (typeof value !== 'object' || value === null) return false
   const prototype: unknown = Object.getPrototypeOf(value)
-  return prototype === Object.prototype || prototype === null || Array.isArray(value) || value instanceof Date
+  return prototype === Object.prototype || prototype === null
 }
 
-// `structuredClone` strips the prototype off a BSON value such as `Binary`, so those are kept by reference.
+// `structuredClone` strips the prototype off a BSON value such as `Binary` or a nested `ObjectId`, so those are kept by reference.
+function cloneValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneValue)
+  if (value instanceof Date) return new Date(value.getTime())
+  return isPlainObject(value) ? clone(value) : value
+}
+
 function clone(doc: Document): Document {
-  return Object.fromEntries(
-    Object.entries(doc).map(([field, value]) => [field, isPlainData(value) ? structuredClone(value) : value])
-  )
+  return Object.fromEntries(Object.entries(doc).map(([field, value]) => [field, cloneValue(value)]))
 }
 
 function sortBy(docs: Document[], spec: SortSpec): Document[] {
@@ -115,6 +136,18 @@ function evaluate(expression: unknown, doc: Document, vars: Document): unknown {
     default:
       throw new Error(`FakeCollection does not support ${op}`)
   }
+}
+
+// The server copies a filter's equality fields onto an upserted document.
+function equalityFields(filter: Filter): Document {
+  return Object.fromEntries(Object.entries(filter).filter(([, condition]) => !isOperatorObject(condition)))
+}
+
+const SEARCH_STAGES: ReadonlySet<string> = new Set(['$vectorSearch', '$search', '$rankFusion'])
+
+function isSearchPipeline(pipeline: Document[]): boolean {
+  const first = pipeline[0]
+  return first !== undefined && SEARCH_STAGES.has(Object.keys(first)[0] ?? '')
 }
 
 function runPipeline(docs: Document[], pipeline: Document[]): Document[] {
@@ -220,6 +253,12 @@ export class FakeCollection {
   failure: Error | undefined
   /** Thrown while a `find` cursor drains, after `find` itself returned. */
   drainFailure: Error | undefined
+  /** What `aggregate` answers for a search pipeline, which no fake can run; the stages are still recorded. */
+  searchResults: Document[] = []
+  /** Thrown by the next `updateOne` that would insert, in place of the insert, as the unique index does when a concurrent upsert won. */
+  insertFailure: Error | undefined
+  /** Reported by `deleteOne` and `deleteMany` in place of the real count once set, so a passthrough can be told from arithmetic. */
+  deletedCount: number | undefined
   private listSearchIndexesFailures: Error[] = []
   private listSearchIndexReads = 0
 
@@ -300,10 +339,42 @@ export class FakeCollection {
     return description.name ?? 'default'
   }
 
-  async findOne(filter: Filter = {}): Promise<Document | null> {
-    this.record('findOne', filter)
+  async findOne(filter: Filter = {}, options: { projection?: Document } = {}): Promise<Document | null> {
+    this.record('findOne', filter, options)
     const doc = this.docs.find((candidate) => matches(candidate, filter))
-    return doc === undefined ? null : clone(doc)
+    if (doc === undefined) return null
+    return options.projection === undefined ? clone(doc) : project(clone(doc), options.projection)
+  }
+
+  /** Only `$setOnInsert` is modelled: the one update operator this package sends. */
+  async updateOne(
+    filter: Filter,
+    update: Document,
+    options: { upsert?: boolean } = {}
+  ): Promise<{
+    acknowledged: true
+    matchedCount: number
+    modifiedCount: number
+    upsertedCount: number
+    upsertedId: string | null
+  }> {
+    this.record('updateOne', filter, update, options)
+    const operators = Object.keys(update)
+    if (operators.some((operator) => operator !== '$setOnInsert')) {
+      throw new Error(`FakeCollection does not support ${operators.join(', ')}`)
+    }
+    const unchanged = { acknowledged: true as const, modifiedCount: 0, upsertedCount: 0, upsertedId: null }
+    if (this.docs.some((candidate) => matches(candidate, filter))) return { ...unchanged, matchedCount: 1 }
+    if (!options.upsert) return { ...unchanged, matchedCount: 0 }
+    if (this.insertFailure !== undefined) {
+      const failure = this.insertFailure
+      this.insertFailure = undefined
+      throw failure
+    }
+    const _id = randomBytes(12).toString('hex')
+    this.docs.push({ _id, ...equalityFields(filter), ...clone((update.$setOnInsert as Document | undefined) ?? {}) })
+    this.exists = true
+    return { acknowledged: true, matchedCount: 0, modifiedCount: 0, upsertedCount: 1, upsertedId: _id }
   }
 
   async replaceOne(
@@ -327,17 +398,16 @@ export class FakeCollection {
   async deleteOne(filter: Filter): Promise<{ acknowledged: true; deletedCount: number }> {
     this.record('deleteOne', filter)
     const index = this.docs.findIndex((candidate) => matches(candidate, filter))
-    if (index === -1) return { acknowledged: true, deletedCount: 0 }
-    this.docs.splice(index, 1)
-    return { acknowledged: true, deletedCount: 1 }
+    if (index !== -1) this.docs.splice(index, 1)
+    return { acknowledged: true, deletedCount: this.deletedCount ?? (index === -1 ? 0 : 1) }
   }
 
   async deleteMany(filter: Filter = {}): Promise<{ acknowledged: true; deletedCount: number }> {
     this.record('deleteMany', filter)
     const kept = this.docs.filter((candidate) => !matches(candidate, filter))
-    const deletedCount = this.docs.length - kept.length
+    const removed = this.docs.length - kept.length
     this.docs.splice(0, this.docs.length, ...kept)
-    return { acknowledged: true, deletedCount }
+    return { acknowledged: true, deletedCount: this.deletedCount ?? removed }
   }
 
   find(filter: Filter = {}, options: { projection?: Document } = {}): FakeCursor {
@@ -346,10 +416,13 @@ export class FakeCollection {
     return new FakeCursor(found, options.projection, this.drainFailure)
   }
 
-  /** Runs the pipeline over the stored documents; only the stages the storage search emits are understood. */
+  /** Answers a search pipeline with `searchResults`; runs any other over the stored documents. */
   aggregate(pipeline: Document[]): { toArray(): Promise<Document[]> } {
     this.record('aggregate', pipeline)
-    return { toArray: async () => runPipeline(this.docs.map(clone), pipeline) }
+    return {
+      toArray: async () =>
+        isSearchPipeline(pipeline) ? this.searchResults.map(clone) : runPipeline(this.docs.map(clone), pipeline),
+    }
   }
 
   listIndexes(): { toArray(): Promise<IndexDescription[]> } {

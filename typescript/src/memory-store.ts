@@ -1,19 +1,25 @@
+import { createHash } from 'node:crypto'
 import {
   type ExtractionConfig,
+  type JSONValue,
   type Logger,
   type MemoryEntry,
   type MemoryStore,
   type SearchOptions,
   StorageError,
+  type Tool,
 } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
-import { type Collection, type Document, MongoError } from 'mongodb'
-import { type Capabilities, type Connection, resolve } from './client.js'
-import { validate } from './filter.js'
+import { BSON, type Collection, type Document, MongoError, MongoServerError, ObjectId } from 'mongodb'
+import { type Capabilities, close as release, type Connection, resolve } from './client.js'
+import { compose, validate } from './filter.js'
 import {
   checkTtl,
+  CONTENT_FIELD,
   declaredFilterFields,
+  embed,
   ensure,
+  EXPIRES_FIELD,
   memorySearchSpecs,
   memorySpecs,
   rankFusionSupport,
@@ -22,12 +28,15 @@ import {
   SearchIndexNotReady,
   type SearchIndexSpec,
   searchSupport,
+  VECTOR_FIELD,
   vectorMode,
 } from './indexes.js'
 import { defaultLogger, logFields } from './logging.js'
+import { checkQueryKeys, hybridStages, SCORE_FIELD, textStages, vectorStages } from './pipeline.js'
 import { annotate, type SpanBase, traced } from './telemetry.js'
 import {
   DEFAULT_MAX_SEARCH_RESULTS,
+  type MongoDBAddResult,
   type MongoDBConfig,
   type MongoDBMemoryStoreConfig,
   type MongoDBSearchQuery,
@@ -59,6 +68,75 @@ const MISSING_DATABASE =
 
 const EMBEDDER_ON_AUTO_EMBED =
   "strands_mongodb: 'embedder' is set, but this store is on the Atlas AutoEmbeddings path, where the deployment embeds the text. Remove 'embedder', or set 'embeddingDimensions' and 'similarity' in the connection config to embed client-side."
+
+// The server's code for a unique index violation, which a concurrent upsert losing the insert race reports.
+const DUPLICATE_KEY = 11000
+
+/** The query keys a search may carry, as the caller set them. */
+interface QueryKeys {
+  queryText?: string | undefined
+  queryVector?: number[] | undefined
+}
+
+/** What one search needs to build its stages once the tier is chosen. */
+interface StageInputs extends QueryKeys {
+  queryFilter: Record<string, unknown>
+  limit: number
+  oversamplingFactor?: number | undefined
+}
+
+function notWritable(name: string, call: string): string {
+  return `strands_mongodb: the memory store '${name}' is not writable, so it does not accept ${call}. Set 'writable': true in its configuration to enable writes. It defaults to false so that a store built for retrieval does not start accepting model-distilled extraction writes, or deletions, that nobody asked for.`
+}
+
+function contentHash(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex')
+}
+
+// Strict, with no fallback to matching the raw string, so a malformed id throws instead of quietly deleting nothing.
+function objectId(memoryId: unknown): ObjectId {
+  if (typeof memoryId !== 'string' || !/^[0-9a-f]{24}$/i.test(memoryId) || !ObjectId.isValid(memoryId)) {
+    const rendered = typeof memoryId === 'string' ? `'${memoryId}'` : String(memoryId)
+    throw new TypeError(
+      `strands_mongodb: 'memoryId' is ${rendered}, which is not a 24-character hex ObjectId. Pass the '_id' a search result carries in its metadata, which is where a deletable id comes from.`
+    )
+  }
+  return new ObjectId(memoryId)
+}
+
+// Drops the absent keys, so the pipeline builders see a key only when the caller set it.
+function present(keys: QueryKeys): { queryText?: string; queryVector?: number[] } {
+  return {
+    ...(keys.queryText !== undefined && { queryText: keys.queryText }),
+    ...(keys.queryVector !== undefined && { queryVector: keys.queryVector }),
+  }
+}
+
+/**
+ * Merges a document's stored metadata with this package's reserved keys, the reserved keys winning.
+ *
+ * @param caller - `metadata` as the document carries it, or `undefined` when it carries none
+ * @param reserved - The reserved keys and their values for this result
+ * @param context - The store and namespace named in the collision log, and the logger it goes to
+ * @returns A new object holding only JSON: stored BSON values are rendered as relaxed EJSON
+ */
+export function mergeMetadata(
+  caller: Document | undefined,
+  reserved: Record<string, JSONValue>,
+  context: { storeName: string; namespace: string; logger: Logger }
+): Record<string, JSONValue> {
+  // Relaxed EJSON, so a stored `Date` or `ObjectId` reaches the caller as JSON rather than as an object the type cannot hold.
+  const merged = BSON.EJSON.serialize(caller ?? {}, { relaxed: true }) as Record<string, JSONValue>
+  const collisions = Object.keys(reserved)
+    .filter((key) => Object.hasOwn(merged, key))
+    .sort()
+  if (collisions.length > 0) {
+    context.logger.warn(
+      `strands_mongodb: metadata key(s) ${collisions.map((key) => `'${key}'`).join(', ')} on a document in the memory store '${context.storeName}' collide with the keys this package sets on every result, so the stored value(s) were dropped from the returned entry and this package's own value(s) kept. Rename them in whatever wrote them; a stored '_scope' that won would make a document report a scope it was not stored in. | ${logFields('reserved_key_collision', { namespace: context.namespace })}`
+    )
+  }
+  return { ...merged, ...reserved }
+}
 
 /** Where a search limit may come from, highest priority first. */
 export interface Limits {
@@ -235,14 +313,298 @@ export class MongoDBMemoryStore implements MemoryStore {
   }
 
   /**
-   * Searches this store's scope. Implemented with the other operations.
+   * Stores one memory in this store's scope, at most once: the same content again keeps one document.
    *
-   * @param _query - A plain string, or a `MongoDBSearchQuery`
-   * @param _options - The SDK's per-call options
-   * @returns The matching entries, best first
+   * @param content - The memory to store, verbatim; never included in an error or a log line
+   * @param metadata - Optional caller metadata, stored nested and returned by `search`
+   * @returns The document id with the insert and duplicate counts; a duplicate reports the existing id
+   * @throws TypeError if this store is not writable, before any network call
+   * @throws RangeError if `embedder` returns a vector whose length is not `embeddingDimensions`
+   * @throws StorageError if `initialize()` fails or a driver call fails
    */
-  async search(_query: string | MongoDBSearchQuery, _options?: SearchOptions): Promise<MemoryEntry[]> {
-    throw new Error('not implemented')
+  add(content: string, metadata?: Record<string, JSONValue>): Promise<MongoDBAddResult> {
+    return this._run('add', 'adding a memory to', async () => {
+      // Before `initialize()`, so a read-only store rejects a write without connecting or creating an index.
+      if (!this.writable) throw new TypeError(notWritable(this.name, 'add()'))
+      await this.initialize()
+      // Before the upsert, so a failed embedding stores nothing rather than a memory no vector search finds.
+      const vector = this._embedder === undefined ? undefined : await this._embed(content)
+
+      // The server copies a selector's equality fields onto an inserted document; they are also the unique index's key.
+      const selector = { scope: this.scope, store_name: this.name, content_hash: contentHash(content) }
+      // `$setOnInsert`, not `$set`: a duplicate keeps its first-seen timestamp and expiry.
+      const createdAt = new Date()
+      const insert: Document = { [CONTENT_FIELD]: content, created_at: createdAt }
+      // Nested, never merged into the root, so a caller's `scope` key cannot write into another scope.
+      if (metadata !== undefined && Object.keys(metadata).length > 0) insert.metadata = { ...metadata }
+      if (vector !== undefined) insert[VECTOR_FIELD] = vector
+      if (this.ttlSeconds !== undefined) insert[EXPIRES_FIELD] = new Date(createdAt.getTime() + this.ttlSeconds * 1000)
+
+      const collection = this._collection()
+      let result
+      try {
+        result = await collection.updateOne(selector, { $setOnInsert: insert }, { upsert: true })
+      } catch (error) {
+        // Two concurrent upserts both inserted and this one lost; the memory is stored, so report the winner's document.
+        if (error instanceof MongoServerError && error.code === DUPLICATE_KEY)
+          return this._existing(collection, selector)
+        throw error
+      }
+      if (result.upsertedId === null) return this._existing(collection, selector)
+      annotate('strands_mongodb.duplicate', false, this._logger)
+      return { ids: [String(result.upsertedId)], inserted: 1, duplicates: 0 }
+    })
+  }
+
+  /**
+   * Returns the memories that best match a query, most relevant first, from the first prepared tier that fits it.
+   *
+   * @param query - A plain string, or a `MongoDBSearchQuery` carrying `text`, `vector`, `filter`, `limit`, `oversamplingFactor`
+   * @param options - The SDK's per-call options; a query's `limit` wins over `maxSearchResults`
+   * @returns Up to the resolved limit of entries, each with `_id`, `_relevanceScore`, `_searchType` and `_scope` in its metadata
+   * @throws TypeError if the query sets neither or both vector keys where nothing fuses them, the filter is invalid,
+   * or no prepared tier fits the query's shape
+   * @throws RangeError if a limit is below 1, or the candidate count is out of bounds
+   * @throws StorageError if the deployment cannot search, no tier is ready, `initialize()` fails, or a driver call fails
+   */
+  search(query: string | MongoDBSearchQuery, options?: SearchOptions): Promise<MemoryEntry[]> {
+    return this._run('search', 'searching', async () => {
+      // First, so a search that fails early still records what was requested.
+      annotate('strands_mongodb.search.requested', this._searchType, this._logger)
+      const parts: MongoDBSearchQuery = typeof query === 'string' ? { text: query } : query
+      let queryText = parts.text
+      let queryVector = parts.vector
+      const callerFilter = parts.filter
+
+      const limit = resolveLimit({
+        query: parts.limit,
+        options: options?.maxSearchResults,
+        instance: this.maxSearchResults,
+      })
+      // Only the mode-independent check; `vectorStages` runs the rest once the tier is known.
+      checkQueryKeys({ ...present({ queryText, queryVector }), fusionPossible: this._fusionPossible })
+      if (callerFilter !== undefined && Object.keys(callerFilter).length > 0) {
+        validate(callerFilter, { declaredFields: this._declaredFields })
+      }
+      const queryFilter = compose([this.filter, callerFilter], { scope: this.scope, storeName: this.name })
+
+      await this.initialize()
+      if (this._tiers.length === 0 && this._canSearch() && !this._waitedForATier) await this._waitForATier()
+      if (this._embedsQuery(queryText, queryVector)) {
+        queryVector = await this._embed(queryText!)
+        // Kept for hybrid, which feeds `text` to `$search`; anywhere else both keys would be refused.
+        if (!this._tiers.includes('hybrid')) queryText = undefined
+      }
+      const tier = this._pickTier(queryText, queryVector)
+      annotate('strands_mongodb.search.tier', tier, this._logger)
+      const stages = this._stages(tier, {
+        queryText,
+        queryVector,
+        queryFilter,
+        limit,
+        oversamplingFactor: parts.oversamplingFactor,
+      })
+
+      const documents = await this._collection().aggregate(stages).toArray()
+      const scored = documents.map((document): [number, MemoryEntry] => {
+        // `?? 0`: a stage that projected nothing yields `null`, which would break the bound comparison.
+        const score = Number(document[SCORE_FIELD] ?? 0)
+        // `_scope` comes from this store, never from the document, so a document cannot report another scope.
+        const metadata = mergeMetadata(
+          document.metadata,
+          { _id: String(document._id), _relevanceScore: score, _searchType: tier, _scope: this.scope },
+          { storeName: this.name, namespace: this._target, logger: this._logger }
+        )
+        return [score, { content: String(document[CONTENT_FIELD] ?? ''), storeName: this.name, metadata }]
+      })
+
+      const results = this._withinBounds(scored)
+      annotate('strands_mongodb.result_count', results.length, this._logger)
+      return results
+    })
+  }
+
+  /**
+   * Deletes one memory by the `_id` a search result reported, within this store's scope, name and filter.
+   *
+   * @param memoryId - The `_id` string from a search result's metadata
+   * @returns `1` if a document was deleted, `0` if none matched: already gone, another scope, or another store
+   * @throws TypeError if this store is not writable, or `memoryId` is not a 24-character hex ObjectId string
+   * @throws StorageError if `initialize()` fails or a driver call fails
+   */
+  delete(memoryId: string): Promise<number> {
+    return this._run('delete', 'deleting a memory from', async () => {
+      // Writability first, so a read-only store says "not writable" rather than complaining about the id.
+      if (!this.writable) throw new TypeError(notWritable(this.name, 'delete()'))
+      const _id = objectId(memoryId)
+
+      await this.initialize()
+      const predicate = compose([this.filter], { scope: this.scope, storeName: this.name })
+      const result = await this._collection().deleteOne({ ...predicate, _id })
+      annotate('strands_mongodb.deleted_count', result.deletedCount, this._logger)
+      return result.deletedCount
+    })
+  }
+
+  /**
+   * Deletes every memory this store can read: its scope and name, narrowed by any configured `filter`.
+   *
+   * @returns How many documents the server deleted
+   * @throws TypeError if this store is not writable, before any network call
+   * @throws StorageError if `initialize()` fails or a driver call fails
+   */
+  deleteAll(): Promise<number> {
+    return this._run('delete_all', 'deleting every memory in', async () => {
+      if (!this.writable) throw new TypeError(notWritable(this.name, 'deleteAll()'))
+
+      await this.initialize()
+      const predicate = compose([this.filter], { scope: this.scope, storeName: this.name })
+      const result = await this._collection().deleteMany(predicate)
+      annotate('strands_mongodb.deleted_count', result.deletedCount, this._logger)
+      return result.deletedCount
+    })
+  }
+
+  /**
+   * Returns the agent tools this store contributes, which is none.
+   *
+   * @returns An empty array, which `MemoryManager` extends its tool list by
+   */
+  getTools(): Tool[] {
+    return []
+  }
+
+  /**
+   * Releases the connection shared by every store built from this config, closing the client only if this
+   * package created it. Idempotent; a later operation opens a fresh pool.
+   */
+  close(): Promise<void> {
+    return release(this._connectionConfig)
+  }
+
+  // Projects only `_id`, because the caller already has the content.
+  private async _existing(collection: Collection<Document>, selector: Document): Promise<MongoDBAddResult> {
+    const document = await collection.findOne(selector, { projection: { _id: 1 } })
+    annotate('strands_mongodb.duplicate', true, this._logger)
+    return { ids: document === null ? [] : [String(document._id)], inserted: 0, duplicates: 1 }
+  }
+
+  // Whether `search` should embed `text`: an embedder, no caller vector, and a tier to use it.
+  private _embedsQuery(queryText: string | undefined, queryVector: number[] | undefined): boolean {
+    if (this._embedder === undefined || queryText === undefined || queryVector !== undefined) return false
+    const first = this._tiers[0]
+    return first === 'hybrid' || first === 'vector'
+  }
+
+  private _embed(text: string): Promise<number[]> {
+    // The constructor refuses an embedder on the AutoEmbeddings path, so the mode here is the manual one.
+    const mode = this._mode as Extract<VectorMode, { autoEmbed: false }>
+    return embed(this._embedder!, text, { dimensions: mode.dimensions, setting: 'embeddingDimensions' })
+  }
+
+  // The first prepared tier, in preference order, that fits the query's keys; the result reports the tier that ran.
+  private _pickTier(queryText: string | undefined, queryVector: number[] | undefined): ResolvedSearchType {
+    if (queryText !== undefined && queryVector !== undefined && !this._tiers.includes('hybrid')) {
+      // Thrown rather than answered from one tier, which would silently ignore one of the two keys.
+      throw new TypeError(
+        `strands_mongodb: this query sets both 'text' and 'vector', which only the hybrid tier reads, and the hybrid tier is not available on ${this._target}. The tiers that are: ${this._tiers.join(', ') || 'none'}. Drop one of the two keys to use one of them, or see the initialization log for why the fused tier was not offered.`
+      )
+    }
+
+    if (this._tiers.length === 0) {
+      const capabilities = this._capabilities
+      if (capabilities === undefined || !capabilities.search) {
+        // A phrase rather than a bare code, because with no cached probe there is no code to name.
+        const code = capabilities?.noSearchCode
+        const evidence = code === undefined ? 'no probe result cached' : `server error code ${code}`
+        throw new StorageError(
+          `strands_mongodb: cannot search ${this._target} because this deployment does not run Atlas Search. Its capability probe came back with ${evidence}, and this package has no tier that answers without a search process, so there is nothing to fall back to. Writes still work, which is why initialize() only warned. Point 'connectionString' at MongoDB Atlas, or at a local Atlas deployment started with 'atlas deployments setup --type local'.`
+        )
+      }
+      throw new StorageError(
+        `strands_mongodb: 'searchType' is 'auto' and no search tier on ${this._target} was ready within 'indexReadyTimeout', so no query can be answered yet. Each tier's status is logged above. The tiers are retried with backoff, and searches raise until one is ready.`
+      )
+    }
+
+    for (const tier of this._tiers) {
+      // Hybrid needs `text` for `$search` and the vector path's own key, which with AutoEmbeddings is `text` again.
+      if (tier === 'hybrid' && queryText !== undefined && this._vectorKey(queryText, queryVector) !== undefined) {
+        return 'hybrid'
+      }
+      if (tier === 'text' && queryText !== undefined) return 'text'
+      if (tier === 'vector' && this._vectorKey(queryText, queryVector) !== undefined) return 'vector'
+    }
+
+    const [needed, because] = this._mode.autoEmbed
+      ? ["'text'", 'the deployment embeds it on the Atlas AutoEmbeddings path']
+      : ["'vector'", "'embeddingDimensions' and 'similarity' select the manual-vector path"]
+    throw new TypeError(
+      `strands_mongodb: this query cannot be answered by any search tier prepared on ${this._target}, which is: ${this._tiers.join(', ')}. The text tier needs 'text' on the query. The vector tier needs ${needed}, because ${because}. Supply that key, or set 'searchType' to a tier this query fits.`
+    )
+  }
+
+  // Whichever query key the vector tier reads on this store's path: AutoEmbeddings embeds `text`, the manual path takes `vector`.
+  private _vectorKey(queryText: string | undefined, queryVector: number[] | undefined): string | number[] | undefined {
+    return this._mode.autoEmbed ? queryText : queryVector
+  }
+
+  private _stages(tier: ResolvedSearchType, inputs: StageInputs): Document[] {
+    const { queryText, queryVector, queryFilter, limit, oversamplingFactor } = inputs
+    const vector = {
+      mode: this._mode,
+      limit,
+      queryFilter,
+      ...(queryVector !== undefined && { queryVector }),
+      ...(oversamplingFactor !== undefined && { oversamplingFactor }),
+    }
+    if (tier === 'hybrid') {
+      // `_pickTier` returns `hybrid` only when `text` and the key its vector branch needs are both present.
+      return hybridStages({
+        ...vector,
+        vectorIndexName: this._indexNames.vector!,
+        textIndexName: this._indexNames.text!,
+        queryText: queryText!,
+      })
+    }
+    if (tier === 'vector') {
+      // Both keys pass through: `vectorStages` checks the mode itself.
+      return vectorStages({ ...vector, indexName: this._indexNames.vector!, ...present({ queryText }) })
+    }
+    // `_pickTier` returns `text` only when `queryText` is set.
+    return textStages({ queryText: queryText!, indexName: this._indexNames.text!, limit, queryFilter })
+  }
+
+  // Client-side, because the tiers' scores are on different scales and a server-side bound would differ per tier.
+  private _withinBounds(scored: Array<[number, MemoryEntry]>): MemoryEntry[] {
+    const minimum = this.minScore
+    const maximum = this.maxScore
+    let name: 'minScore' | 'maxScore'
+    let bound: number
+    let kept: Array<[number, MemoryEntry]>
+    if (minimum !== undefined) {
+      name = 'minScore'
+      bound = minimum
+      kept = scored.filter(([score]) => score >= minimum)
+    } else if (maximum !== undefined) {
+      name = 'maxScore'
+      bound = maximum
+      kept = scored.filter(([score]) => score <= maximum)
+    } else {
+      return scored.map(([, entry]) => entry)
+    }
+
+    // Logged only when the bound dropped something, so polling a corpus mongot has not indexed yet does not fill the log.
+    if (kept.length !== scored.length) {
+      this._logger.debug(
+        `strands_mongodb: ${name} ${bound} on ${this._target} kept ${kept.length} of ${scored.length} results (applied after the query). | ${logFields('score_bound_applied', { namespace: this._target })}`
+      )
+    }
+    return kept.map(([, entry]) => entry)
+  }
+
+  // Whether the deployment has Atlas Search, from the capability probe `initialize()` ran.
+  private _canSearch(): boolean {
+    return this._capabilities?.search === true
   }
 
   private _tierRetryDue(): boolean {

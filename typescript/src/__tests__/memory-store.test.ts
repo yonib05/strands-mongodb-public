@@ -1,15 +1,24 @@
+import { createHash } from 'node:crypto'
 import { inspect } from 'node:util'
 import { SpanStatusCode } from '@opentelemetry/api'
-import { type Logger, type MemoryStore, StorageError } from '@strands-agents/sdk'
+import { type Logger, type MemoryEntry, MemoryManager, type MemoryStore, StorageError } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
-import { type MongoClient, MongoNetworkTimeoutError, MongoServerError } from 'mongodb'
+import { type Document, type MongoClient, MongoNetworkTimeoutError, MongoServerError, ObjectId } from 'mongodb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConstructedMongoClient, FakeCollection, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
 import { oneSpan, recordSpans, spansNamed } from '../__fixtures__/spans.js'
 import { close } from '../client.js'
-import { memorySearchSpecs, READY_TIMEOUT_SECONDS, SearchIndexNotReady } from '../indexes.js'
+import {
+  CONTENT_FIELD,
+  EXPIRES_FIELD,
+  memorySearchSpecs,
+  READY_TIMEOUT_SECONDS,
+  SearchIndexNotReady,
+  VECTOR_FIELD,
+} from '../indexes.js'
 import {
   DEFAULT_COLLECTION,
+  mergeMetadata,
   MongoDBMemoryStore,
   resolveLimit,
   TIER_RETRY_MAX_SECONDS,
@@ -17,7 +26,13 @@ import {
   UNSCOPED,
 } from '../memory-store.js'
 import { MongoDBStorage } from '../storage.js'
-import { DEFAULT_MAX_SEARCH_RESULTS, type MongoDBConfig, type MongoDBMemoryStoreConfig } from '../types.js'
+import {
+  DEFAULT_MAX_SEARCH_RESULTS,
+  type MongoDBConfig,
+  type MongoDBMemoryStoreConfig,
+  type ResolvedSearchType,
+  RESERVED_METADATA_KEYS,
+} from '../types.js'
 
 vi.mock('mongodb', async (importOriginal) => ({
   ...(await importOriginal<typeof import('mongodb')>()),
@@ -40,6 +55,11 @@ const MONGO_7 = { version: '7.0.12', versionArray: [7, 0, 12, 0] }
 const NO_SEARCH_CODE = 31082
 
 const SPECS = Object.fromEntries(memorySearchSpecs({ database: 'appdb' }).map((spec) => [spec.name, spec]))
+
+// The query for every vector-tier test, aligned with the seeded vectors on the first axis.
+const QUERY_VECTOR = [1, 0, 0, 0]
+
+const CONTENT = 'the user prefers dark mode'
 
 let port = 0
 
@@ -154,10 +174,65 @@ function errorOf(run: () => unknown): Error {
   throw new Error('expected a throw')
 }
 
+// A four-dimension embedder over `dark`, `mode`, `coffee` and `tea`, recording what it embeds.
 class WordEmbedder implements Embedder {
+  readonly calls: string[] = []
+
+  constructor(private readonly dimensions = 4) {}
+
   async embed(text: string): Promise<number[]> {
-    return [text.length, 0, 0, 0]
+    this.calls.push(text)
+    const words = text.toLowerCase().split(/\s+/)
+    const vector = ['dark', 'mode', 'coffee', 'tea'].map((word) => 0.01 + words.filter((w) => w === word).length)
+    return [...vector, ...Array<number>(this.dimensions).fill(0.01)].slice(0, this.dimensions)
   }
+}
+
+// Puts a store in the state `initialize()` would leave it in, without the probes: the tiers that came up and what a search answers with.
+function prepared(
+  built: Setup,
+  options: { documents?: Document[]; tiers?: ResolvedSearchType[]; failure?: Error } = {}
+): FakeCollection {
+  const { store, collection } = built
+  store['_initialized'] = true
+  store['_tiers'] = options.tiers ?? ['text']
+  collection.searchResults = options.documents ?? [{ _id: 'abc', content: CONTENT }]
+  collection.failure = options.failure
+  return collection
+}
+
+function argsOf(collection: FakeCollection, method: string): unknown[] {
+  const found = collection.calls.filter((call) => call.method === method)
+  expect(found).toHaveLength(1)
+  return found[0]!.args
+}
+
+// The one recorded search pipeline.
+function stagesOf(collection: FakeCollection): Document[] {
+  return argsOf(collection, 'aggregate')[0] as Document[]
+}
+
+function stageNames(collection: FakeCollection): string[] {
+  return stagesOf(collection).map((stage) => Object.keys(stage)[0]!)
+}
+
+function stage(collection: FakeCollection, operator: string): Document {
+  const found = stagesOf(collection).filter((candidate) => operator in candidate)
+  expect(found).toHaveLength(1)
+  return found[0]![operator] as Document
+}
+
+function metadataOf(entry: MemoryEntry): Record<string, unknown> {
+  expect(entry.metadata).toBeDefined()
+  return entry.metadata!
+}
+
+function insertOf(collection: FakeCollection): Document {
+  return (argsOf(collection, 'updateOne')[1] as Document).$setOnInsert as Document
+}
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
 afterEach(() => {
@@ -649,12 +724,6 @@ describe('MongoDBMemoryStore', () => {
       const error = await rejectionOf(store.initialize())
 
       expect(error).toBe(failure)
-    })
-
-    it('declares search but leaves it to the operations', async () => {
-      const { store } = setup()
-
-      await expect(store.search('dark mode')).rejects.toThrow('not implemented')
     })
   })
 
@@ -1177,6 +1246,944 @@ describe('MongoDBMemoryStore', () => {
         .map((span) => span.attributes['strands_mongodb.indexes.probe'])
       expect(probes).toEqual(['collation', 'search', 'rank_fusion', 'collation'])
       expect(children.filter((span) => span.name === 'strands_mongodb.indexes.ensure')).toHaveLength(3)
+    })
+  })
+
+  describe('AT-052a: getTools is present and returns nothing', () => {
+    it('returns an empty array, which the manager extends its tool list by', () => {
+      const tools = setup().store.getTools()
+
+      expect(Array.isArray(tools)).toBe(true)
+      expect(tools).toEqual([])
+    })
+
+    it('AT-044b: a manager holding a writable store registers only its own two tools', () => {
+      const { store } = setup({ store: { writable: true } })
+
+      const manager = new MemoryManager({ stores: [store], addToolConfig: true })
+
+      expect(manager.getTools().map((tool) => tool.name)).toEqual(['search_memory', 'add_memory'])
+    })
+  })
+
+  describe('AT-044a, AT-044d: addMessages stays absent and add does not, with no stub standing in', () => {
+    it('is absent by the in operator and add is present as a function', () => {
+      const { store } = setup({ store: { writable: true } })
+
+      expect('addMessages' in store).toBe(false)
+      expect(typeof store.add).toBe('function')
+      expect(() => new MemoryManager({ stores: [store] })).not.toThrow()
+    })
+  })
+
+  describe('AT-057: reserved metadata keys win', () => {
+    const logger = (): RecordingLogger => new RecordingLogger()
+    const context = (log = logger()): { storeName: string; namespace: string; logger: RecordingLogger } => ({
+      storeName: 'facts',
+      namespace: 'appdb.memory',
+      logger: log,
+    })
+
+    it('keeps the reserved value over a colliding caller key, not renamed and not nested', () => {
+      const merged = mergeMetadata(
+        { _scope: 'somebody-elses-scope', topic: 'cats' },
+        { _scope: 'tenant-a', _id: 'abc', _searchType: 'vector', _relevanceScore: 0.5 },
+        context()
+      )
+
+      expect(merged._scope).toBe('tenant-a')
+      expect(merged.topic).toBe('cats')
+      expect(Object.values(merged)).not.toContain('somebody-elses-scope')
+    })
+
+    it('leaves non-colliding caller keys untouched', () => {
+      expect(mergeMetadata({ topic: 'cats', source: 'chat' }, { _id: 'abc' }, context())).toEqual({
+        topic: 'cats',
+        source: 'chat',
+        _id: 'abc',
+      })
+    })
+
+    it('logs the collision at warn with the key, the store and the namespace', () => {
+      const log = logger()
+
+      mergeMetadata({ _id: 'spoofed' }, { _id: 'real' }, context(log))
+
+      expect(log.records).toHaveLength(1)
+      const [level, line] = log.records[0]!
+      expect(level).toBe('warn')
+      expect(line).toContain("'_id'")
+      expect(line).toContain("'facts'")
+      expect(line).toMatch(/\| event=reserved_key_collision, namespace=appdb\.memory$/)
+      expect(line).not.toContain('spoofed')
+    })
+
+    it('defends every key in RESERVED_METADATA_KEYS', () => {
+      for (const key of RESERVED_METADATA_KEYS) {
+        expect(mergeMetadata({ [key]: 'caller' }, { [key]: 'reserved' }, context())[key]).toBe('reserved')
+      }
+    })
+
+    it('renders stored BSON values as relaxed EJSON, so the entry carries only JSON', () => {
+      const merged = mergeMetadata(
+        { seen: new Date('2026-01-02T03:04:05Z'), ref: new ObjectId('65f1c2d3e4f5a6b7c8d9e0f1'), tier: 'gold' },
+        { _id: 'abc' },
+        context()
+      )
+
+      expect(merged).toEqual({
+        seen: { $date: '2026-01-02T03:04:05Z' },
+        ref: { $oid: '65f1c2d3e4f5a6b7c8d9e0f1' },
+        tier: 'gold',
+        _id: 'abc',
+      })
+      expect(JSON.parse(JSON.stringify(merged))).toEqual(merged)
+    })
+  })
+
+  describe('AT-058: writable gates add', () => {
+    it('rejects add on a read-only store with a TypeError naming the key, before any round trip', async () => {
+      const { store, collection } = setup()
+
+      const error = await rejectionOf(store.add(CONTENT))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain("'writable'")
+      expect(error.message).toContain("'facts'")
+      expect(error.message).toContain('add()')
+      expect(error.message).not.toContain(CONTENT)
+      expect(collection.calls).toEqual([])
+      expect(store['_initialized']).toBe(false)
+    })
+  })
+
+  describe('AT-076, AT-041: every caller input is checked before the network', () => {
+    it.each([
+      [{ text: 'dark mode', vector: QUERY_VECTOR }, 'both'],
+      [{ limit: 5 }, 'neither'],
+    ])('rejects a query %j setting both or neither vector key with a TypeError', async (query, expected) => {
+      const { store, collection } = setup()
+
+      const error = await rejectionOf(store.search(query))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain(expected)
+      expect(collection.calls).toEqual([])
+    })
+
+    it.each([
+      [{ 'metadata.tier': 'gold' }, 'filterFields'],
+      [{ $where: 'sleep(1000)' }, '$where'],
+    ])('validates a per-query filter %j before the query runs', async (filter, expected) => {
+      const { store, collection } = setup()
+
+      const error = await rejectionOf(store.search({ text: 'dark mode', filter }))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain(expected)
+      expect(collection.calls).toEqual([])
+    })
+
+    it('rejects a limit below 1 in options or in a query with a RangeError, naming the key', async () => {
+      const { store, collection } = setup()
+
+      const options = await rejectionOf(store.search('dark mode', { maxSearchResults: 0 }))
+      const query = await rejectionOf(store.search({ text: 'dark mode', limit: -1 }))
+
+      expect(options).toBeInstanceOf(RangeError)
+      expect(options.message).toContain("'maxSearchResults' is 0")
+      expect(query).toBeInstanceOf(RangeError)
+      expect(query.message).toContain("'limit' is -1")
+      expect(collection.calls).toEqual([])
+      expect(store['_initialized']).toBe(false)
+    })
+  })
+
+  describe('AT-077: what the store sends and what it maps back', () => {
+    it('sends the scope, the store and both caller filters, in that order', async () => {
+      const built = setup({
+        store: { scope: 'tenant-a', filter: { 'metadata.tier': 'gold' } },
+        config: { filterFields: ['metadata.tier', 'metadata.region'] },
+      })
+      const collection = prepared(built)
+
+      await built.store.search({ text: 'dark mode', filter: { 'metadata.region': 'emea' } })
+
+      expect(stage(collection, '$match')).toEqual({
+        $and: [
+          { scope: { $eq: 'tenant-a' } },
+          { store_name: { $eq: 'facts' } },
+          { 'metadata.tier': 'gold' },
+          { 'metadata.region': 'emea' },
+        ],
+      })
+    })
+
+    it('reads _scope off the store, so a stored _scope cannot make a document report another scope', async () => {
+      const built = setup({ store: { scope: 'tenant-a' } })
+      prepared(built, {
+        documents: [{ _id: 'abc', content: CONTENT, score: 0.9, metadata: { _scope: 'tenant-b', tier: 'gold' } }],
+      })
+
+      const entries = await built.store.search('dark mode')
+
+      expect(metadataOf(entries[0]!)._scope).toBe('tenant-a')
+      expect(metadataOf(entries[0]!).tier).toBe('gold')
+      const collisions = built.logger.lines('warn').filter((line) => line.includes('event=reserved_key_collision'))
+      expect(collisions).toHaveLength(1)
+      expect(collisions[0]).toContain("'_scope'")
+      expect(collisions[0]).not.toContain('tenant-b')
+    })
+
+    it.each([[{ _id: 'abc', content: CONTENT }], [{ _id: 'abc', content: CONTENT, score: null }]])(
+      'maps an unscored document %j to zero rather than failing',
+      async (document) => {
+        const built = setup()
+        prepared(built, { documents: [document] })
+
+        const entries = await built.store.search('dark mode')
+
+        expect(metadataOf(entries[0]!)._relevanceScore).toBe(0)
+      }
+    )
+
+    it('lets only the metadata the document carries reach the entry, beside the four reserved keys', async () => {
+      const built = setup({ store: { scope: 'tenant-a' } })
+      prepared(built, {
+        documents: [
+          {
+            _id: 'abc',
+            content: CONTENT,
+            scope: 'tenant-a',
+            store_name: 'facts',
+            content_hash: 'f'.repeat(64),
+            created_at: new Date(),
+            score: 1.5,
+            metadata: { tier: 'gold' },
+          },
+        ],
+      })
+
+      const entries = await built.store.search('dark mode')
+
+      expect(entries).toHaveLength(1)
+      expect(entries[0]!.content).toBe(CONTENT)
+      expect(entries[0]!.storeName).toBe('facts')
+      expect(metadataOf(entries[0]!)).toEqual({
+        tier: 'gold',
+        _id: 'abc',
+        _relevanceScore: 1.5,
+        _searchType: 'text',
+        _scope: 'tenant-a',
+      })
+    })
+
+    it('returns stored Date and ObjectId metadata as relaxed EJSON, never as objects a JSONValue cannot hold', async () => {
+      const built = setup()
+      const ref = new ObjectId()
+      prepared(built, {
+        documents: [
+          { _id: ref, content: CONTENT, score: 0.5, metadata: { seen: new Date('2026-01-02T03:04:05Z'), ref } },
+        ],
+      })
+
+      const entries = await built.store.search('dark mode')
+
+      expect(metadataOf(entries[0]!)).toEqual({
+        seen: { $date: '2026-01-02T03:04:05Z' },
+        ref: { $oid: ref.toHexString() },
+        _id: ref.toHexString(),
+        _relevanceScore: 0.5,
+        _searchType: 'text',
+        _scope: UNSCOPED,
+      })
+    })
+
+    it('answers with the first prepared tier that fits a plain string, and reports it', async () => {
+      const built = setup()
+      prepared(built, { tiers: ['hybrid', 'vector', 'text'] })
+
+      const entries = await built.store.search('dark mode')
+
+      expect(stageNames(built.collection)).toEqual(['$rankFusion', '$set', '$limit'])
+      expect(metadataOf(entries[0]!)._searchType).toBe('hybrid')
+    })
+
+    it('initializes itself on the first search, so nobody has to call initialize()', async () => {
+      const { store, collection } = setup()
+      collection.searchResults = [{ _id: 'abc', content: CONTENT, score: 0.9 }]
+
+      const entries = await store.search('dark mode')
+
+      expect(store['_initialized']).toBe(true)
+      expect(entries.map((entry) => entry.content)).toEqual([CONTENT])
+      expect(metadataOf(entries[0]!)._searchType).toBe('hybrid')
+    })
+  })
+
+  describe('AT-078: the query no tier fits', () => {
+    it('names the build, not a missing module, when search exists and no tier is ready', () => {
+      const built = setup()
+      prepared(built, { tiers: [] })
+      built.store['_capabilities'] = { search: true, rankFusion: true }
+
+      const error = errorOf(() => built.store['_pickTier']('dark mode', undefined))
+
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain("was ready within 'indexReadyTimeout'")
+      expect(error.message).not.toContain('does not run Atlas Search')
+    })
+
+    it('AT-053c: names the code the probe reported and what to connect to where the deployment cannot search', async () => {
+      const built = withoutSearch()
+
+      const error = await rejectionOf(built.store.search('dark mode'))
+
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain(`server error code ${NO_SEARCH_CODE}`)
+      expect(error.message).toContain('Atlas')
+      expect(error.message).not.toContain('createSearchIndexes')
+    })
+
+    it('says no probe result is cached where none ran', async () => {
+      const built = setup()
+      prepared(built, { tiers: [] })
+
+      const error = await rejectionOf(built.store.search('dark mode'))
+
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain('no probe result cached')
+    })
+
+    it('names the key to add when a manual-vector store gets a plain string', async () => {
+      const built = setup({ config: { ...MANUAL_VECTOR, searchType: 'vector' } })
+      prepared(built, { tiers: ['vector'] })
+
+      const error = await rejectionOf(built.store.search('dark mode'))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain("needs 'vector'")
+      expect(error.message).toContain("'embeddingDimensions'")
+      expect(error.message).toContain('which is: vector')
+    })
+
+    it('names the text key when an AutoEmbeddings vector store gets only a vector', async () => {
+      const built = setup({ config: { searchType: 'text' } })
+      prepared(built, { tiers: ['text'] })
+
+      const error = await rejectionOf(built.store.search({ vector: QUERY_VECTOR }))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain("needs 'text'")
+      expect(error.message).toContain('AutoEmbeddings')
+    })
+  })
+
+  describe('AT-157: the query shape only fusion can read', () => {
+    it('still rejects both keys on the AutoEmbeddings path before the network', async () => {
+      const { store, collection } = setup()
+
+      const error = await rejectionOf(store.search({ text: 'dark mode', vector: QUERY_VECTOR }))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain('no interpretation')
+      expect(collection.calls).toEqual([])
+    })
+
+    it.each(['vector', 'text'] as const)('rejects both keys on a store naming the %s tier', async (searchType) => {
+      const { store, collection } = setup({ config: { ...MANUAL_VECTOR, searchType } })
+
+      const error = await rejectionOf(store.search({ text: 'dark mode', vector: QUERY_VECTOR }))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain('no interpretation')
+      expect(collection.calls).toEqual([])
+    })
+
+    it('answers both keys from the hybrid tier on a manual store that could fuse', async () => {
+      const { store, collection } = setup({ config: MANUAL_VECTOR })
+      collection.searchResults = [{ _id: 'abc', content: CONTENT, score: 0.03 }]
+
+      const entries = await store.search({ text: 'dark mode', vector: QUERY_VECTOR })
+
+      expect(stageNames(collection)).toEqual(['$rankFusion', '$set', '$limit'])
+      expect(metadataOf(entries[0]!)._searchType).toBe('hybrid')
+    })
+
+    it('raises rather than answering from one key on a manual store that cannot fuse', async () => {
+      const { store, collection } = withoutFusion({ config: MANUAL_VECTOR })
+      collection.searchResults = [{ _id: 'abc', content: CONTENT, score: 0.9 }]
+
+      const error = await rejectionOf(store.search({ text: 'dark mode', vector: QUERY_VECTOR }))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain('hybrid')
+      expect(error.message).toContain('vector, text')
+      expect(count(collection, 'aggregate')).toBe(0)
+    })
+  })
+
+  describe('AT-079, AT-150: the score bound on scores this test chose', () => {
+    const documents = (): Document[] =>
+      [0.9, 0.5, 0.1].map((score, index) => ({ _id: String(index), content: `fact ${index}`, score }))
+
+    it.each([
+      [{ minScore: 0.5 }, ['fact 0', 'fact 1']],
+      [{ maxScore: 0.5 }, ['fact 1', 'fact 2']],
+      [{ minScore: 0.1 }, ['fact 0', 'fact 1', 'fact 2']],
+    ])('keeps a result scoring exactly the bound %j, dropping only its own side', async (bound, kept) => {
+      const built = setup({ store: bound })
+      prepared(built, { documents: documents() })
+
+      const entries = await built.store.search('dark mode')
+
+      expect(entries.map((entry) => entry.content)).toEqual(kept)
+    })
+
+    it('logs the bound, its value and both counts at debug only when something was dropped', async () => {
+      const built = setup({ store: { maxScore: 0.5 } })
+      prepared(built, { documents: documents() })
+
+      await built.store.search('dark mode')
+
+      const applied = built.logger.lines('debug').filter((line) => line.includes('event=score_bound_applied'))
+      expect(applied).toHaveLength(1)
+      expect(applied[0]).toContain('maxScore 0.5 on appdb.memory kept 2 of 3 results (applied after the query).')
+      expect(applied[0]).toMatch(/\| event=score_bound_applied, namespace=appdb\.memory$/)
+    })
+
+    it('logs nothing when the bound drops nothing', async () => {
+      const built = setup({ store: { minScore: 0.1 } })
+      prepared(built, { documents: documents() })
+
+      await built.store.search('dark mode')
+
+      expect(built.logger.lines('debug').filter((line) => line.includes('score_bound_applied'))).toEqual([])
+    })
+
+    it('applies the bound to the fused score on an explicit hybrid store', async () => {
+      const built = setup({ store: { minScore: 0.0164 }, config: { ...MANUAL_VECTOR, searchType: 'hybrid' } })
+      const collection = prepared(built, {
+        tiers: ['hybrid'],
+        documents: [0.0328, 0.0164, 0.0161].map((score, index) => ({
+          _id: String(index),
+          content: `fact ${index}`,
+          score,
+        })),
+      })
+
+      const entries = await built.store.search({ text: 'dark mode', vector: QUERY_VECTOR })
+
+      expect(entries.map((entry) => entry.content)).toEqual(['fact 0', 'fact 1'])
+      expect(stageNames(collection)).toEqual(['$rankFusion', '$set', '$limit'])
+      expect(metadataOf(entries[0]!)._searchType).toBe('hybrid')
+    })
+  })
+
+  describe('AT-082: deleting one memory', () => {
+    it('sends the read predicate with the id added as a sibling of $and', async () => {
+      const built = setup({
+        store: { scope: 'tenant-a', filter: { 'metadata.tier': 'gold' }, writable: true },
+        config: { filterFields: ['metadata.tier'] },
+      })
+      const collection = prepared(built)
+      collection.deletedCount = 1
+      const memoryId = new ObjectId()
+
+      const deleted = await built.store.delete(memoryId.toHexString())
+
+      expect(deleted).toBe(1)
+      expect(argsOf(collection, 'deleteOne')).toEqual([
+        {
+          $and: [{ scope: { $eq: 'tenant-a' } }, { store_name: { $eq: 'facts' } }, { 'metadata.tier': 'gold' }],
+          _id: memoryId,
+        },
+      ])
+    })
+
+    it('reports the count the server gave rather than its own', async () => {
+      const built = setup({ store: { writable: true } })
+      prepared(built).deletedCount = 7
+
+      expect(await built.store.delete(new ObjectId().toHexString())).toBe(7)
+    })
+
+    it('removes the document the id names and leaves the rest', async () => {
+      const { store, collection } = setup({ store: { writable: true, scope: 'tenant-a' } })
+      const mine = await store.add(CONTENT)
+      await store.add('the user works in emea')
+
+      expect(await store.delete(mine.ids[0]!)).toBe(1)
+      expect(collection.docs.map((doc) => doc.content)).toEqual(['the user works in emea'])
+      expect(await store.delete(mine.ids[0]!)).toBe(0)
+    })
+
+    it.each(['', 'nope', 'z'.repeat(24), '6a96a03ca471f4a00187022', 12, null])(
+      'rejects %j as a memory id with a TypeError naming the argument, sending nothing',
+      async (memoryId) => {
+        const built = setup({ store: { writable: true } })
+        const collection = prepared(built)
+
+        const error = await rejectionOf(built.store.delete(memoryId as string))
+
+        expect(error).toBeInstanceOf(TypeError)
+        expect(error.message).toContain("'memoryId'")
+        expect(error.message).toContain('24-character hex ObjectId')
+        expect(count(collection, 'deleteOne')).toBe(0)
+      }
+    )
+  })
+
+  describe('AT-083: deleting every memory this store can see', () => {
+    it('sends exactly the read predicate, configured filter included', async () => {
+      const built = setup({
+        store: { scope: 'tenant-a', filter: { 'metadata.tier': 'gold' }, writable: true },
+        config: { filterFields: ['metadata.tier'] },
+      })
+      const collection = prepared(built)
+
+      await built.store.deleteAll()
+
+      expect(argsOf(collection, 'deleteMany')).toEqual([
+        { $and: [{ scope: { $eq: 'tenant-a' } }, { store_name: { $eq: 'facts' } }, { 'metadata.tier': 'gold' }] },
+      ])
+    })
+
+    it('passes the count the server gave through', async () => {
+      const built = setup({ store: { writable: true } })
+      prepared(built).deletedCount = 12
+
+      expect(await built.store.deleteAll()).toBe(12)
+    })
+
+    it('AT-085: empties its own store and leaves a sibling in the same scope and collection', async () => {
+      const client = new FakeMongoClient()
+      const { store: mine } = setup({ client, store: { writable: true, scope: 'tenant-a' } })
+      const { store: sibling, collection } = setup({
+        client,
+        store: { writable: true, scope: 'tenant-a', name: 'notes' },
+      })
+      await mine.add(CONTENT)
+      await mine.add('the user works in emea')
+      await sibling.add(CONTENT)
+
+      expect(await mine.deleteAll()).toBe(2)
+      expect(collection.docs.map((doc) => doc.store_name)).toEqual(['notes'])
+    })
+  })
+
+  describe('AT-084: deletion is a write', () => {
+    it.each(['delete', 'deleteAll'] as const)('refuses %s on a read-only store before it initializes', async (call) => {
+      const { store, collection } = setup()
+
+      const error = await rejectionOf(
+        call === 'delete' ? store.delete(new ObjectId().toHexString()) : store.deleteAll()
+      )
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain("'writable'")
+      expect(error.message).toContain(`${call}()`)
+      expect(store['_initialized']).toBe(false)
+      expect(collection.calls).toEqual([])
+    })
+
+    it('checks writability before the id, so a read-only store never complains about the id', async () => {
+      const error = await rejectionOf(setup().store.delete('nope'))
+
+      expect(error.message).toContain("'writable'")
+      expect(error.message).not.toContain("'memoryId'")
+    })
+  })
+
+  describe('AT-042, AT-043, AT-046, AT-048a: add writes once, in the scope of this store', () => {
+    it('sends the dedup selector and $setOnInsert, and reports one insert', async () => {
+      const { store, collection } = setup({ store: { writable: true, scope: 'tenant-a' } })
+
+      const result = await store.add(CONTENT, { source: 'chat' })
+
+      const [selector, update, options] = argsOf(collection, 'updateOne')
+      expect(selector).toEqual({ scope: 'tenant-a', store_name: 'facts', content_hash: sha256(CONTENT) })
+      expect(Object.keys(update as Document)).toEqual(['$setOnInsert'])
+      expect(options).toEqual({ upsert: true })
+      const insert = insertOf(collection)
+      expect(insert[CONTENT_FIELD]).toBe(CONTENT)
+      expect(insert.created_at).toBeInstanceOf(Date)
+      expect(insert.metadata).toEqual({ source: 'chat' })
+      expect(insert).not.toHaveProperty(VECTOR_FIELD)
+      expect(result).toEqual({ ids: [String(collection.docs[0]!._id)], inserted: 1, duplicates: 0 })
+      expect(result.ids[0]).toMatch(/^[0-9a-f]{24}$/)
+    })
+
+    it('stores the same content twice as one document, the second call reporting the first id', async () => {
+      const { store, collection } = setup({ store: { writable: true } })
+
+      const first = await store.add(CONTENT)
+      const createdAt = collection.docs[0]!.created_at
+      const second = await store.add(CONTENT)
+
+      expect(second).toEqual({ ids: first.ids, inserted: 0, duplicates: 1 })
+      expect(collection.docs).toHaveLength(1)
+      expect(collection.docs[0]!.created_at).toBe(createdAt)
+      expect(argsOf(collection, 'findOne')).toEqual([
+        { scope: UNSCOPED, store_name: 'facts', content_hash: sha256(CONTENT) },
+        { projection: { _id: 1 } },
+      ])
+    })
+
+    it('reports a lost insert race as a duplicate of the winner rather than an error', async () => {
+      const { store, collection } = setup({ store: { writable: true } })
+      const first = await store.add(CONTENT)
+      collection.docs.splice(0, collection.docs.length)
+      collection.insertFailure = serverError(11000, 'E11000 duplicate key error collection: injected')
+      collection.docs.push({
+        _id: new ObjectId(first.ids[0]),
+        content: CONTENT,
+        scope: UNSCOPED,
+        store_name: 'facts',
+        content_hash: sha256(CONTENT),
+      })
+
+      const second = await store.add(CONTENT)
+
+      expect(second).toEqual({ ids: first.ids, inserted: 0, duplicates: 1 })
+      expect(count(collection, 'updateOne')).toBe(2)
+    })
+
+    it('reports no id when the matched document vanished between the upsert and the read', async () => {
+      const { store, collection } = setup({ store: { writable: true } })
+      collection.docs.push({ _id: new ObjectId(), content: 'other', scope: UNSCOPED, store_name: 'facts' })
+      collection.insertFailure = serverError(11000, 'E11000 duplicate key error collection: injected')
+
+      expect(await store.add(CONTENT)).toEqual({ ids: [], inserted: 0, duplicates: 1 })
+    })
+
+    it('rethrows a server error that is not a duplicate key, wrapped by the operation', async () => {
+      const { store, collection } = setup({ store: { writable: true } })
+      await store.initialize()
+      collection.failure = serverError(8, 'pretend failure')
+
+      const error = await rejectionOf(store.add(CONTENT))
+
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain('adding a memory to appdb.memory failed')
+    })
+
+    it('nests caller metadata, so a scope key inside it is inert and stays visible', async () => {
+      const { store, collection } = setup({ store: { writable: true, scope: 'tenant-a' } })
+
+      await store.add('a fact', { scope: 'tenant-b', _scope: 'tenant-b' })
+
+      expect(collection.docs[0]!.scope).toBe('tenant-a')
+      expect(collection.docs[0]!.metadata).toEqual({ scope: 'tenant-b', _scope: 'tenant-b' })
+    })
+
+    it('stores no metadata field for absent or empty metadata', async () => {
+      const { store, collection } = setup({ store: { writable: true } })
+
+      await store.add('a fact')
+      await store.add('another fact', {})
+
+      expect(collection.docs.map((doc) => 'metadata' in doc)).toEqual([false, false])
+    })
+
+    it('never consults the configured filter on the write path', async () => {
+      const { store, collection } = setup({
+        store: { writable: true, scope: 'tenant-a', filter: { scope: 'tenant-b' } },
+      })
+
+      await store.add('a fact')
+
+      expect(collection.docs[0]!.scope).toBe('tenant-a')
+    })
+
+    it('stamps the sentinel scope on a store nobody scoped', async () => {
+      const { store, collection } = setup({ store: { writable: true } })
+
+      await store.add('a fact from a store nobody scoped')
+
+      expect(collection.docs[0]!.scope).toBe(UNSCOPED)
+    })
+
+    it('AT-047b: writes the same fact in two scopes as two documents', async () => {
+      const client = new FakeMongoClient()
+      const { store: first } = setup({ client, store: { writable: true, scope: 'tenant-a' } })
+      const { store: second, collection } = setup({ client, store: { writable: true, scope: 'tenant-b' } })
+
+      const a = await first.add(CONTENT)
+      const b = await second.add(CONTENT)
+
+      expect(a.inserted).toBe(1)
+      expect(b.inserted).toBe(1)
+      expect(a.ids).not.toEqual(b.ids)
+      expect(collection.docs.map((doc) => doc.scope).sort()).toEqual(['tenant-a', 'tenant-b'])
+    })
+
+    it('embeds before the upsert and refuses a vector of the wrong length, writing nothing', async () => {
+      const { store, collection } = setup({
+        store: { writable: true, embedder: new WordEmbedder(3) },
+        config: MANUAL_VECTOR,
+      })
+
+      const error = await rejectionOf(store.add('dark'))
+
+      expect(error).toBeInstanceOf(RangeError)
+      expect(error.message).toContain('3-dimension vector')
+      expect(error.message).toContain("'embeddingDimensions' is 4")
+      expect(count(collection, 'updateOne')).toBe(0)
+    })
+  })
+
+  describe('AT-153, AT-154: expiry is stamped from the clock of the document itself', () => {
+    it.each([0, 1, 3600, 86400])('stamps expires_at exactly %i seconds after created_at', async (ttl) => {
+      const { store, collection } = setup({ store: { writable: true, ttlSeconds: ttl } })
+
+      await store.add(CONTENT)
+
+      const insert = insertOf(collection)
+      expect((insert[EXPIRES_FIELD] as Date).getTime() - (insert.created_at as Date).getTime()).toBe(ttl * 1000)
+    })
+
+    it('stamps no field at all without a TTL', async () => {
+      const { store, collection } = setup({ store: { writable: true } })
+
+      await store.add(CONTENT)
+
+      expect(store.ttlSeconds).toBeUndefined()
+      expect(insertOf(collection)).not.toHaveProperty(EXPIRES_FIELD)
+    })
+
+    it('puts the stamp in $setOnInsert beside created_at, so a duplicate does not extend it', async () => {
+      const { store, collection } = setup({ store: { writable: true, ttlSeconds: 60 } })
+
+      await store.add(CONTENT)
+
+      const update = argsOf(collection, 'updateOne')[1] as Document
+      expect(Object.keys(update)).toEqual(['$setOnInsert'])
+      expect(update.$setOnInsert).toHaveProperty(EXPIRES_FIELD)
+    })
+  })
+
+  describe('AT-243: an embedder completes the manual path', () => {
+    it('stores the vector in the insert', async () => {
+      const embedder = new WordEmbedder()
+      const { store, collection } = setup({ store: { writable: true, embedder }, config: MANUAL_VECTOR })
+
+      await store.add(CONTENT)
+
+      expect(embedder.calls).toEqual([CONTENT])
+      expect(insertOf(collection)[VECTOR_FIELD]).toEqual([1.01, 1.01, 0.01, 0.01])
+    })
+
+    it.each([
+      [['vector', 'text'], 'vector'],
+      [['hybrid', 'vector', 'text'], 'hybrid'],
+    ] as Array<[ResolvedSearchType[], ResolvedSearchType]>)(
+      'embeds a plain string for the tiers %j and answers from %s',
+      async (tiers, tier) => {
+        const embedder = new WordEmbedder()
+        const built = setup({ store: { embedder }, config: MANUAL_VECTOR })
+        const collection = prepared(built, { tiers })
+
+        const found = await built.store.search('dark')
+
+        expect(embedder.calls).toEqual(['dark'])
+        expect(metadataOf(found[0]!)._searchType).toBe(tier)
+        expect(JSON.stringify(stagesOf(collection))).toContain('[1.01,0.01,0.01,0.01]')
+      }
+    )
+
+    it('embeds nothing on a text-only store', async () => {
+      const embedder = new WordEmbedder()
+      const built = setup({ store: { embedder }, config: MANUAL_VECTOR })
+      prepared(built, { tiers: ['text'] })
+
+      await built.store.search('dark')
+
+      expect(embedder.calls).toEqual([])
+    })
+
+    it('uses a caller vector as given', async () => {
+      const embedder = new WordEmbedder()
+      const built = setup({ store: { embedder }, config: MANUAL_VECTOR })
+      prepared(built, { tiers: ['vector', 'text'] })
+
+      await built.store.search({ vector: QUERY_VECTOR })
+
+      expect(embedder.calls).toEqual([])
+    })
+  })
+
+  describe('AT-242: the first search waits for a build', () => {
+    it('waits for the build and answers from the tier that came up', async () => {
+      const { store, collection } = withoutFusion()
+      reporting(collection, 'PENDING', 'vector_index', 'text_index')
+      await store.initialize()
+      expect(tiers(store)).toEqual([])
+      collection.setSearchIndexStatus('vector_index', 'READY')
+      collection.setSearchIndexStatus('text_index', 'READY')
+      collection.searchResults = [{ _id: 'abc', content: 'dark mode', score: 0.9 }]
+
+      const found = await store.search({ text: 'dark' })
+
+      expect(tiers(store)).toEqual(['vector', 'text'])
+      expect(found.map((entry) => metadataOf(entry)._searchType)).toEqual(['vector'])
+      expect(store['_waitedForATier']).toBe(true)
+    })
+
+    it('fails the search when the build never finishes, and only the first search waits', async () => {
+      vi.useFakeTimers()
+      const { store, collection } = withoutFusion({ config: { indexReadyTimeout: 1 } })
+      reporting(collection, 'PENDING', 'vector_index', 'text_index')
+      await store.initialize()
+
+      const first = rejectionOf(store.search({ text: 'dark' }))
+      await vi.advanceTimersByTimeAsync(1500)
+      const error = await first
+      const reads = collection.searchIndexReads
+      const second = await rejectionOf(store.search({ text: 'dark' }))
+
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain('was ready')
+      expect(second.message).toContain('was ready')
+      expect(collection.searchIndexReads).toBe(reads)
+    })
+
+    it('shares one wait between searches that arrive during it', async () => {
+      const { store, collection } = withoutFusion()
+      reporting(collection, 'PENDING', 'vector_index', 'text_index')
+      await store.initialize()
+      collection.setSearchIndexStatus('vector_index', 'READY')
+      collection.setSearchIndexStatus('text_index', 'READY')
+      collection.searchResults = [{ _id: 'abc', content: 'dark mode', score: 0.9 }]
+      const reads = collection.searchIndexReads
+
+      const found = await Promise.all([store.search({ text: 'dark' }), store.search({ text: 'dark' })])
+
+      expect(found.map((entries) => entries.length)).toEqual([1, 1])
+      // Two reads for the wait and two for the retry that follows it; a second wait would double this.
+      expect(collection.searchIndexReads - reads).toBe(4)
+    })
+  })
+
+  describe('AT-080, AT-014: a driver error names the operation and the namespace, and nothing else', () => {
+    afterEach(() => close({ database: 'appdb', connectionString: LEAKY_URI }))
+
+    const VERBS = {
+      add: 'adding a memory to',
+      search: 'searching',
+      delete: 'deleting a memory from',
+      deleteAll: 'deleting every memory in',
+    } as const
+
+    it.each(Object.keys(VERBS) as Array<keyof typeof VERBS>)(
+      'wraps an unwrapped driver error out of %s with the verb, the namespace and the cause',
+      async (call) => {
+        const logger = new RecordingLogger()
+        const store = new MongoDBMemoryStore({
+          name: 'facts',
+          config: { database: 'appdb', connectionString: LEAKY_URI, logger },
+          writable: true,
+        })
+        const collection = ConstructedMongoClient.built[0]!.db('appdb').collection('memory')
+        const failure = serverError(8, 'pretend failure, carrying no credentials')
+        prepared({ store, collection, client: ConstructedMongoClient.built[0]!, logger }, { failure })
+
+        const error = await rejectionOf(
+          call === 'add'
+            ? store.add(CONTENT)
+            : call === 'search'
+              ? store.search(CONTENT)
+              : call === 'delete'
+                ? store.delete(new ObjectId().toHexString())
+                : store.deleteAll()
+        )
+
+        expect(error).toBeInstanceOf(StorageError)
+        expect(error.message).toContain(`${VERBS[call]} appdb.memory failed`)
+        expect(error.cause).toBe(failure)
+        expect(error.message).not.toContain(CONTENT)
+        for (const rendered of [error.message, inspect(error, { depth: 4 }), inspect(store, { depth: 5 })]) {
+          expect(rendered).not.toContain('SUPERSECRET')
+        }
+      }
+    )
+  })
+
+  describe('AT-010, AT-011: close releases the pool this package built and never an injected client', () => {
+    it('closes the client it built, once, and a later operation opens a fresh pool', async () => {
+      const connection = { database: 'appdb', connectionString: uri() }
+      const store = new MongoDBMemoryStore({ name: 'facts', config: connection })
+      const built = ConstructedMongoClient.built[0]!
+
+      await store.close()
+      await store.close()
+
+      expect(built.closeCount).toBe(1)
+      await store.initialize()
+      expect(ConstructedMongoClient.built).toHaveLength(2)
+      await close(connection)
+    })
+
+    it('never closes an injected client', async () => {
+      const { store, client } = setup()
+      await store.initialize()
+
+      await store.close()
+
+      expect(client.closeCount).toBe(0)
+    })
+  })
+
+  describe('AT-202, AT-205: each operation records one span with counts and tiers, never content or scope', () => {
+    it('records add with the duplicate flag, false then true', async () => {
+      const { store } = setup({ store: { writable: true, scope: 'tenant-a' } })
+
+      await store.add(CONTENT)
+      await store.add(CONTENT)
+
+      const spans = spansNamed(exporter, 'strands_mongodb.memory.add')
+      expect(spans.map((span) => span.attributes['strands_mongodb.duplicate'])).toEqual([false, true])
+      expect(spans[0]!.attributes['strands_mongodb.store_name']).toBe('facts')
+      for (const span of spans) {
+        expect(JSON.stringify(span.attributes)).not.toContain('tenant-a')
+        expect(JSON.stringify(span.attributes)).not.toContain(CONTENT)
+      }
+    })
+
+    it('records search with the requested type, the tier that ran and the result count', async () => {
+      const built = setup({ store: { scope: 'tenant-a' } })
+      prepared(built, {
+        tiers: ['hybrid', 'vector', 'text'],
+        documents: [{ _id: 'abc', content: CONTENT, score: 0.9 }],
+      })
+
+      await built.store.search('dark mode')
+
+      const span = oneSpan(exporter, 'strands_mongodb.memory.search')
+      expect(span.attributes['strands_mongodb.search.requested']).toBe('auto')
+      expect(span.attributes['strands_mongodb.search.tier']).toBe('hybrid')
+      expect(span.attributes['strands_mongodb.result_count']).toBe(1)
+      expect(JSON.stringify(span.attributes)).not.toContain('dark mode')
+      expect(JSON.stringify(span.attributes)).not.toContain('tenant-a')
+    })
+
+    it('records delete and delete_all with the deleted count', async () => {
+      const built = setup({ store: { writable: true } })
+      prepared(built).deletedCount = 3
+
+      await built.store.delete(new ObjectId().toHexString())
+      await built.store.deleteAll()
+
+      expect(oneSpan(exporter, 'strands_mongodb.memory.delete').attributes['strands_mongodb.deleted_count']).toBe(3)
+      expect(oneSpan(exporter, 'strands_mongodb.memory.delete_all').attributes['strands_mongodb.deleted_count']).toBe(3)
+    })
+
+    it('marks a refusal before the network as the error the caller sees', async () => {
+      await rejectionOf(setup().store.add(CONTENT))
+
+      const span = oneSpan(exporter, 'strands_mongodb.memory.add')
+      expect(span.status.code).toBe(SpanStatusCode.ERROR)
+      expect(span.status.message).toBe('TypeError')
     })
   })
 })
