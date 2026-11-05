@@ -1127,6 +1127,30 @@ describe('MongoDBMemoryStore', () => {
       expect(error.message).toContain('MongoDB 8.0')
     })
 
+    it('AT-147: falls past hybrid to the tier a one-key query fits on a manual-vector auto store', async () => {
+      const { store, collection } = setup({ config: MANUAL_VECTOR })
+      collection.searchResults = [{ _id: 'abc', content: CONTENT, score: 0.9 }]
+      await store.initialize()
+      expect(tiers(store)).toEqual(['hybrid', 'vector', 'text'])
+
+      const picked: string[] = []
+      for (const query of [
+        { text: 'dark mode' },
+        { vector: QUERY_VECTOR },
+        { text: 'dark mode', vector: QUERY_VECTOR },
+      ]) {
+        const [entry] = await store.search(query)
+        picked.push(String(metadataOf(entry!)._searchType))
+      }
+
+      expect(picked).toEqual(['text', 'vector', 'hybrid'])
+      expect(
+        spansNamed(exporter, 'strands_mongodb.memory.search').map(
+          (span) => span.attributes['strands_mongodb.search.tier']
+        )
+      ).toEqual(['text', 'vector', 'hybrid'])
+    })
+
     it('skips fusion under auto where only one tier came up', async () => {
       const { store, collection, logger } = setup()
       reporting(collection, 'FAILED', 'text_index')

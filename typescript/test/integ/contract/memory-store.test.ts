@@ -95,6 +95,15 @@ class RecordingLogger implements Logger {
   }
 }
 
+function errorOf(run: () => unknown): Error {
+  try {
+    run()
+  } catch (error) {
+    return error as Error
+  }
+  throw new Error('expected a throw')
+}
+
 async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
   try {
     await pending
@@ -243,6 +252,24 @@ describeTier('contract', 'memory store', () => {
       expect(statuses).toEqual({ vector_index: 'READY', text_index: 'READY' })
     } else {
       expect(facts['_tiers']).not.toContain('hybrid')
+    }
+  })
+
+  it('AT-185: a plain-string query resolves to hybrid only where hybrid is on offer, and to no tier at all without search', async () => {
+    const { store: facts } = store('plain_string')
+
+    await settled(facts)
+
+    const capabilities = facts['_connection'].capabilities!
+    const tiers = facts['_tiers']
+    if (tiers.includes('hybrid')) {
+      expect(facts['_pickTier']('dark mode', undefined)).toBe('hybrid')
+    } else if (tiers.length > 0) {
+      expect(facts['_pickTier']('dark mode', undefined)).not.toBe('hybrid')
+    } else {
+      const error = errorOf(() => facts['_pickTier']('dark mode', undefined))
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain(`server error code ${capabilities.noSearchCode}`)
     }
   })
 
