@@ -1,5 +1,4 @@
 import type { Logger } from '@strands-agents/sdk'
-import type { MongoDBConfig } from './types.js'
 
 /** Every event name this package logs, identical to the Python package's. */
 export type LogEvent =
@@ -18,13 +17,9 @@ export type LogEvent =
   | 'search_index_status'
   | 'attribute_dropped'
 
-/** Structured fields passed as the second argument of every log call. */
-export interface LogFields {
-  /** Which event this call reports. */
-  event: LogEvent
-  /** The `database.collection` the event concerns. */
+/** Optional context rendered into a log line by {@link logFields}. */
+export interface LogContext {
   namespace?: string
-  /** The search tier the event concerns. */
   tier?: string
 }
 
@@ -37,25 +32,15 @@ export const defaultLogger: Logger = {
 }
 
 /**
- * Picks the logger a config's stores write to.
- *
- * @param config - The connection config
- * @returns `config.logger`, or {@link defaultLogger} when it is absent
- */
-export function resolveLogger(config: MongoDBConfig): Logger {
-  return config.logger ?? defaultLogger
-}
-
-/**
- * Builds the fields object for a log call.
+ * Renders the structured tail of a log line: `event=<name>, namespace=<db.coll>, tier=<tier>`.
  *
  * @param event - The event being logged
- * @param extra - Optional namespace and tier
- * @returns The fields, without keys for absent values
+ * @param context - Optional namespace and tier; absent keys are omitted
+ * @returns The rendered fields
  */
-export function fields(event: LogEvent, extra: { namespace?: string; tier?: string } = {}): LogFields {
-  const result: LogFields = { event }
-  if (extra.namespace !== undefined) result.namespace = extra.namespace
-  if (extra.tier !== undefined) result.tier = extra.tier
-  return result
+export function logFields(event: LogEvent, context: LogContext = {}): string {
+  const parts = [`event=${event}`]
+  if (context.namespace !== undefined) parts.push(`namespace=${context.namespace}`)
+  if (context.tier !== undefined) parts.push(`tier=${context.tier}`)
+  return parts.join(', ')
 }

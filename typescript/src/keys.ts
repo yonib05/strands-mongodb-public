@@ -1,4 +1,5 @@
-import { Buffer } from 'node:buffer'
+// normalizeKey, normalizePrefix and tokenize are verbatim copies from strands-ts at 74bb30721,
+// which exports none of them from a public subpath.
 import { StorageError } from '@strands-agents/sdk'
 
 /**
@@ -8,8 +9,7 @@ import { StorageError } from '@strands-agents/sdk'
 export const NAMESPACED: unique symbol = Symbol.for('strands.storage.namespaced')
 
 /**
- * Validates and normalizes a storage key: collapses runs of `/`, strips leading and trailing `/`,
- * and rejects empty keys and any `..` segment. Copied from the SDK, which does not export it.
+ * Validates and normalizes a storage key: collapses runs of `/` and strips leading and trailing `/`.
  *
  * @param key - The raw key to normalize
  * @returns The normalized key
@@ -30,8 +30,7 @@ export function normalizeKey(key: string): string {
 }
 
 /**
- * Normalizes a list prefix: collapses slash runs, strips leading slashes. Unlike a key, an empty
- * prefix is valid and matches everything. Copied from the SDK, which does not export it.
+ * Normalizes a list prefix: collapses slash runs, strips leading slashes. An empty prefix matches everything.
  *
  * @param prefix - The raw prefix to normalize
  * @returns The normalized prefix
@@ -52,8 +51,7 @@ export function normalizePrefix(prefix: string): string {
 }
 
 /**
- * Split text into a set of lowercased word tokens for keyword matching. Copied from the SDK's
- * `KeywordSearchStrategy` so `MongoDBStorage.search` scores the same way.
+ * Splits text into lowercased word tokens, as the SDK's `KeywordSearchStrategy` does.
  *
  * @param text - The text to tokenize
  * @returns The distinct tokens
@@ -87,7 +85,7 @@ export function successor(text: string): string | undefined {
 }
 
 /**
- * Shortens a key for an error message, because a rejected key can be 1025 characters long.
+ * Shortens a key for an error message.
  *
  * @param key - The key to shorten
  * @returns The first 60 code points, followed by `[+N more]` when the key is longer
@@ -95,14 +93,4 @@ export function successor(text: string): string | undefined {
 export function abbreviate(key: string): string {
   const chars = Array.from(key)
   return chars.length <= 60 ? key : `${chars.slice(0, 60).join('')}[+${chars.length - 60} more]`
-}
-
-/**
- * Length of `text` in UTF-8 bytes, the unit of the key and document size limits.
- *
- * @param text - The text to measure
- * @returns The encoded byte count
- */
-export function utf8Length(text: string): number {
-  return Buffer.byteLength(text, 'utf8')
 }

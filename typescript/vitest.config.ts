@@ -13,6 +13,7 @@ const tier = (name: string) => ({
 export default defineConfig({
   test: {
     unstubEnvs: true,
+    restoreMocks: true,
     setupFiles: ['./test/setup.ts'],
     projects: [
       {
@@ -32,7 +33,6 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary'],
-      reportsDirectory: 'coverage',
       include: ['src/**/*.ts'],
       exclude: ['src/**/__tests__/**', 'src/**/__fixtures__/**'],
       // The 70% per-file floor is scripts/check-file-coverage.mjs.

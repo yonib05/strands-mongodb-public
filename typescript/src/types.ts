@@ -1,4 +1,5 @@
 import type { Logger, MemoryStoreConfig } from '@strands-agents/sdk'
+import type { Embedder } from '@strands-agents/sdk/storage/search'
 import type { MongoClient, MongoClientOptions } from 'mongodb'
 
 /**
@@ -60,17 +61,6 @@ export interface MongoDBConfig {
   readonly logger?: Logger
 }
 
-/** What this package needs from an embedder. The SDK's `Embedder` satisfies it. */
-export interface TextEmbedder {
-  /**
-   * Embeds one text.
-   *
-   * @param text - The text to embed
-   * @returns The embedding vector
-   */
-  embed(text: string): Promise<number[]>
-}
-
 /**
  * Full configuration for a `MongoDBMemoryStore`. Extends the SDK's `MemoryStoreConfig`, so `name`
  * stays required and `writable` defaults to `false`.
@@ -91,7 +81,7 @@ export interface MongoDBMemoryStoreConfig extends MemoryStoreConfig {
   /** Lifetime in seconds from `created_at`, set on insert only. `0` expires at the next sweep; negative throws. */
   readonly ttlSeconds?: number
   /** Manual-vector path only: embeds memories on `add` and string queries on `search`. */
-  readonly embedder?: TextEmbedder
+  readonly embedder?: Embedder
 }
 
 /**
@@ -121,14 +111,7 @@ export interface MongoDBAddResult {
   readonly duplicates: number
 }
 
-/** How the vector index gets its vectors: embedded by Atlas, or supplied by the caller. */
-export interface VectorMode {
-  /** Whether Atlas embeds the text server-side. */
-  readonly autoEmbed: boolean
-  /** Atlas embedding model, on the AutoEmbeddings path. */
-  readonly model?: string
-  /** Vector length, on the manual path. */
-  readonly dimensions?: number
-  /** Distance metric, on the manual path. */
-  readonly similarity?: VectorSimilarity
-}
+/** How the vector index gets its vectors: embedded by Atlas from `model`, or supplied by the caller. */
+export type VectorMode =
+  | { readonly autoEmbed: true; readonly model: string }
+  | { readonly autoEmbed: false; readonly dimensions: number; readonly similarity: VectorSimilarity }

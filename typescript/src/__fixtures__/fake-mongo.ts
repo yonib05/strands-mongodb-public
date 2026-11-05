@@ -3,10 +3,6 @@ import type { Document, IndexDescription } from 'mongodb'
 type Filter = Record<string, unknown>
 type SortSpec = Record<string, 1 | -1>
 
-const notImplemented = (): never => {
-  throw new Error('not implemented in this task')
-}
-
 function isOperatorObject(value: unknown): value is Record<string, unknown> {
   return (
     typeof value === 'object' &&
@@ -45,22 +41,11 @@ export class FakeCursor {
 
   constructor(private readonly docs: Document[]) {}
 
-  /**
-   * Orders the results.
-   *
-   * @param spec - Field to direction, as the driver takes it.
-   * @returns This cursor.
-   */
   sort(spec: SortSpec): this {
     this.sortSpec = spec
     return this
   }
 
-  /**
-   * Materialises the results.
-   *
-   * @returns Copies of the matching documents in sort order.
-   */
   async toArray(): Promise<Document[]> {
     const keys = Object.entries(this.sortSpec)
     return this.docs
@@ -85,21 +70,11 @@ export class FakeCollection {
     readonly collectionName: string
   ) {}
 
-  /**
-   * @param filter - Equality or `$gte`/`$lt` conditions per field.
-   * @returns A copy of the first match, or `null`.
-   */
   async findOne(filter: Filter = {}): Promise<Document | null> {
     const doc = this.docs.find((candidate) => matches(candidate, filter))
     return doc === undefined ? null : structuredClone(doc)
   }
 
-  /**
-   * @param filter - Selects the document to replace.
-   * @param replacement - New document body; `_id` is kept from the match or the filter.
-   * @param options - `upsert` inserts when nothing matches.
-   * @returns Counts in the driver's `UpdateResult` shape.
-   */
   async replaceOne(
     filter: Filter,
     replacement: Document,
@@ -116,15 +91,6 @@ export class FakeCollection {
     return { acknowledged: true, matchedCount: 0, modifiedCount: 0, upsertedCount: 1 }
   }
 
-  /** Not implemented until a later task. */
-  updateOne(..._args: unknown[]): Promise<Document> {
-    return notImplemented()
-  }
-
-  /**
-   * @param filter - Selects the document to delete.
-   * @returns The number deleted.
-   */
   async deleteOne(filter: Filter): Promise<{ acknowledged: true; deletedCount: number }> {
     const index = this.docs.findIndex((candidate) => matches(candidate, filter))
     if (index === -1) return { acknowledged: true, deletedCount: 0 }
@@ -132,10 +98,6 @@ export class FakeCollection {
     return { acknowledged: true, deletedCount: 1 }
   }
 
-  /**
-   * @param filter - Selects the documents to delete.
-   * @returns The number deleted.
-   */
   async deleteMany(filter: Filter = {}): Promise<{ acknowledged: true; deletedCount: number }> {
     const kept = this.docs.filter((candidate) => !matches(candidate, filter))
     const deletedCount = this.docs.length - kept.length
@@ -143,37 +105,18 @@ export class FakeCollection {
     return { acknowledged: true, deletedCount }
   }
 
-  /**
-   * @param filter - Equality or `$gte`/`$lt` conditions per field.
-   * @returns A cursor over the matches.
-   */
   find(filter: Filter = {}): FakeCursor {
     return new FakeCursor(this.docs.filter((candidate) => matches(candidate, filter)))
   }
 
-  /** Not implemented until a later task. */
-  aggregate(..._args: unknown[]): { toArray(): Promise<Document[]> } {
-    return notImplemented()
-  }
-
-  /** @returns A cursor over the stored index descriptions. */
   listIndexes(): { toArray(): Promise<IndexDescription[]> } {
     return { toArray: async () => structuredClone(this.indexes) }
   }
 
-  /**
-   * @param specs - Index descriptions to store.
-   * @returns The index names.
-   */
   async createIndexes(specs: IndexDescription[]): Promise<string[]> {
     return Promise.all(specs.map((spec) => this.createIndex(spec.key as Document, spec)))
   }
 
-  /**
-   * @param key - Field to direction.
-   * @param options - Further index options, `name` among them.
-   * @returns The index name.
-   */
   async createIndex(key: Document, options: Omit<IndexDescription, 'key'> = {}): Promise<string> {
     const name =
       options.name ??
@@ -185,21 +128,6 @@ export class FakeCollection {
     }
     return name
   }
-
-  /** Not implemented until a later task. */
-  listSearchIndexes(..._args: unknown[]): { toArray(): Promise<Document[]> } {
-    return notImplemented()
-  }
-
-  /** Not implemented until a later task. */
-  createSearchIndex(..._args: unknown[]): Promise<string> {
-    return notImplemented()
-  }
-
-  /** Not implemented until a later task. */
-  options(): Promise<Document> {
-    return notImplemented()
-  }
 }
 
 /** In-memory stand-in for `MongoClient`, handing out one {@link FakeCollection} per namespace. */
@@ -207,10 +135,6 @@ export class FakeMongoClient {
   readonly collections = new Map<string, FakeCollection>()
   closed = false
 
-  /**
-   * @param dbName - Database name.
-   * @returns A handle whose `collection(name)` returns the same fake each time.
-   */
   db(dbName: string): { databaseName: string; collection(name: string): FakeCollection } {
     return {
       databaseName: dbName,
@@ -226,7 +150,6 @@ export class FakeMongoClient {
     }
   }
 
-  /** Marks the client closed. */
   async close(): Promise<void> {
     this.closed = true
   }
