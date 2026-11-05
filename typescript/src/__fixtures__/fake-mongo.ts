@@ -24,9 +24,16 @@ function objectIdHex(value: unknown): string | undefined {
   return bsonType === 'ObjectId' ? String(value) : undefined
 }
 
-// An `ObjectId` equals another, or the hex string the fake stores as `_id`, by its hex form.
+function binaryHex(value: unknown): string | undefined {
+  const bsonType: unknown = typeof value === 'object' && value !== null ? (value as Document)._bsontype : undefined
+  return bsonType === 'Binary' ? (value as { toString(encoding: 'hex'): string }).toString('hex') : undefined
+}
+
+// An `ObjectId` equals another, or the hex string the fake stores as `_id`, by its hex form; a `Binary` equals another by its bytes.
 function equals(a: unknown, b: unknown): boolean {
   if (a === b) return true
+  const [leftBytes, rightBytes] = [binaryHex(a), binaryHex(b)]
+  if (leftBytes !== undefined || rightBytes !== undefined) return leftBytes === rightBytes
   const [left, right] = [objectIdHex(a), objectIdHex(b)]
   return (left ?? right) !== undefined && (left ?? a) === (right ?? b)
 }
@@ -346,7 +353,7 @@ export class FakeCollection {
     return options.projection === undefined ? clone(doc) : project(clone(doc), options.projection)
   }
 
-  /** Only `$setOnInsert` is modelled: the one update operator this package sends. */
+  /** Only `$setOnInsert` and `$set` are modelled: the update operators this package sends. */
   async updateOne(
     filter: Filter,
     update: Document,
@@ -360,11 +367,16 @@ export class FakeCollection {
   }> {
     this.record('updateOne', filter, update, options)
     const operators = Object.keys(update)
-    if (operators.some((operator) => operator !== '$setOnInsert')) {
+    if (operators.some((operator) => operator !== '$setOnInsert' && operator !== '$set')) {
       throw new Error(`FakeCollection does not support ${operators.join(', ')}`)
     }
     const unchanged = { acknowledged: true as const, modifiedCount: 0, upsertedCount: 0, upsertedId: null }
-    if (this.docs.some((candidate) => matches(candidate, filter))) return { ...unchanged, matchedCount: 1 }
+    const matched = this.docs.find((candidate) => matches(candidate, filter))
+    if (matched !== undefined && update.$set !== undefined) {
+      Object.assign(matched, clone(update.$set as Document))
+      return { ...unchanged, matchedCount: 1, modifiedCount: 1 }
+    }
+    if (matched !== undefined) return { ...unchanged, matchedCount: 1 }
     if (!options.upsert) return { ...unchanged, matchedCount: 0 }
     if (this.insertFailure !== undefined) {
       const failure = this.insertFailure

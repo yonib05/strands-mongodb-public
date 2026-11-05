@@ -136,7 +136,7 @@ export class MongoDBStorage implements Storage {
           `strands_mongodb: the document for the key '${abbreviate(id)}' would encode to ${size} bytes, over the ${MAX_DOCUMENT_BYTES}-byte BSON limit in ${this._target}. Store the payload elsewhere and keep a reference here, or split it across keys.`
         )
       }
-      await this._collection().replaceOne({ _id: id }, document, { upsert: true })
+      await this._typed().replaceOne({ _id: id }, document, { upsert: true })
 
       const strategy = this._searchStrategy
       if (strategy === undefined || strategy.index === undefined) return
@@ -161,7 +161,7 @@ export class MongoDBStorage implements Storage {
   read(key: string): Promise<Uint8Array | null> {
     return this._run('read', 'reading', key, async () => {
       await this._requireBinaryKeys()
-      const document = await this._collection().findOne({ _id: this._idFor(key) })
+      const document = await this._typed().findOne({ _id: this._idFor(key) })
       annotate('strands_mongodb.found', document !== null, this._logger)
       if (document === null) return null
       // The driver hands back a `Binary` by default and a `Buffer` under `promoteBuffers`; both become one type here.
@@ -179,7 +179,7 @@ export class MongoDBStorage implements Storage {
   delete(key: string): Promise<void> {
     return this._run('delete', 'deleting', key, async () => {
       await this._requireBinaryKeys()
-      const result = await this._collection().deleteOne({ _id: this._idFor(key) })
+      const result = await this._typed().deleteOne({ _id: this._idFor(key) })
       annotate('strands_mongodb.deleted_count', result.deletedCount, this._logger)
     })
   }
@@ -194,7 +194,7 @@ export class MongoDBStorage implements Storage {
   list(query: string): Promise<string[]> {
     return this._run('list', 'listing', query, async () => {
       await this._requireBinaryKeys()
-      const documents = await this._collection()
+      const documents = await this._typed()
         .find(this._rangeFor(query), { projection: { _id: 1 } })
         .sort({ _id: 1 })
         .toArray()
@@ -221,7 +221,7 @@ export class MongoDBStorage implements Storage {
       // Same short circuit as `KeywordSearchStrategy`: scoring every key zero would cost a full scan.
       if (tokens.size === 0) return []
       await this._requireBinaryKeys()
-      const documents = await this._collection().aggregate(this._searchPipeline(tokens)).toArray()
+      const documents = await this._typed().aggregate(this._searchPipeline(tokens)).toArray()
       const results = documents.map((document) => ({
         key: String(document._id).slice(this._prefix.length),
         score: Number(document.score),
@@ -241,7 +241,7 @@ export class MongoDBStorage implements Storage {
   deletePrefix(prefix: string): Promise<number> {
     return this._run('delete_prefix', 'deleting the prefix', prefix, async () => {
       await this._requireBinaryKeys()
-      const result = await this._collection().deleteMany(this._rangeFor(prefix))
+      const result = await this._typed().deleteMany(this._rangeFor(prefix))
       annotate('strands_mongodb.deleted_count', result.deletedCount, this._logger)
       return result.deletedCount
     })
@@ -277,7 +277,7 @@ export class MongoDBStorage implements Storage {
     return traced('storage', 'ensure_indexes', this._spanBase(), async () => {
       await this._requireBinaryKeys()
       const strategy = this._searchStrategy
-      await ensure(this._collection<Document>(), {
+      await ensure(this._collection(), {
         ordinary: storageSpecs(),
         search: hasIndexSpec(strategy) ? [strategy.indexSpec()] : [],
         create: this._config.ensureIndexes ?? true,
@@ -293,6 +293,15 @@ export class MongoDBStorage implements Storage {
    */
   close(): Promise<void> {
     return release(this._config)
+  }
+
+  /**
+   * Returns the live collection, resolved through the registry on each call. For this package's search strategies.
+   *
+   * @internal
+   */
+  _collection(): Collection<Document> {
+    return this._typed<Document>()
   }
 
   private _run<T>(operation: string, verb: string, subject: string, fn: () => Promise<T>): Promise<T> {
@@ -353,8 +362,7 @@ export class MongoDBStorage implements Storage {
   private async _requireBinaryKeys(): Promise<void> {
     const connection = this._connection
     if (connection.binaryKeys.has(this._target)) return
-    if (await requireBinaryComparison(this._collection<Document>(), this._logger))
-      connection.binaryKeys.add(this._target)
+    if (await requireBinaryComparison(this._collection(), this._logger)) connection.binaryKeys.add(this._target)
   }
 
   private _spanBase(): { database: string; collection: string; logger: Logger } {
@@ -370,8 +378,7 @@ export class MongoDBStorage implements Storage {
     return resolve(this._config)
   }
 
-  // The index helpers take the driver's default schema; they read collection metadata, never a document.
-  private _collection<TSchema extends Document = StoredDocument>(): Collection<TSchema> {
+  private _typed<TSchema extends Document = StoredDocument>(): Collection<TSchema> {
     return this._connection.client.db(this._databaseName).collection<TSchema>(this._collectionName)
   }
 
