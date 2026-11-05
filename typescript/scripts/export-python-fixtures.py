@@ -15,9 +15,10 @@ from strands_mongodb import _indexes, _pipeline, types
 OUT = Path(__file__).resolve().parent.parent / "src" / "__fixtures__"
 
 BASE_CONFIG: types.MongoDBConfig = {"database": "x", "connection_string": "mongodb://h"}
-AUTO = _indexes.vector_mode({**BASE_CONFIG, "embedding_model": "voyage-4-lite"})
-MANUAL = _indexes.vector_mode({**BASE_CONFIG, "embedding_dimensions": 3, "similarity": "cosine"})
-MODES = (("auto", AUTO), ("manual", MANUAL))
+AUTO_CONFIG: types.MongoDBConfig = {**BASE_CONFIG, "embedding_model": "voyage-4-lite"}
+MANUAL_CONFIG: types.MongoDBConfig = {**BASE_CONFIG, "embedding_dimensions": 3, "similarity": "cosine"}
+CONFIGS = (("auto", AUTO_CONFIG), ("manual", MANUAL_CONFIG))
+MODES = tuple((name, _indexes.vector_mode(config)) for name, config in CONFIGS)
 
 QUERY_TEXT = "what does the user prefer"
 QUERY_VECTOR = [0.1, 0.2, 0.3]
@@ -56,7 +57,10 @@ def vector_cases() -> list[dict[str, Any]]:
         )
         cases.append(
             {
-                "name": f"vector_stages/{mode_name}/{filter_name}/score={str(score).lower()}/limit={limit}/oversampling={factor}",
+                "name": (
+                    f"vector_stages/{mode_name}/{filter_name}/score={str(score).lower()}"
+                    f"/limit={limit}/oversampling={factor}"
+                ),
                 "input": {
                     "mode": render_mode(mode),
                     "indexName": "vector_index",
@@ -140,9 +144,8 @@ def render_spec(spec: _indexes.IndexSpec) -> dict[str, Any]:
 
 def search_configs() -> list[tuple[str, types.MongoDBConfig]]:
     configs = []
-    for (mode_name, _), extra in itertools.product(MODES, (None, EXTRA_FILTER_FIELDS)):
-        vector = {"embedding_model": "voyage-4-lite"} if mode_name == "auto" else {"embedding_dimensions": 3, "similarity": "cosine"}
-        config: types.MongoDBConfig = {**BASE_CONFIG, **vector}  # type: ignore[typeddict-item]
+    for (mode_name, mode_config), extra in itertools.product(CONFIGS, (None, EXTRA_FILTER_FIELDS)):
+        config = mode_config.copy()
         if extra is not None:
             config["filter_fields"] = extra
         configs.append((f"{mode_name}/{'extra' if extra else 'baked'}", config))
