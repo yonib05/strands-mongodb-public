@@ -27,7 +27,10 @@ export default defineConfig({
       tier('integration'),
       tier('autoembed'),
       tier('interop'),
-      { extends: true, test: { name: 'build', include: ['test/build/**/*.test.ts'] } },
+      {
+        extends: true,
+        test: { name: 'build', include: ['test/build/**/*.test.ts'], testTimeout: 600_000, hookTimeout: 600_000 },
+      },
       { extends: true, test: { name: 'compat', include: ['test/compat/**/*.test.ts'] } },
     ],
     coverage: {

@@ -50,6 +50,12 @@ export default [
     },
   },
   {
+    files: ['test/build/fixtures/**/*.js'],
+    languageOptions: {
+      globals: { ...nodeGlobals, require: 'readonly' },
+    },
+  },
+  {
     files: ['scripts/**/*.mjs'],
     languageOptions: {
       globals: nodeGlobals,

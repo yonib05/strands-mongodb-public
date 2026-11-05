@@ -4,3 +4,5 @@ coverage/
 .env
 .vitest-results.json
 *.tgz
+# The root .gitignore drops every build/ directory for Python.
+!test/build/

@@ -5,13 +5,34 @@
  */
 
 export {
+  DEFAULT_EMBEDDING_MODEL,
+  DEFAULT_TEXT_INDEX_NAME,
+  DEFAULT_VECTOR_INDEX_NAME,
+  MAX_DIMENSIONS,
+  MAX_NUM_CANDIDATES,
+  READY_TIMEOUT_SECONDS,
+} from './indexes.js'
+export {
   DEFAULT_COLLECTION,
   MongoDBMemoryStore,
   TIER_RETRY_MAX_SECONDS,
   TIER_RETRY_SECONDS,
   UNSCOPED,
 } from './memory-store.js'
+export { RANK_FUSION_PENALTY } from './pipeline.js'
 export { MAX_DOCUMENT_BYTES, MAX_KEY_BYTES, MongoDBStorage, type MongoDBStorageOptions } from './storage.js'
+export {
+  DEFAULT_MAX_SEARCH_RESULTS,
+  DEFAULT_OVERSAMPLING_FACTOR,
+  RESERVED_METADATA_KEYS,
+  type MongoDBAddResult,
+  type MongoDBConfig,
+  type MongoDBMemoryStoreConfig,
+  type MongoDBSearchQuery,
+  type ResolvedSearchType,
+  type SearchType,
+  type VectorSimilarity,
+} from './types.js'
 export {
   DEFAULT_STORAGE_VECTOR_INDEX_NAME,
   MongoDBVectorSearchStrategy,
