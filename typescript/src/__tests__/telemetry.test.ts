@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { URL } from 'node:url'
 import { context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
@@ -5,7 +7,7 @@ import type { ReadableSpan } from '@opentelemetry/sdk-trace-base'
 import type { Logger } from '@strands-agents/sdk'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { Attribute } from '../telemetry.js'
-import { annotate, event, span, traced } from '../telemetry.js'
+import { annotate, ATTRIBUTES, event, span, traced } from '../telemetry.js'
 
 const exporter = new InMemorySpanExporter()
 
@@ -32,6 +34,17 @@ function one(name: string): ReadableSpan {
 }
 
 class StorageError extends Error {}
+
+describe('ATTRIBUTES', () => {
+  it('matches the Python allow-list name for name', () => {
+    const source = readFileSync(new URL('../../../python/src/strands_mongodb/_telemetry.py', import.meta.url), 'utf8')
+    const literal = /^Attribute = Literal\[(.*?)^\]/ms.exec(source)?.[1] ?? ''
+    const python = [...literal.matchAll(/"([^"]+)"/g)].map((match) => match[1])
+
+    expect(python).toHaveLength(15)
+    expect(ATTRIBUTES).toEqual(python)
+  })
+})
 
 describe('traced', () => {
   describe('AT-205: kind, namespace attributes, and no db.* key', () => {

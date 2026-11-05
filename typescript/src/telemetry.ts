@@ -3,22 +3,26 @@ import type { Logger } from '@strands-agents/sdk'
 import { logFields } from './logging.js'
 
 /** Every attribute name the package may set, identical to the Python package's. */
-export type Attribute =
-  | 'strands_mongodb.store_name'
-  | 'strands_mongodb.search.requested'
-  | 'strands_mongodb.search.tier'
-  | 'strands_mongodb.search.tiers'
-  | 'strands_mongodb.result_count'
-  | 'strands_mongodb.deleted_count'
-  | 'strands_mongodb.found'
-  | 'strands_mongodb.duplicate'
-  | 'strands_mongodb.database'
-  | 'strands_mongodb.collection'
-  | 'strands_mongodb.client.injected'
-  | 'strands_mongodb.indexes.mode'
-  | 'strands_mongodb.indexes.created'
-  | 'strands_mongodb.indexes.outcome'
-  | 'strands_mongodb.indexes.probe'
+export const ATTRIBUTES = [
+  'strands_mongodb.store_name',
+  'strands_mongodb.search.requested',
+  'strands_mongodb.search.tier',
+  'strands_mongodb.search.tiers',
+  'strands_mongodb.result_count',
+  'strands_mongodb.deleted_count',
+  'strands_mongodb.found',
+  'strands_mongodb.duplicate',
+  'strands_mongodb.database',
+  'strands_mongodb.collection',
+  'strands_mongodb.client.injected',
+  'strands_mongodb.indexes.mode',
+  'strands_mongodb.indexes.created',
+  'strands_mongodb.indexes.outcome',
+  'strands_mongodb.indexes.probe',
+] as const
+
+/** One of {@link ATTRIBUTES}. */
+export type Attribute = (typeof ATTRIBUTES)[number]
 
 /** Every span opened by {@link span} rather than by {@link traced}: index work under the operation that needed it. */
 export type SpanName =
@@ -36,23 +40,7 @@ export interface SpanBase {
 }
 
 // The allow-list exists so no caller data (keys, content, metadata, query text, filter values) reaches a span.
-const ALLOWED: ReadonlySet<string> = new Set<Attribute>([
-  'strands_mongodb.store_name',
-  'strands_mongodb.search.requested',
-  'strands_mongodb.search.tier',
-  'strands_mongodb.search.tiers',
-  'strands_mongodb.result_count',
-  'strands_mongodb.deleted_count',
-  'strands_mongodb.found',
-  'strands_mongodb.duplicate',
-  'strands_mongodb.database',
-  'strands_mongodb.collection',
-  'strands_mongodb.client.injected',
-  'strands_mongodb.indexes.mode',
-  'strands_mongodb.indexes.created',
-  'strands_mongodb.indexes.outcome',
-  'strands_mongodb.indexes.probe',
-])
+const ALLOWED: ReadonlySet<string> = new Set(ATTRIBUTES)
 
 /**
  * Records one `INTERNAL` span named `strands_mongodb.<surface>.<operation>` around a store operation.
