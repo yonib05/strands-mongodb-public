@@ -286,6 +286,282 @@
         "similarity": null
       },
       "oversamplingFactor": 10,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "score": true
+    },
+    "name": "vector_stages/auto/emptyfilter/score=true/limit=5/oversampling=10",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 5,
+          "model": "voyage-4-lite",
+          "numCandidates": 50,
+          "path": "content",
+          "query": {
+            "text": "what does the user prefer"
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "vectorSearchScore"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 5,
+      "mode": {
+        "autoEmbed": true,
+        "dimensions": null,
+        "model": "voyage-4-lite",
+        "similarity": null
+      },
+      "oversamplingFactor": 3,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "score": true
+    },
+    "name": "vector_stages/auto/emptyfilter/score=true/limit=5/oversampling=3",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 5,
+          "model": "voyage-4-lite",
+          "numCandidates": 15,
+          "path": "content",
+          "query": {
+            "text": "what does the user prefer"
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "vectorSearchScore"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 10,
+      "mode": {
+        "autoEmbed": true,
+        "dimensions": null,
+        "model": "voyage-4-lite",
+        "similarity": null
+      },
+      "oversamplingFactor": 10,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "score": true
+    },
+    "name": "vector_stages/auto/emptyfilter/score=true/limit=10/oversampling=10",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 10,
+          "model": "voyage-4-lite",
+          "numCandidates": 100,
+          "path": "content",
+          "query": {
+            "text": "what does the user prefer"
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "vectorSearchScore"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 10,
+      "mode": {
+        "autoEmbed": true,
+        "dimensions": null,
+        "model": "voyage-4-lite",
+        "similarity": null
+      },
+      "oversamplingFactor": 3,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "score": true
+    },
+    "name": "vector_stages/auto/emptyfilter/score=true/limit=10/oversampling=3",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 10,
+          "model": "voyage-4-lite",
+          "numCandidates": 30,
+          "path": "content",
+          "query": {
+            "text": "what does the user prefer"
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "vectorSearchScore"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 5,
+      "mode": {
+        "autoEmbed": true,
+        "dimensions": null,
+        "model": "voyage-4-lite",
+        "similarity": null
+      },
+      "oversamplingFactor": 10,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "score": false
+    },
+    "name": "vector_stages/auto/emptyfilter/score=false/limit=5/oversampling=10",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 5,
+          "model": "voyage-4-lite",
+          "numCandidates": 50,
+          "path": "content",
+          "query": {
+            "text": "what does the user prefer"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 5,
+      "mode": {
+        "autoEmbed": true,
+        "dimensions": null,
+        "model": "voyage-4-lite",
+        "similarity": null
+      },
+      "oversamplingFactor": 3,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "score": false
+    },
+    "name": "vector_stages/auto/emptyfilter/score=false/limit=5/oversampling=3",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 5,
+          "model": "voyage-4-lite",
+          "numCandidates": 15,
+          "path": "content",
+          "query": {
+            "text": "what does the user prefer"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 10,
+      "mode": {
+        "autoEmbed": true,
+        "dimensions": null,
+        "model": "voyage-4-lite",
+        "similarity": null
+      },
+      "oversamplingFactor": 10,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "score": false
+    },
+    "name": "vector_stages/auto/emptyfilter/score=false/limit=10/oversampling=10",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 10,
+          "model": "voyage-4-lite",
+          "numCandidates": 100,
+          "path": "content",
+          "query": {
+            "text": "what does the user prefer"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 10,
+      "mode": {
+        "autoEmbed": true,
+        "dimensions": null,
+        "model": "voyage-4-lite",
+        "similarity": null
+      },
+      "oversamplingFactor": 3,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "score": false
+    },
+    "name": "vector_stages/auto/emptyfilter/score=false/limit=10/oversampling=3",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 10,
+          "model": "voyage-4-lite",
+          "numCandidates": 30,
+          "path": "content",
+          "query": {
+            "text": "what does the user prefer"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 5,
+      "mode": {
+        "autoEmbed": true,
+        "dimensions": null,
+        "model": "voyage-4-lite",
+        "similarity": null
+      },
+      "oversamplingFactor": 10,
       "queryFilter": {
         "scope": "user-1",
         "store_name": "default"
@@ -934,6 +1210,322 @@
         "similarity": "cosine"
       },
       "oversamplingFactor": 10,
+      "queryFilter": {},
+      "queryVector": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "score": true
+    },
+    "name": "vector_stages/manual/emptyfilter/score=true/limit=5/oversampling=10",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 5,
+          "numCandidates": 50,
+          "path": "embedding",
+          "queryVector": [
+            0.1,
+            0.2,
+            0.3
+          ]
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "vectorSearchScore"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 5,
+      "mode": {
+        "autoEmbed": false,
+        "dimensions": 3,
+        "model": null,
+        "similarity": "cosine"
+      },
+      "oversamplingFactor": 3,
+      "queryFilter": {},
+      "queryVector": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "score": true
+    },
+    "name": "vector_stages/manual/emptyfilter/score=true/limit=5/oversampling=3",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 5,
+          "numCandidates": 15,
+          "path": "embedding",
+          "queryVector": [
+            0.1,
+            0.2,
+            0.3
+          ]
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "vectorSearchScore"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 10,
+      "mode": {
+        "autoEmbed": false,
+        "dimensions": 3,
+        "model": null,
+        "similarity": "cosine"
+      },
+      "oversamplingFactor": 10,
+      "queryFilter": {},
+      "queryVector": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "score": true
+    },
+    "name": "vector_stages/manual/emptyfilter/score=true/limit=10/oversampling=10",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 10,
+          "numCandidates": 100,
+          "path": "embedding",
+          "queryVector": [
+            0.1,
+            0.2,
+            0.3
+          ]
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "vectorSearchScore"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 10,
+      "mode": {
+        "autoEmbed": false,
+        "dimensions": 3,
+        "model": null,
+        "similarity": "cosine"
+      },
+      "oversamplingFactor": 3,
+      "queryFilter": {},
+      "queryVector": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "score": true
+    },
+    "name": "vector_stages/manual/emptyfilter/score=true/limit=10/oversampling=3",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 10,
+          "numCandidates": 30,
+          "path": "embedding",
+          "queryVector": [
+            0.1,
+            0.2,
+            0.3
+          ]
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "vectorSearchScore"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 5,
+      "mode": {
+        "autoEmbed": false,
+        "dimensions": 3,
+        "model": null,
+        "similarity": "cosine"
+      },
+      "oversamplingFactor": 10,
+      "queryFilter": {},
+      "queryVector": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "score": false
+    },
+    "name": "vector_stages/manual/emptyfilter/score=false/limit=5/oversampling=10",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 5,
+          "numCandidates": 50,
+          "path": "embedding",
+          "queryVector": [
+            0.1,
+            0.2,
+            0.3
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 5,
+      "mode": {
+        "autoEmbed": false,
+        "dimensions": 3,
+        "model": null,
+        "similarity": "cosine"
+      },
+      "oversamplingFactor": 3,
+      "queryFilter": {},
+      "queryVector": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "score": false
+    },
+    "name": "vector_stages/manual/emptyfilter/score=false/limit=5/oversampling=3",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 5,
+          "numCandidates": 15,
+          "path": "embedding",
+          "queryVector": [
+            0.1,
+            0.2,
+            0.3
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 10,
+      "mode": {
+        "autoEmbed": false,
+        "dimensions": 3,
+        "model": null,
+        "similarity": "cosine"
+      },
+      "oversamplingFactor": 10,
+      "queryFilter": {},
+      "queryVector": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "score": false
+    },
+    "name": "vector_stages/manual/emptyfilter/score=false/limit=10/oversampling=10",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 10,
+          "numCandidates": 100,
+          "path": "embedding",
+          "queryVector": [
+            0.1,
+            0.2,
+            0.3
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 10,
+      "mode": {
+        "autoEmbed": false,
+        "dimensions": 3,
+        "model": null,
+        "similarity": "cosine"
+      },
+      "oversamplingFactor": 3,
+      "queryFilter": {},
+      "queryVector": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "score": false
+    },
+    "name": "vector_stages/manual/emptyfilter/score=false/limit=10/oversampling=3",
+    "stages": [
+      {
+        "$vectorSearch": {
+          "index": "vector_index",
+          "limit": 10,
+          "numCandidates": 30,
+          "path": "embedding",
+          "queryVector": [
+            0.1,
+            0.2,
+            0.3
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "vector_index",
+      "limit": 5,
+      "mode": {
+        "autoEmbed": false,
+        "dimensions": 3,
+        "model": null,
+        "similarity": "cosine"
+      },
+      "oversamplingFactor": 10,
       "queryFilter": {
         "scope": "user-1",
         "store_name": "default"
@@ -1409,6 +2001,116 @@
     "input": {
       "indexName": "text_index",
       "limit": 5,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "score": true
+    },
+    "name": "text_stages/emptyfilter/score=true/limit=5",
+    "stages": [
+      {
+        "$search": {
+          "index": "text_index",
+          "text": {
+            "path": "content",
+            "query": "what does the user prefer"
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "searchScore"
+          }
+        }
+      },
+      {
+        "$limit": 5
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "text_index",
+      "limit": 10,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "score": true
+    },
+    "name": "text_stages/emptyfilter/score=true/limit=10",
+    "stages": [
+      {
+        "$search": {
+          "index": "text_index",
+          "text": {
+            "path": "content",
+            "query": "what does the user prefer"
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "searchScore"
+          }
+        }
+      },
+      {
+        "$limit": 10
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "text_index",
+      "limit": 5,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "score": false
+    },
+    "name": "text_stages/emptyfilter/score=false/limit=5",
+    "stages": [
+      {
+        "$search": {
+          "index": "text_index",
+          "text": {
+            "path": "content",
+            "query": "what does the user prefer"
+          }
+        }
+      },
+      {
+        "$limit": 5
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "text_index",
+      "limit": 10,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "score": false
+    },
+    "name": "text_stages/emptyfilter/score=false/limit=10",
+    "stages": [
+      {
+        "$search": {
+          "index": "text_index",
+          "text": {
+            "path": "content",
+            "query": "what does the user prefer"
+          }
+        }
+      },
+      {
+        "$limit": 10
+      }
+    ]
+  },
+  {
+    "input": {
+      "indexName": "text_index",
+      "limit": 5,
       "queryFilter": {
         "scope": "user-1",
         "store_name": "default"
@@ -1766,6 +2468,270 @@
       "vectorIndexName": "vector_index"
     },
     "name": "hybrid_stages/auto/nofilter/limit=10/oversampling=3",
+    "stages": [
+      {
+        "$rankFusion": {
+          "input": {
+            "pipelines": {
+              "text": [
+                {
+                  "$search": {
+                    "index": "text_index",
+                    "text": {
+                      "path": "content",
+                      "query": "what does the user prefer"
+                    }
+                  }
+                },
+                {
+                  "$limit": 10
+                }
+              ],
+              "vector": [
+                {
+                  "$vectorSearch": {
+                    "index": "vector_index",
+                    "limit": 10,
+                    "model": "voyage-4-lite",
+                    "numCandidates": 30,
+                    "path": "content",
+                    "query": {
+                      "text": "what does the user prefer"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "score"
+          }
+        }
+      },
+      {
+        "$limit": 10
+      }
+    ]
+  },
+  {
+    "input": {
+      "limit": 5,
+      "mode": {
+        "autoEmbed": true,
+        "dimensions": null,
+        "model": "voyage-4-lite",
+        "similarity": null
+      },
+      "oversamplingFactor": 10,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "queryVector": null,
+      "textIndexName": "text_index",
+      "vectorIndexName": "vector_index"
+    },
+    "name": "hybrid_stages/auto/emptyfilter/limit=5/oversampling=10",
+    "stages": [
+      {
+        "$rankFusion": {
+          "input": {
+            "pipelines": {
+              "text": [
+                {
+                  "$search": {
+                    "index": "text_index",
+                    "text": {
+                      "path": "content",
+                      "query": "what does the user prefer"
+                    }
+                  }
+                },
+                {
+                  "$limit": 5
+                }
+              ],
+              "vector": [
+                {
+                  "$vectorSearch": {
+                    "index": "vector_index",
+                    "limit": 5,
+                    "model": "voyage-4-lite",
+                    "numCandidates": 50,
+                    "path": "content",
+                    "query": {
+                      "text": "what does the user prefer"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "score"
+          }
+        }
+      },
+      {
+        "$limit": 5
+      }
+    ]
+  },
+  {
+    "input": {
+      "limit": 5,
+      "mode": {
+        "autoEmbed": true,
+        "dimensions": null,
+        "model": "voyage-4-lite",
+        "similarity": null
+      },
+      "oversamplingFactor": 3,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "queryVector": null,
+      "textIndexName": "text_index",
+      "vectorIndexName": "vector_index"
+    },
+    "name": "hybrid_stages/auto/emptyfilter/limit=5/oversampling=3",
+    "stages": [
+      {
+        "$rankFusion": {
+          "input": {
+            "pipelines": {
+              "text": [
+                {
+                  "$search": {
+                    "index": "text_index",
+                    "text": {
+                      "path": "content",
+                      "query": "what does the user prefer"
+                    }
+                  }
+                },
+                {
+                  "$limit": 5
+                }
+              ],
+              "vector": [
+                {
+                  "$vectorSearch": {
+                    "index": "vector_index",
+                    "limit": 5,
+                    "model": "voyage-4-lite",
+                    "numCandidates": 15,
+                    "path": "content",
+                    "query": {
+                      "text": "what does the user prefer"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "score"
+          }
+        }
+      },
+      {
+        "$limit": 5
+      }
+    ]
+  },
+  {
+    "input": {
+      "limit": 10,
+      "mode": {
+        "autoEmbed": true,
+        "dimensions": null,
+        "model": "voyage-4-lite",
+        "similarity": null
+      },
+      "oversamplingFactor": 10,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "queryVector": null,
+      "textIndexName": "text_index",
+      "vectorIndexName": "vector_index"
+    },
+    "name": "hybrid_stages/auto/emptyfilter/limit=10/oversampling=10",
+    "stages": [
+      {
+        "$rankFusion": {
+          "input": {
+            "pipelines": {
+              "text": [
+                {
+                  "$search": {
+                    "index": "text_index",
+                    "text": {
+                      "path": "content",
+                      "query": "what does the user prefer"
+                    }
+                  }
+                },
+                {
+                  "$limit": 10
+                }
+              ],
+              "vector": [
+                {
+                  "$vectorSearch": {
+                    "index": "vector_index",
+                    "limit": 10,
+                    "model": "voyage-4-lite",
+                    "numCandidates": 100,
+                    "path": "content",
+                    "query": {
+                      "text": "what does the user prefer"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "score"
+          }
+        }
+      },
+      {
+        "$limit": 10
+      }
+    ]
+  },
+  {
+    "input": {
+      "limit": 10,
+      "mode": {
+        "autoEmbed": true,
+        "dimensions": null,
+        "model": "voyage-4-lite",
+        "similarity": null
+      },
+      "oversamplingFactor": 3,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "queryVector": null,
+      "textIndexName": "text_index",
+      "vectorIndexName": "vector_index"
+    },
+    "name": "hybrid_stages/auto/emptyfilter/limit=10/oversampling=3",
     "stages": [
       {
         "$rankFusion": {
@@ -2365,6 +3331,290 @@
       "vectorIndexName": "vector_index"
     },
     "name": "hybrid_stages/manual/nofilter/limit=10/oversampling=3",
+    "stages": [
+      {
+        "$rankFusion": {
+          "input": {
+            "pipelines": {
+              "text": [
+                {
+                  "$search": {
+                    "index": "text_index",
+                    "text": {
+                      "path": "content",
+                      "query": "what does the user prefer"
+                    }
+                  }
+                },
+                {
+                  "$limit": 10
+                }
+              ],
+              "vector": [
+                {
+                  "$vectorSearch": {
+                    "index": "vector_index",
+                    "limit": 10,
+                    "numCandidates": 30,
+                    "path": "embedding",
+                    "queryVector": [
+                      0.1,
+                      0.2,
+                      0.3
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "score"
+          }
+        }
+      },
+      {
+        "$limit": 10
+      }
+    ]
+  },
+  {
+    "input": {
+      "limit": 5,
+      "mode": {
+        "autoEmbed": false,
+        "dimensions": 3,
+        "model": null,
+        "similarity": "cosine"
+      },
+      "oversamplingFactor": 10,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "queryVector": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "textIndexName": "text_index",
+      "vectorIndexName": "vector_index"
+    },
+    "name": "hybrid_stages/manual/emptyfilter/limit=5/oversampling=10",
+    "stages": [
+      {
+        "$rankFusion": {
+          "input": {
+            "pipelines": {
+              "text": [
+                {
+                  "$search": {
+                    "index": "text_index",
+                    "text": {
+                      "path": "content",
+                      "query": "what does the user prefer"
+                    }
+                  }
+                },
+                {
+                  "$limit": 5
+                }
+              ],
+              "vector": [
+                {
+                  "$vectorSearch": {
+                    "index": "vector_index",
+                    "limit": 5,
+                    "numCandidates": 50,
+                    "path": "embedding",
+                    "queryVector": [
+                      0.1,
+                      0.2,
+                      0.3
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "score"
+          }
+        }
+      },
+      {
+        "$limit": 5
+      }
+    ]
+  },
+  {
+    "input": {
+      "limit": 5,
+      "mode": {
+        "autoEmbed": false,
+        "dimensions": 3,
+        "model": null,
+        "similarity": "cosine"
+      },
+      "oversamplingFactor": 3,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "queryVector": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "textIndexName": "text_index",
+      "vectorIndexName": "vector_index"
+    },
+    "name": "hybrid_stages/manual/emptyfilter/limit=5/oversampling=3",
+    "stages": [
+      {
+        "$rankFusion": {
+          "input": {
+            "pipelines": {
+              "text": [
+                {
+                  "$search": {
+                    "index": "text_index",
+                    "text": {
+                      "path": "content",
+                      "query": "what does the user prefer"
+                    }
+                  }
+                },
+                {
+                  "$limit": 5
+                }
+              ],
+              "vector": [
+                {
+                  "$vectorSearch": {
+                    "index": "vector_index",
+                    "limit": 5,
+                    "numCandidates": 15,
+                    "path": "embedding",
+                    "queryVector": [
+                      0.1,
+                      0.2,
+                      0.3
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "score"
+          }
+        }
+      },
+      {
+        "$limit": 5
+      }
+    ]
+  },
+  {
+    "input": {
+      "limit": 10,
+      "mode": {
+        "autoEmbed": false,
+        "dimensions": 3,
+        "model": null,
+        "similarity": "cosine"
+      },
+      "oversamplingFactor": 10,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "queryVector": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "textIndexName": "text_index",
+      "vectorIndexName": "vector_index"
+    },
+    "name": "hybrid_stages/manual/emptyfilter/limit=10/oversampling=10",
+    "stages": [
+      {
+        "$rankFusion": {
+          "input": {
+            "pipelines": {
+              "text": [
+                {
+                  "$search": {
+                    "index": "text_index",
+                    "text": {
+                      "path": "content",
+                      "query": "what does the user prefer"
+                    }
+                  }
+                },
+                {
+                  "$limit": 10
+                }
+              ],
+              "vector": [
+                {
+                  "$vectorSearch": {
+                    "index": "vector_index",
+                    "limit": 10,
+                    "numCandidates": 100,
+                    "path": "embedding",
+                    "queryVector": [
+                      0.1,
+                      0.2,
+                      0.3
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "$set": {
+          "score": {
+            "$meta": "score"
+          }
+        }
+      },
+      {
+        "$limit": 10
+      }
+    ]
+  },
+  {
+    "input": {
+      "limit": 10,
+      "mode": {
+        "autoEmbed": false,
+        "dimensions": 3,
+        "model": null,
+        "similarity": "cosine"
+      },
+      "oversamplingFactor": 3,
+      "queryFilter": {},
+      "queryText": "what does the user prefer",
+      "queryVector": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "textIndexName": "text_index",
+      "vectorIndexName": "vector_index"
+    },
+    "name": "hybrid_stages/manual/emptyfilter/limit=10/oversampling=3",
     "stages": [
       {
         "$rankFusion": {
