@@ -26,11 +26,6 @@ export default [
     files: ['src/**/*.ts', 'test/**/*.ts'],
     languageOptions: {
       parser: tsparser,
-      parserOptions: {
-        ecmaVersion: 2022,
-        sourceType: 'module',
-        project: './tsconfig.json',
-      },
       globals: nodeGlobals,
     },
     plugins: {
@@ -39,7 +34,6 @@ export default [
     },
     rules: {
       ...tseslint.configs.recommended.rules,
-      '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-unused-vars': unusedVars,
       '@typescript-eslint/explicit-function-return-type': 'error',
       '@typescript-eslint/explicit-module-boundary-types': 'error',
@@ -47,9 +41,8 @@ export default [
     },
   },
   {
-    files: ['src/**/__tests__/**/*.ts', 'test/**/*.ts'],
+    files: ['src/**/__tests__/**/*.ts', 'src/**/__fixtures__/**', 'test/**/*.ts'],
     rules: {
-      '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/explicit-module-boundary-types': 'off',
     },
@@ -57,8 +50,6 @@ export default [
   {
     files: ['scripts/**/*.mjs'],
     languageOptions: {
-      ecmaVersion: 2022,
-      sourceType: 'module',
       globals: nodeGlobals,
     },
     rules: {

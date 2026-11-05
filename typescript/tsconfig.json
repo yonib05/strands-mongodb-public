@@ -2,7 +2,6 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",
-    "moduleResolution": "NodeNext",
     "lib": ["ES2022"],
     "types": ["node"],
     "strict": true,
@@ -10,7 +9,6 @@
     "exactOptionalPropertyTypes": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "resolveJsonModule": true,
     "skipLibCheck": true
