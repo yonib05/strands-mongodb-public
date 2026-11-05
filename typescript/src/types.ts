@@ -79,7 +79,7 @@ export interface MongoDBMemoryStoreConfig extends MemoryStoreConfig {
   /** Ceiling a result must not exceed. Mutually exclusive with `minScore`; same scale caveat. */
   readonly maxScore?: number
   /** Lifetime in seconds from `created_at`, set on insert only. `0` expires at the next sweep; negative throws. */
-  readonly ttlSeconds?: number
+  readonly ttlSeconds?: number | undefined
   /** Manual-vector path only: embeds memories on `add` and string queries on `search`. */
   readonly embedder?: Embedder
 }

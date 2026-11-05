@@ -4,4 +4,10 @@
  * @packageDocumentation
  */
 
-export {}
+export {
+  DEFAULT_COLLECTION,
+  MongoDBMemoryStore,
+  TIER_RETRY_MAX_SECONDS,
+  TIER_RETRY_SECONDS,
+  UNSCOPED,
+} from '../memory-store.js'
