@@ -192,7 +192,7 @@ describeTier('contract', 'memory store', () => {
     await client.close()
   })
 
-  it('AT-053a, AT-065: initialize creates the ordinary indexes, and warns once where there is no search', async () => {
+  it('AT-045a, AT-053a, AT-065: initialize twice creates the ordinary indexes once, and warns once where there is no search', async () => {
     const { store: facts, logger, name } = store('ordinary')
 
     await facts.initialize()
