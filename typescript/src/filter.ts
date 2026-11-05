@@ -3,11 +3,15 @@ import { BSONRegExp } from 'mongodb'
 /** Fields the vector index always declares filterable, before `filterFields`. Stored names, so snake_case. */
 export const BAKED_IN_FILTER_FIELDS = ['scope', 'store_name'] as const
 
+// Every object the driver encodes as a subdocument is walked; these encode as BSON scalars instead.
+function isBsonScalar(value: object): boolean {
+  return value instanceof Date || value instanceof RegExp || value instanceof Uint8Array || '_bsontype' in value
+}
+
 function mappingEntries(value: unknown): [unknown, unknown][] | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || isBsonScalar(value)) return undefined
   if (value instanceof Map) return [...(value as Map<unknown, unknown>).entries()]
-  if (typeof value !== 'object' || value === null) return undefined
-  const proto: unknown = Object.getPrototypeOf(value)
-  return proto === Object.prototype || proto === null ? Object.entries(value) : undefined
+  return Object.keys(value).map((key) => [key, (value as Record<string, unknown>)[key]])
 }
 
 function isRegex(value: unknown): boolean {
@@ -98,7 +102,7 @@ export function validate(callerFilter: Record<string, unknown>, options: { decla
  *
  * @param callerFilters - Validated caller filters in order; `undefined` and `{}` add no term
  * @param options - `scope` and `storeName` of this store, never taken from caller input
- * @returns `{ $and: [scope term, store term, ...caller filters] }`, sharing no structure with the input
+ * @returns `{ $and: [scope term, store term, ...caller filters] }`, each caller filter shallow-copied so BSON values keep their type
  */
 export function compose(
   callerFilters: ReadonlyArray<Record<string, unknown> | undefined>,
@@ -109,7 +113,7 @@ export function compose(
     { store_name: { $eq: options.storeName } },
   ]
   for (const callerFilter of callerFilters) {
-    if (callerFilter && Object.keys(callerFilter).length > 0) terms.push(structuredClone(callerFilter))
+    if (callerFilter && Object.keys(callerFilter).length > 0) terms.push({ ...callerFilter })
   }
   return { $and: terms }
 }

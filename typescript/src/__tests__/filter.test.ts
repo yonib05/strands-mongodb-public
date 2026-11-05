@@ -1,4 +1,5 @@
-import { BSONRegExp } from 'mongodb'
+import { Buffer } from 'node:buffer'
+import { BSONRegExp, ObjectId } from 'mongodb'
 import { describe, expect, it } from 'vitest'
 import { BAKED_IN_FILTER_FIELDS, compose, validate } from '../filter.js'
 
@@ -100,6 +101,32 @@ describe('validate', () => {
       const filter = { tier: [new Map([['$where', 'sleep(1000)']])] }
 
       expect(() => validate(filter, { declaredFields: DECLARED })).toThrow(/\$where/)
+    })
+
+    class Sneaky {
+      $ne = 'gold'
+    }
+
+    it('AT-179 rejects an operator in a class instance used as the filter itself', () => {
+      expect(() => validate(new Sneaky() as unknown as Record<string, unknown>, { declaredFields: DECLARED })).toThrow(
+        /\$ne/
+      )
+    })
+
+    it('AT-179 rejects an operator in a class instance nested inside a value', () => {
+      expect(() => validate({ tier: { inner: new Sneaky() } }, { declaredFields: DECLARED })).toThrow(/\$ne/)
+    })
+
+    it.each([
+      ['an ObjectId', new ObjectId()],
+      ['a Date', new Date(0)],
+      ['a Buffer', Buffer.from('gold')],
+    ])('passes %s value untouched, since the driver encodes it as a scalar', (_kind, value) => {
+      const filter = { tier: value, nested: [{ tier: value }] }
+
+      validate(filter, { declaredFields: ['tier', 'nested'] })
+
+      expect(filter.tier).toBe(value)
     })
 
     it('accepts a null-prototype object as the filter itself', () => {
@@ -285,14 +312,22 @@ describe('compose', () => {
       expect(caller).toEqual({ 'metadata.tier': 'gold' })
     })
 
-    it('shares no structure with the caller filter', () => {
-      const caller: Record<string, unknown> = { 'metadata.tier': 'gold', nested: { tier: 'gold' } }
+    it('copies the caller filter so later top-level mutation leaves the predicate alone', () => {
+      const caller: Record<string, unknown> = { 'metadata.tier': 'gold' }
       const composed = compose([caller], options)
+      const term = (composed.$and as unknown[])[2]
 
       caller['metadata.tier'] = 'bronze'
-      ;(caller.nested as Record<string, unknown>).tier = 'bronze'
 
-      expect(composed.$and).toContainEqual({ 'metadata.tier': 'gold', nested: { tier: 'gold' } })
+      expect(term).not.toBe(caller)
+      expect(term).toEqual({ 'metadata.tier': 'gold' })
+    })
+
+    it('keeps a BSON value as the same instance', () => {
+      const id = new ObjectId()
+      const composed = compose([{ owner: id }], options)
+
+      expect(((composed.$and as unknown[])[2] as Record<string, unknown>).owner).toBe(id)
     })
   })
 })
