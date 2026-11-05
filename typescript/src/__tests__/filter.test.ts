@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer'
-import { BSONRegExp, ObjectId } from 'mongodb'
+import { BSON, BSONRegExp, ObjectId } from 'mongodb'
 import { describe, expect, it } from 'vitest'
 import { BAKED_IN_FILTER_FIELDS, compose, validate } from '../filter.js'
 
@@ -18,6 +18,28 @@ function messageOf(run: () => void): string {
 describe('BAKED_IN_FILTER_FIELDS', () => {
   it('is scope and store_name, in wire format', () => {
     expect(BAKED_IN_FILTER_FIELDS).toEqual(['scope', 'store_name'])
+  })
+})
+
+describe('BSON encoding premise', () => {
+  const plain = BSON.serialize({ tier: { $ne: 'gold' } })
+
+  it('AT-179 encodes a Map exactly as a plain object', () => {
+    expect(Buffer.compare(BSON.serialize({ tier: new Map([['$ne', 'gold']]) }), plain)).toBe(0)
+  })
+
+  it('AT-179 encodes a class instance exactly as a plain object', () => {
+    class Sneaky {
+      $ne = 'gold'
+    }
+
+    expect(Buffer.compare(BSON.serialize({ tier: new Sneaky() }), plain)).toBe(0)
+  })
+
+  it('AT-179 encodes an object with a null _bsontype as a document carrying its keys', () => {
+    const decoded = BSON.deserialize(BSON.serialize({ tier: { _bsontype: null, $ne: 'gold' } }))
+
+    expect(decoded.tier).toMatchObject({ $ne: 'gold' })
   })
 })
 
@@ -115,6 +137,26 @@ describe('validate', () => {
 
     it('AT-179 rejects an operator in a class instance nested inside a value', () => {
       expect(() => validate({ tier: { inner: new Sneaky() } }, { declaredFields: DECLARED })).toThrow(/\$ne/)
+    })
+
+    const forged = '{"_bsontype": null, "tier": {"$ne": "gold"}, "undeclared": {"$where": "sleep(1000)"}}'
+
+    it('AT-179 rejects an operator in a forged null _bsontype object used as the filter itself', () => {
+      const filter = JSON.parse(forged) as Record<string, unknown>
+
+      expect(() => validate(filter, { declaredFields: [...DECLARED, '_bsontype', 'undeclared'] })).toThrow(/\$ne/)
+    })
+
+    it('AT-179 rejects an operator in a forged null _bsontype object nested as a value', () => {
+      const filter = { tier: JSON.parse(forged) as unknown }
+
+      expect(() => validate(filter, { declaredFields: DECLARED })).toThrow(/\$ne/)
+    })
+
+    it('AT-049 checks the top-level keys of a forged null _bsontype filter', () => {
+      const filter = JSON.parse('{"_bsontype": null, "tier": "gold", "undeclared": "x"}') as Record<string, unknown>
+
+      expect(() => validate(filter, { declaredFields: DECLARED })).toThrow(/'_bsontype', 'undeclared'/)
     })
 
     it.each([

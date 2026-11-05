@@ -4,8 +4,14 @@ import { BSONRegExp } from 'mongodb'
 export const BAKED_IN_FILTER_FIELDS = ['scope', 'store_name'] as const
 
 // Every object the driver encodes as a subdocument is walked; these encode as BSON scalars instead.
+// bson treats `_bsontype == null` as a plain document, so only a non-null marker is a BSON type.
 function isBsonScalar(value: object): boolean {
-  return value instanceof Date || value instanceof RegExp || value instanceof Uint8Array || '_bsontype' in value
+  return (
+    value instanceof Date ||
+    value instanceof RegExp ||
+    value instanceof Uint8Array ||
+    (value as { _bsontype?: unknown })._bsontype != null
+  )
 }
 
 function mappingEntries(value: unknown): [unknown, unknown][] | undefined {
@@ -85,6 +91,7 @@ function rejectUndeclaredFields(callerFilter: Record<string, unknown>, declared:
  * Checks a caller-supplied filter: no `$`-prefixed or non-string key at any depth, no regex value at
  * any depth, and every top-level key declared filterable. Guards run in that order, so an operator key
  * is reported before a regex and both before an undeclared field.
+ * Values with a `toBSON` method, `DBRef.fields` and `Code` scope are not inspected, as custom codecs are out of scope.
  *
  * @param callerFilter - The filter as the caller supplied it. Not modified.
  * @param options - `declaredFields`: every path the index declares filterable
