@@ -13,12 +13,19 @@ export type Tier = keyof typeof TIER_VARIABLES
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
+// The build flag is set only from the shell, as in `python/tests/conftest.py`.
+const DOTENV_VARIABLES: ReadonlySet<string> = new Set([
+  TIER_VARIABLES.contract,
+  TIER_VARIABLES.integration,
+  TIER_VARIABLES.autoembed,
+])
+
 export const ENV_FILE_LOCATIONS: readonly string[] = [join(PACKAGE_ROOT, '.env'), join(PACKAGE_ROOT, '..', '.env')]
 
 function parseEnvFile(text: string): Map<string, string> {
   const values = new Map<string, string>()
   for (const line of text.split(/\r?\n/)) {
-    const stripped = line.trim().replace(/^export\s+/, '')
+    const stripped = line.trim()
     const eq = stripped.indexOf('=')
     if (!stripped || stripped.startsWith('#') || eq === -1) continue
     let value = stripped.slice(eq + 1).trim()
@@ -31,17 +38,16 @@ function parseEnvFile(text: string): Map<string, string> {
 }
 
 /**
- * Fills unset tier variables from the first `.env` file that exists, as `python/tests/conftest.py` does.
+ * Fills unset connection-string variables from the first `.env` file that exists, as `python/tests/conftest.py` does.
  *
  * @param locations - Candidate files in preference order: `typescript/.env`, then the repository root.
  */
 export function loadDotEnv(locations: readonly string[] = ENV_FILE_LOCATIONS): void {
-  const wanted = new Set<string>(Object.values(TIER_VARIABLES))
   const path = locations.find((candidate) => existsSync(candidate))
   if (path === undefined) return
   for (const [name, value] of parseEnvFile(readFileSync(path, 'utf8'))) {
     // Presence, not truthiness: `MONGODB_URI=` on the command line keeps a tier off.
-    if (wanted.has(name) && process.env[name] === undefined) process.env[name] = value
+    if (DOTENV_VARIABLES.has(name) && process.env[name] === undefined) process.env[name] = value
   }
 }
 

@@ -32,10 +32,24 @@ describe('loadDotEnv', () => {
     expect(tierUri('contract')).toBe('mongodb://localhost:27017/?directConnection=true')
   })
 
-  it('accepts an export prefix and strips one layer of quotes', () => {
-    const path = writeEnv('.env', 'export MONGODB_ATLAS_URI="mongodb+srv://u:p%40ss@cluster/?w=majority"\n')
+  it('strips one layer of quotes', () => {
+    const path = writeEnv('.env', 'MONGODB_ATLAS_URI="mongodb+srv://u:p%40ss@cluster/?w=majority"\n')
     loadDotEnv([path])
     expect(tierUri('integration')).toBe('mongodb+srv://u:p%40ss@cluster/?w=majority')
+  })
+
+  it('does not recognise an export prefix', () => {
+    const path = writeEnv('.env', 'export MONGODB_URI=x\n')
+    loadDotEnv([path])
+    expect(process.env.MONGODB_URI).toBeUndefined()
+  })
+
+  it('never sets the build tier flag', () => {
+    vi.stubEnv('STRANDS_MONGODB_BUILD_TIER', undefined)
+    const path = writeEnv('.env', 'STRANDS_MONGODB_BUILD_TIER=1\n')
+    loadDotEnv([path])
+    expect(process.env.STRANDS_MONGODB_BUILD_TIER).toBeUndefined()
+    expect(tierUri('build')).toBeUndefined()
   })
 
   it('does not override a variable that is already set', () => {
