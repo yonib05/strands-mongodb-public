@@ -160,22 +160,8 @@ export function textIndexDefinition(options: { textField?: string } = {}): Docum
   return { mappings: { dynamic: false, fields: { [textField]: [{ type: 'string' }] } } }
 }
 
-// Python's `json.dumps` defaults, so operator commands match the Python package byte for byte.
-function dumps(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(dumps).join(', ')}]`
-  if (typeof value === 'object' && value !== null) {
-    return `{${Object.entries(value)
-      .map(([key, nested]) => `${dumps(key)}: ${dumps(nested)}`)
-      .join(', ')}}`
-  }
-  return JSON.stringify(value).replace(
-    /[^\x20-\x7e]/g,
-    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`
-  )
-}
-
 function runCommand(command: Document): string {
-  return `db.runCommand(${dumps(command)})`
+  return `db.runCommand(${JSON.stringify(command)})`
 }
 
 /** One ordinary index: what to create, and what makes an existing index count as it. */
