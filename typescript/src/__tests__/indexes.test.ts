@@ -461,13 +461,24 @@ describe('indexes', () => {
 
     describe('commands', () => {
       it.each([
-        ...commands.storage_specs.map((entry) => ['storage_specs', storageSpecs, entry] as const),
-        ...commands.memory_specs.map((entry) => ['memory_specs', memorySpecs, entry] as const),
-      ])('%s %s', (_surface, specs, entry) => {
+        ...commands.storage_specs.map((entry) => ['storage_specs', entry.name, storageSpecs, entry] as const),
+        ...commands.memory_specs.map((entry) => ['memory_specs', entry.name, memorySpecs, entry] as const),
+      ])('%s %s', (_surface, _name, specs, entry) => {
         const spec = specs().find((candidate) => candidate.name === entry.name)
 
         expectEquivalent(spec?.creationCommand(entry.collection), entry.creation_command)
         expectEquivalent(dropIndexCommand(entry.collection, entry.name), entry.drop_command)
+      })
+
+      it.each([
+        ...commands.storage_specs.map((entry) => ['storage_specs', entry.name, storageSpecs, entry] as const),
+        ...commands.memory_specs.map((entry) => ['memory_specs', entry.name, memorySpecs, entry] as const),
+      ])('%s %s keeps the compound key order', (_surface, _name, specs, entry) => {
+        const spec = specs().find((candidate) => candidate.name === entry.name)
+        const order = Object.keys(commandBody(entry.creation_command).indexes[0].key)
+
+        expect(Object.keys(commandBody(spec?.creationCommand(entry.collection) ?? '').indexes[0].key)).toEqual(order)
+        expect(Object.keys(spec?.toDescription().key ?? {})).toEqual(order)
       })
 
       it.each(commands.memory_search_specs)('memory_search_specs $name', (entry) => {
