@@ -2,13 +2,12 @@ import { Buffer } from 'node:buffer'
 import { readFileSync } from 'node:fs'
 import { URL } from 'node:url'
 import { inspect } from 'node:util'
-import { context, trace } from '@opentelemetry/api'
-import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
-import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
+import { trace } from '@opentelemetry/api'
 import type { Logger } from '@strands-agents/sdk'
 import type { MongoClient, MongoClientOptions } from 'mongodb'
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConstructedMongoClient, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
+import { recordSpans } from '../__fixtures__/spans.js'
 import { close, type Connection, DRIVER_NAME, packageVersion, resolve } from '../client.js'
 import type { MongoDBConfig } from '../types.js'
 
@@ -16,17 +15,7 @@ vi.mock('mongodb', async () => ({
   MongoClient: (await import('../__fixtures__/fake-mongo.js')).ConstructedMongoClient,
 }))
 
-const exporter = new InMemorySpanExporter()
-
-beforeAll(() => {
-  trace.setGlobalTracerProvider(new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] }))
-  context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable())
-})
-
-afterAll(() => {
-  trace.disable()
-  context.disable()
-})
+const exporter = recordSpans()
 
 const resolved: MongoDBConfig[] = []
 
@@ -35,7 +24,6 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
-  exporter.reset()
   await Promise.all(resolved.splice(0).map((config) => close(config)))
 })
 

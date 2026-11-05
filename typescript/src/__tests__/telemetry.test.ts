@@ -1,36 +1,21 @@
 import { readFileSync } from 'node:fs'
 import { URL } from 'node:url'
-import { context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
-import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
-import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
+import { SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
 import type { ReadableSpan } from '@opentelemetry/sdk-trace-base'
 import type { Logger } from '@strands-agents/sdk'
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { oneSpan, recordSpans } from '../__fixtures__/spans.js'
 import type { Attribute } from '../telemetry.js'
 import { annotate, ATTRIBUTES, event, span, traced } from '../telemetry.js'
 
-const exporter = new InMemorySpanExporter()
-
-beforeAll(() => {
-  trace.setGlobalTracerProvider(new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] }))
-  context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable())
-})
-
-afterAll(() => {
-  trace.disable()
-  context.disable()
-})
-
-afterEach(() => exporter.reset())
+const exporter = recordSpans()
 
 function silentLogger(): Logger {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 }
 
 function one(name: string): ReadableSpan {
-  const spans = exporter.getFinishedSpans().filter((finished) => finished.name === name)
-  expect(spans.map((finished) => finished.name)).toEqual([name])
-  return spans[0]!
+  return oneSpan(exporter, name)
 }
 
 class StorageError extends Error {}

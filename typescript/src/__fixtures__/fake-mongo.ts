@@ -1,4 +1,4 @@
-import type { Document, DriverInfo, IndexDescription, MongoClientOptions } from 'mongodb'
+import type { Document, DriverInfo, IndexDescription, MongoClientOptions, SearchIndexDescription } from 'mongodb'
 
 type Filter = Record<string, unknown>
 type SortSpec = Record<string, 1 | -1>
@@ -35,6 +35,43 @@ function matches(doc: Document, filter: Filter): boolean {
   })
 }
 
+/** The database half of the fake: `createCollection`, `listCollections` and `command` for `buildInfo`. */
+export class FakeDb {
+  readonly createCollectionCalls: string[] = []
+  readonly commandCalls: Document[] = []
+  // 8.0.23 unless a test says otherwise: what the target deployments report.
+  buildInfo: Document = { version: '8.0.23', versionArray: [8, 0, 23, 0] }
+  createCollectionError: Error | undefined
+  commandError: Error | undefined
+
+  constructor(
+    readonly databaseName: string,
+    private readonly collection: FakeCollection
+  ) {}
+
+  async createCollection(name: string): Promise<void> {
+    this.createCollectionCalls.push(name)
+    if (this.createCollectionError !== undefined) throw this.createCollectionError
+    if (name === this.collection.collectionName) this.collection.exists = true
+  }
+
+  listCollections(filter: { name: string }): { toArray(): Promise<Document[]> } {
+    const { collection } = this
+    return {
+      toArray: async () => {
+        if (filter.name !== collection.collectionName || !collection.exists) return []
+        return [{ name: collection.collectionName, type: 'collection', options: collection.collectionOptions }]
+      },
+    }
+  }
+
+  async command(command: Document): Promise<Document> {
+    this.commandCalls.push(command)
+    if (this.commandError !== undefined) throw this.commandError
+    return this.buildInfo
+  }
+}
+
 /** Cursor returned by {@link FakeCollection.find}. */
 export class FakeCursor {
   private sortSpec: SortSpec = {}
@@ -64,11 +101,81 @@ export class FakeCursor {
 export class FakeCollection {
   readonly docs: Document[] = []
   readonly indexes: IndexDescription[] = [{ key: { _id: 1 }, name: '_id_' }]
+  readonly db: FakeDb
+  readonly createdSearchIndexes: SearchIndexDescription[] = []
+  readonly searchIndexes = new Map<string, Document>()
+  /** Whether `listCollections` reports this collection. Set by `createCollection` and `setCollation`. */
+  exists = false
+  collectionOptions: Document = {}
+  private listSearchIndexesFailures: Error[] = []
+  private listSearchIndexReads = 0
 
   constructor(
     readonly dbName: string,
     readonly collectionName: string
-  ) {}
+  ) {
+    this.db = new FakeDb(dbName, this)
+  }
+
+  /** How many times `listSearchIndexes().toArray()` ran. */
+  get searchIndexReads(): number {
+    return this.listSearchIndexReads
+  }
+
+  /** Marks the collection present with the given default collation, as `createCollection` would. */
+  setCollation(collation: Document | undefined): void {
+    this.exists = true
+    this.collectionOptions = collation === undefined ? {} : { collation }
+  }
+
+  /** Puts a search index in place as the server would report it, `READY` unless told otherwise. */
+  addSearchIndex(description: SearchIndexDescription, status = 'READY'): void {
+    const name = description.name ?? 'default'
+    this.searchIndexes.set(name, {
+      id: `id-${name}`,
+      name,
+      type: description.type ?? 'search',
+      status,
+      queryable: status === 'READY',
+      latestVersion: 0,
+      latestDefinition: structuredClone(description.definition),
+    })
+  }
+
+  /** Moves a search index to `status`, or removes it when `status` is `undefined`, as another actor might. */
+  setSearchIndexStatus(name: string, status: string | undefined): void {
+    const index = this.searchIndexes.get(name)
+    if (status === undefined) {
+      this.searchIndexes.delete(name)
+      return
+    }
+    if (index === undefined) throw new Error(`no search index ${name}`)
+    index.status = status
+    index.queryable = status === 'READY'
+  }
+
+  /** Makes the next `listSearchIndexes` reads fail, one error per read, in order. */
+  failListSearchIndexes(...errors: Error[]): void {
+    this.listSearchIndexesFailures.push(...errors)
+  }
+
+  listSearchIndexes(name?: string): { toArray(): Promise<Document[]> } {
+    return {
+      toArray: async () => {
+        this.listSearchIndexReads += 1
+        const failure = this.listSearchIndexesFailures.shift()
+        if (failure !== undefined) throw failure
+        const all = [...this.searchIndexes.values()].map((index) => structuredClone(index))
+        return name === undefined ? all : all.filter((index) => index.name === name)
+      },
+    }
+  }
+
+  async createSearchIndex(description: SearchIndexDescription): Promise<string> {
+    this.createdSearchIndexes.push(description)
+    this.addSearchIndex(description)
+    return description.name ?? 'default'
+  }
 
   async findOne(filter: Filter = {}): Promise<Document | null> {
     const doc = this.docs.find((candidate) => matches(candidate, filter))
@@ -114,6 +221,7 @@ export class FakeCollection {
   }
 
   async createIndexes(specs: IndexDescription[]): Promise<string[]> {
+    this.exists = true
     return Promise.all(specs.map((spec) => this.createIndex(spec.key as Document, spec)))
   }
 
