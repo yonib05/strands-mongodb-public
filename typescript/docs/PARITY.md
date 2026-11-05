@@ -6,23 +6,23 @@ Fixtures in `src/__fixtures__/` are regenerated with `cd python && hatch run pyt
 ## 1. SDK floor: `@strands-agents/sdk` 1.23.0
 
 The floor is `>=1.23.0`.
-`StorageSearchResult` is not exported from `@strands-agents/sdk/storage`, or from any public entry point, in any published version up to 1.24.0 or on harness-sdk `origin/main` (74bb30721).
-Derive it from the interface instead:
+`StorageSearchResult` is exported from `@strands-agents/sdk/storage/search`, not from `@strands-agents/sdk/storage`.
 
 ```ts
-type StorageSearchResult = Awaited<ReturnType<NonNullable<Storage['search']>>>[number]
+import type { Storage } from '@strands-agents/sdk/storage'
+import type { SearchStrategy, Embedder, StorageSearchResult } from '@strands-agents/sdk/storage/search'
 ```
 
-With that derivation, the stub (importing `Storage`, `SearchStrategy`, `Embedder`, `StorageError`, `Logger`, `JSONValue`, `Tool`, `MemoryStore`, `MemoryStoreConfig`, `MemoryEntry`, `SearchOptions` and using `SearchStrategy['index']`, `MemoryStore['initialize']`, `MemoryStore['getTools']`) gives:
+The stub (those imports plus `StorageError`, `Logger`, `JSONValue`, `Tool`, `MemoryStore`, `MemoryStoreConfig`, `MemoryEntry`, `SearchOptions` from `@strands-agents/sdk`, using `SearchStrategy['index']`, `MemoryStore['initialize']`, `MemoryStore['getTools']`) gives:
 
 | SDK | `tsc --noEmit` | First error |
 | --- | --- | --- |
-| 1.10.0, 1.12.0 | fail | `Storage` has no `search`; no `@strands-agents/sdk/storage/search` module |
+| 1.10.0, 1.12.0 | fail | no `@strands-agents/sdk/storage/search` module |
 | 1.14.0 to 1.17.0 | fail | no `Embedder` export; `SearchStrategy` has no `index` |
 | 1.18.0 to 1.22.0 | fail | `@strands-agents/sdk/storage/search` has no `Embedder` export |
 | 1.23.0, 1.24.0 | pass | |
 
-The boundary at 1.22.0 to 1.23.0 is the same on TypeScript 5.9.3 and 7.0.2.
+With the import path above on TypeScript 5.9.3: 1.22.0 fails with `TS2305: Module '"@strands-agents/sdk/storage/search"' has no exported member 'Embedder'`, and 1.23.0 passes.
 
 ## 2. Keyword tokenizer: identical
 
