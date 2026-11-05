@@ -23,6 +23,7 @@ The stub (those imports plus `StorageError`, `Logger`, `JSONValue`, `Tool`, `Mem
 | 1.23.0, 1.24.0 | pass | |
 
 With the import path above on TypeScript 5.9.3: 1.22.0 fails with `TS2305: Module '"@strands-agents/sdk/storage/search"' has no exported member 'Embedder'`, and 1.23.0 passes.
+The floor was measured in a scratch project on TypeScript 5.9.3; this package pins `typescript` `^6.0.3`.
 
 ## 2. Keyword tokenizer: identical
 
@@ -38,46 +39,11 @@ atlas-local `mongodb/mongodb-atlas-local:8` (MongoDB 8.3.13), driver `mongodb@7.
 Fields: `id`, `name`, `type`, `status`, `queryable`, `latestVersion`, `latestDefinition`.
 `status` goes from `PENDING` to `READY`; `queryable` goes from `false` to `true`.
 
-Immediately after `createSearchIndex`:
+Abbreviated, with only the fields that change between creation and settling:
 
 ```
-[
-  {
-    id: '6aecd59e6f588f18278b6539',
-    name: 'vector_index',
-    type: 'vectorSearch',
-    status: 'PENDING',
-    queryable: false,
-    latestVersion: 0,
-    latestDefinition: {
-      fields: [
-        { type: 'vector', path: 'embedding', numDimensions: 3, similarity: 'cosine' },
-        { type: 'filter', path: 'scope' },
-        { type: 'filter', path: 'store_name' }
-      ]
-    }
-  }
-]
-```
-
-Once settled:
-
-```
-{
-  id: '6aecd59e6f588f18278b6539',
-  name: 'vector_index',
-  type: 'vectorSearch',
-  status: 'READY',
-  queryable: true,
-  latestVersion: 0,
-  latestDefinition: {
-    fields: [
-      { type: 'vector', path: 'embedding', numDimensions: 3, similarity: 'cosine' },
-      { type: 'filter', path: 'scope' },
-      { type: 'filter', path: 'store_name' }
-    ]
-  }
-}
+{ name: 'vector_index', type: 'vectorSearch', status: 'PENDING', queryable: false, ... }
+{ name: 'vector_index', type: 'vectorSearch', status: 'READY', queryable: true, ... }
 ```
 
 ## 4. AutoEmbeddings on atlas-local: code 8
@@ -108,15 +74,7 @@ A `$vectorSearch` naming an index that does not exist returns `[]` with no error
 
 ## 5. Empty `Binary`
 
-`new Binary(new Uint8Array(0))` is subtype 0 with length 0, and survives a round trip as a `Binary`.
-A bare `Uint8Array(0)` written as a field value also reads back as a `Binary` of subtype 0 and length 0.
-
-```
-new Binary(new Uint8Array(0))      -> Binary.createFromBase64('', 0)
-sub_type 0, position 0, length() 0, buffer Buffer of length 0, value().length 0
-BSON.serialize({ data })           -> 10000000056461746100000000000000
-findOne after insert               -> Binary.createFromBase64('', 0), instanceof Binary, sub_type 0, length() 0
-```
+`new Binary(new Uint8Array(0))` and a bare `Uint8Array(0)` field value both read back as a `Binary` of subtype 0 and length 0.
 
 ## 6. Document size: matches `_encoded_size`
 
@@ -124,23 +82,9 @@ findOne after insert               -> Binary.createFromBase64('', 0), instanceof
 Adding `expires_at: Date` adds exactly 20.
 Both equal `BSON.serialize(...).length`, and a bare `Uint8Array` for `data` sizes the same as a `Binary`.
 
+Every combination of four keys (1 to 26 UTF-8 bytes) and four `data` lengths (0 to 65536) matched `_encoded_size`, for example:
+
 ```
 key                    keyBytes  size   plain  python  withTtl  pythonTtl
-'k'                    1         0      47     47      67       67
-'k'                    1         1      48     48      68       68
-'k'                    1         1000   1047   1047    1067     1067
-'k'                    1         65536  65583  65583   65603    65603
-'strands/session/abc'  19        0      65     65      85       85
-'strands/session/abc'  19        1      66     66      86       86
 'strands/session/abc'  19        1000   1065   1065    1085     1085
-'strands/session/abc'  19        65536  65601  65601   65621    65621
-'clé/ünïcödé/日本語'   26        0      72     72      92       92
-'clé/ünïcödé/日本語'   26        1      73     73      93       93
-'clé/ünïcödé/日本語'   26        1000   1072   1072    1092     1092
-'clé/ünïcödé/日本語'   26        65536  65608  65608   65628    65628
-'🙂/emoji'             10        0      56     56      76       76
-'🙂/emoji'             10        1      57     57      77       77
-'🙂/emoji'             10        1000   1056   1056    1076     1076
-'🙂/emoji'             10        65536  65592  65592   65612    65612
-all match: true
 ```
