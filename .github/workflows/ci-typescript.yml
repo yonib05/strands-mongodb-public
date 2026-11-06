@@ -1,15 +1,33 @@
 name: CI - TypeScript
 
+# Four gates on a change and two jobs on the weekly cron or on demand. typescript/test/__tests__/ci.test.ts
+# reads this file as YAML and checks its structure.
+
 on:
   pull_request:
     paths:
+      # Every file a test in typescript/ reads; the conventions test sweeps every Markdown file for credentials.
       - 'typescript/**'
       - '.github/workflows/ci-typescript.yml'
+      - '.github/workflows/release-typescript.yml'
+      - '.github/dependabot.yml'
+      - 'python/src/strands_mongodb/_telemetry.py'
+      - 'python/src/strands_mongodb/_pipeline.py'
+      - 'python/src/strands_mongodb/_indexes.py'
+      - '**.md'
   push:
     branches: [ main ]
     paths:
       - 'typescript/**'
       - '.github/workflows/ci-typescript.yml'
+      - '.github/workflows/release-typescript.yml'
+      - '.github/dependabot.yml'
+      - 'python/src/strands_mongodb/_telemetry.py'
+      - 'python/src/strands_mongodb/_pipeline.py'
+      - 'python/src/strands_mongodb/_indexes.py'
+      - '**.md'
+  schedule:
+    - cron: '0 6 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -26,6 +44,7 @@ defaults:
 jobs:
   lint:
     name: Lint
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -59,6 +78,7 @@ jobs:
 
   test:
     name: Test - Node ${{ matrix.node-version }}
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -82,5 +102,265 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Both coverage floors: vitest's 90% thresholds, then scripts/check-file-coverage.mjs for 70% per file.
       - name: Run tests with coverage
         run: npm run test:coverage
+
+      - name: Run the release gate over that run
+        run: npm run test:gate
+
+  floors:
+    name: Dependency floors
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          # The oldest Node the `engines` field admits.
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: typescript/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install every declared peer floor
+        run: node scripts/pin-floors.mjs --install
+
+      # `npm ls` exits non-zero on a version outside the devDependency ranges, which a floor is meant to be.
+      - name: Show what resolved
+        run: npm ls --depth=0 @strands-agents/sdk mongodb @opentelemetry/api || true
+
+      - name: Run tests against the floors
+        run: npm test
+
+      - name: Type check against the floors
+        run: npm run type-check
+
+  contract:
+    name: Contract tier (${{ matrix.deployment.label }})
+    if: github.event_name != 'schedule'
+    # Not ubuntu-latest: from runner image 20261025 its kernel is 6.19 or newer, where MongoDB 8.x refuses to
+    # start (log id 12257600, SERVER-125742). ubuntu-22.04 runs kernel 6.8. Move back once MongoDB lifts the guard.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        deployment:
+          - label: mongod alone
+            image: mongo:8
+            health: "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
+            uri: mongodb://localhost:27017
+            expect_search: ''
+          - label: with a search process
+            image: mongodb/mongodb-atlas-local:8
+            # The image's own HEALTHCHECK: a ping answers before mongot is up.
+            health: /usr/local/bin/runner healthcheck
+            uri: mongodb://localhost:27017/?directConnection=true
+            expect_search: '1'
+
+    services:
+      mongodb:
+        image: ${{ matrix.deployment.image }}
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "${{ matrix.deployment.health }}"
+          --health-interval 10s
+          --health-timeout 60s
+          --health-retries 20
+
+    env:
+      MONGODB_URI: ${{ matrix.deployment.uri }}
+      STRANDS_MONGODB_EXPECT_SEARCH: ${{ matrix.deployment.expect_search }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: typescript/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the contract tier
+        run: npm run test:contract
+
+      # Each tier run replaces .vitest-results.json, so the gate reads it before the next tier starts.
+      - name: Run the release gate over the contract tier
+        run: npm run test:gate
+
+      - name: Run the integration tier
+        if: matrix.deployment.expect_search == '1'
+        env:
+          MONGODB_ATLAS_URI: ${{ matrix.deployment.uri }}
+        run: npm run test:integration
+
+      - name: Run the release gate over the integration tier
+        if: matrix.deployment.expect_search == '1'
+        run: npm run test:gate
+
+      - name: Assert the tiers left the working tree clean
+        run: |
+          dirty="$(git status --porcelain)"
+          if [ -n "$dirty" ]; then
+            echo "The tiers left files behind:"
+            echo "$dirty"
+            exit 1
+          fi
+
+  sdk-compat:
+    name: Latest SDK compatibility
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Not ubuntu-latest: from runner image 20261025 its kernel is 6.19 or newer, where MongoDB 8.x refuses to
+    # start (log id 12257600, SERVER-125742). ubuntu-22.04 runs kernel 6.8. Move back once MongoDB lifts the guard.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    services:
+      mongodb:
+        image: mongodb/mongodb-atlas-local:8
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "/usr/local/bin/runner healthcheck"
+          --health-interval 10s
+          --health-timeout 60s
+          --health-retries 20
+
+    env:
+      MONGODB_URI: mongodb://localhost:27017/?directConnection=true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: typescript/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Update the SDK to latest
+        run: |
+          npm install @strands-agents/sdk@latest --no-save
+          # Not `npm ls`, which exits non-zero once latest leaves the devDependency range.
+          node -p "'@strands-agents/sdk ' + require('./node_modules/@strands-agents/sdk/package.json').version"
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Run the compat tier
+        run: npm run test:compat
+
+      - name: Run the contract tier against the updated SDK
+        run: npm run test:contract
+
+      - name: Assert the tier left the working tree clean
+        run: |
+          dirty="$(git status --porcelain)"
+          if [ -n "$dirty" ]; then
+            echo "The contract tier left files behind:"
+            echo "$dirty"
+            exit 1
+          fi
+
+  atlas:
+    name: Atlas tiers
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # About ten minutes to create an M10, up to forty for the two tiers, and the teardown.
+    timeout-minutes: 75
+    # Shared with ci-python.yml, so the reaper in `up` never meets a cluster another run is using.
+    concurrency:
+      group: atlas-ci-cluster
+      cancel-in-progress: false
+
+    env:
+      ATLAS_CI_CLUSTER: sm-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      DO_NOT_TRACK: '1'
+      MONGODB_ATLAS_SKIP_UPDATE_CHECK: 'yes'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: typescript/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install the Atlas CLI
+        env:
+          ATLAS_CLI_VERSION: 1.49.0
+          ATLAS_CLI_SHA256: 045948133107b87f4b3af670ab3931f8a7ac82e5fbe21204943adb336d5e11d4
+        run: |
+          archive="mongodb-atlas-cli_${ATLAS_CLI_VERSION}_linux_x86_64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/mongodb/mongodb-atlas-cli/releases/download/atlascli%2Fv${ATLAS_CLI_VERSION}/${archive}"
+          echo "${ATLAS_CLI_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/mongodb-atlas-cli_${ATLAS_CLI_VERSION}_linux_x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Create the cluster
+        id: cluster
+        working-directory: python
+        env:
+          MONGODB_ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+          MONGODB_ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+          MONGODB_ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+        run: python scripts/atlas_ci_cluster.py up
+
+      - name: Run the integration tier
+        env:
+          MONGODB_ATLAS_URI: ${{ steps.cluster.outputs.uri }}
+        run: npm run test:integration
+
+      - name: Run the autoembed tier
+        env:
+          MONGODB_AUTOEMBED_URI: ${{ steps.cluster.outputs.uri }}
+        run: npm run test:autoembed
+
+      - name: Delete the cluster
+        if: always()
+        working-directory: python
+        env:
+          MONGODB_ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+          MONGODB_ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+          MONGODB_ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+        run: python scripts/atlas_ci_cluster.py down

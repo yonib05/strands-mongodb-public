@@ -45,6 +45,17 @@ version heading when that version is tagged.
 - Two runnable examples in `examples/`, ported from `python/examples/`: `memory-recall.ts` recalls in a
   second process a fact the first stored, and `unified-storage.ts` puts sessions, context and file memory
   in one collection and resumes the session in a new process.
+- CI for every change: the contract tier against `mongo:8` and the Atlas local image, the integration
+  tier on the latter, and the unit tier against the declared peer floors. Weekly, the compat and contract
+  tiers against the latest `@strands-agents/sdk`, and the integration and autoembed tiers against a
+  throwaway Atlas cluster.
+- `.github/workflows/release-typescript.yml`: a `typescript-v*` tag runs the gate, writes the version
+  from the tag, packs and verifies the tarball, and publishes it to npm once the `npm` environment's
+  reviewers approve.
+
+### Changed
+
+- `npm run build` empties `dist/` first, so a file whose source was deleted cannot ship.
 
 ## [0.1.0]
 

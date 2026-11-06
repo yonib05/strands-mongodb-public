@@ -115,13 +115,20 @@ starts the workflow by hand from the Actions tab:
 ![Where each test tier runs: the unit and contract tiers and the integration tier on every change, the Atlas tiers on a throwaway cluster weekly or on demand](docs/images/ci-tiers.png)
 
 The TypeScript package has its own workflow, `.github/workflows/ci-typescript.yml`, which runs on a change
-under `typescript/`. Two jobs gate a change today, one of them twice over two Node versions, and
-`npm run check` from `typescript/` is the local form of both:
+under `typescript/` or to a file its tests read. Four jobs gate a change, two of them twice over a matrix,
+and two more run on the weekly cron or on demand. `npm run check` from `typescript/` is the local form of
+the first two:
 
 | Job | Runs |
 |---|---|
 | `Lint` | `npm run format:check`, `npm run lint`, `npm run type-check`, `npm run build` |
-| `Test - Node <version>` | `npm run test:coverage` on Node 22 and 24. No deployment, so no secrets |
+| `Test - Node <version>` | `npm run test:coverage` on Node 22 and 24, which enforces both coverage floors (90% aggregate, 70% per file), then `npm run test:gate`. No deployment, so no secrets |
+| `Dependency floors` | `node scripts/pin-floors.mjs --install` puts the lowest version of every peer range in place, on Node 22, then `npm test` and `npm run type-check` run against them |
+| `Contract tier (<deployment>)` | `npm run test:contract` against a `mongo:8` service container and against a `mongodb/mongodb-atlas-local:8` one. The second leg also runs `npm run test:integration`. `npm run test:gate` follows each tier. No secret either time |
+| `Latest SDK compatibility` | Weekly or on demand, against the newest published `@strands-agents/sdk`. Type-checks, then runs `npm run test:compat`, then `npm run test:contract` against the Atlas local image |
+| `Atlas tiers` | Weekly, or on demand. Creates an Atlas cluster with `python/scripts/atlas_ci_cluster.py`, runs `npm run test:integration` and `npm run test:autoembed` against it, and deletes it |
+
+There is no TypeScript `Coverage floors` job: `Test - Node <version>` enforces both floors on every run.
 
 Every change gets the `integration` tier, from a fork as readily as from a branch, because the Atlas local
 container carries the search process it needs. Only `autoembed` needs a real Atlas cluster: automated

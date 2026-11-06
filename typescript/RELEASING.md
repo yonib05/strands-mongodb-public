@@ -2,10 +2,9 @@
 
 A release is one push of one tag. Everything before it can be undone; the upload at the end cannot be:
 a version published to npm can be deprecated or, within 72 hours, unpublished, never replaced. This
-document gives the order of the steps, and says which of them do not exist yet.
+document gives the order of the steps, and the settings that must exist before the first one.
 
-The procedure will be `.github/workflows/release-typescript.yml`. **That workflow is not written yet**,
-so today the first publish is a manual `npm publish` by a maintainer, following the same steps by hand.
+The procedure is `.github/workflows/release-typescript.yml`, which runs on a `typescript-v*` tag.
 The Python half of this repository releases from `release-python.yml` on `python-v` tags, and
 [`python/RELEASING.md`](../python/RELEASING.md) is the model this one follows.
 
@@ -52,39 +51,39 @@ and version independently, which is the reason for the prefixes.
 
 ## What runs, in order
 
-When the workflow exists, it runs these in order on a `typescript-v*` tag. Until then they are the steps
-a maintainer runs by hand, in the same order, from `typescript/`:
+The workflow runs three jobs, each after the one before it succeeds. To publish by hand instead, run the
+same steps from `typescript/` in the same order.
 
-| Step | What it does |
+| Job | What it does |
 |---|---|
-| Gate | `npm ci`, then `npm run check` |
-| Version | `npm version --no-git-tag-version "${GITHUB_REF_NAME#typescript-v}"`, so `package.json` says what the tag says |
-| Build | `npm pack`, which runs `prepack` and so `npm run build`; then `npm run test:build` against that tarball |
-| Publish | `npm publish` of the tarball, in the `npm` environment |
+| `Release gate` | `npm ci`, then `npm run check` |
+| `Build and verify the artifact` | Checks that the tag carries a semantic version, runs `npm version --no-git-tag-version "${GITHUB_REF_NAME#typescript-v}"` so `package.json` says what the tag says, and checks that `npm pack --dry-run --json` reports that version. Then `npm run build`, `npm run test:build` against a packed tarball, and `npm pack`, uploading the tarball for the next job |
+| `Publish to npm` | Waits for approval in the `npm` environment, downloads that tarball and runs `npm publish` on it. A prerelease version such as `0.1.0-rc.1` goes to the `next` dist-tag rather than `latest` |
 
 `--provenance` is off. npm provenance links a published package to a public source repository and a
 public workflow run, and this repository is private; turning it on before the repository is public makes
-the publish fail. The release workflow will carry that condition as a comment beside the flag, and the
-flag goes on when the repository goes public.
+the publish fail. The workflow carries that condition as a comment on the publish step, and the flag goes
+on there when the repository goes public.
 
 ## The approval
 
-`Publish` will be bound to the `npm` environment, with required reviewers, so a tag does not publish: the
+`Publish to npm` is bound to the `npm` environment, with required reviewers, so a tag does not publish: the
 run stops and waits for a human to approve the deployment in the Actions UI. That pause is the last stop
 before the irreversible step, and it is the one part of this process you cannot discover by reading the
 repository: the environment and its reviewer list live in repository settings, not in a file.
 
-**Neither exists yet.** There is no `npm` environment in the repository settings and no trusted publisher
-on npm. Do not push a `typescript-v` tag expecting a release until both are configured; today the tag
-marks the commit and a maintainer publishes.
+**Configure it before the first tag.** Create the `npm` environment in the repository settings, add the
+required reviewers, and add the `NPM_TOKEN` secret to it. A job naming an environment that does not exist
+makes GitHub create one with no reviewers, so the publish would start unapproved and then fail for want
+of a token.
 
 ## Credentials
 
-Trusted publishing is not configured. The first publish uses a granular npm access token held by the
-maintainer who publishes, scoped to this package and to publishing, with two-factor authentication on
-the account. It is used once and revoked. The workflow, when it exists, reads `NODE_AUTH_TOKEN` from the
-`npm` environment's secrets; trusted publishing over OIDC replaces it once the repository is public and
-the package exists on npm to bind a publisher to.
+Trusted publishing is not configured. The publish uses a granular npm access token scoped to this
+package and to publishing, created by a maintainer with two-factor authentication on the account and
+stored as the `npm` environment's `NPM_TOKEN` secret. The publish step reads it as `NODE_AUTH_TOKEN`, and
+no other job sees it. Trusted publishing over OIDC replaces it once the repository is public and the
+package exists on npm to bind a publisher to.
 
 ## When it goes wrong
 
@@ -92,6 +91,8 @@ the package exists on npm to bind a publisher to.
 |---|---|---|
 | No run started | The tag did not match `typescript-v*` | Delete the tag locally and on the remote, tag again with the prefix |
 | The gate is red | The commit was not releasable | Fix on `main`, delete the tag from the remote, tag the new commit |
-| `package.json` still says `0.0.1-development` in the tarball | The version step did not run before `npm pack` | Run it, pack again. Nothing was published |
+| `The tag must be a semantic version` is red | The text after `typescript-v` is not a version npm accepts | Delete the tag locally and on the remote, tag again. Nothing was published |
+| `The packed version must equal the tag` is red | `npm version` did not write the tag's version into `package.json` | Read the step's log. Nothing was published |
+| `npm publish` refused with ENEEDAUTH or E401 | The `npm` environment has no `NPM_TOKEN`, or the token expired | Add or replace the secret, then re-run the failed job |
 | `npm publish` refused with E403 | The token lacks publish rights, or the version already exists | Fix the token, or release a new patch. A published version is permanent |
 | Wrong artifact published | It is on npm | `npm deprecate` it with a message pointing at the fix, publish a new patch. Unpublishing is possible for 72 hours only and leaves the version number burned |
