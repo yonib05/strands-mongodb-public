@@ -96,17 +96,18 @@ describeTier(
         const results = await answered(store('tenant-a'), 'window table')
 
         expect(results.map((entry) => entry.content)).toEqual([WINDOW])
-        expect(results[0]!.metadata).toMatchObject({
+        expect(results[0]!.metadata).toEqual({
+          seen: { $date: '2026-01-02T03:04:05Z' },
+          ref: { $oid: '65f1a2b3c4d5e6f7a8b9c0d1' },
           _id: added.ids[0],
           _scope: 'tenant-a',
           _searchType: 'text',
-          seen: { $date: '2026-01-02T03:04:05Z' },
-          ref: { $oid: '65f1a2b3c4d5e6f7a8b9c0d1' },
+          _relevanceScore: expect.any(Number),
         })
       })
 
       it('is the duplicate a TypeScript add of the same content reports', async () => {
-        expect(added).toMatchObject({ inserted: 1, duplicates: 0 })
+        expect(added).toEqual({ ids: [expect.any(String)], inserted: 1, duplicates: 0 })
 
         expect(await store('tenant-a').add(WINDOW)).toEqual({ ids: added.ids, inserted: 0, duplicates: 1 })
       })
