@@ -12,7 +12,7 @@ layout. It also lists what not to do, which is the shorter and more useful list.
 Search the existing issues first, including closed ones. When you open a new one, include:
 
 - A reproducible test case or a sequence of steps.
-- The version of this package, of `strands-agents`, and of Python.
+- The version of this package, of `strands-agents` and Python, or of `@strands-agents/sdk` and Node.js.
 - Which MongoDB deployment you are on: Atlas, an Atlas CLI local deployment, or a self-managed server, and
   its version. Behaviour differs across the three, and the search tiers differ most.
 - Anything unusual about the environment, and whether you have already tried the latest release.
@@ -54,6 +54,17 @@ python -m pytest
 
 Either way, every command runs from `python/`, not from the repository root.
 
+The TypeScript package needs Node.js 22 or newer and nothing else installed:
+
+```bash
+cd typescript
+npm ci
+npm run check
+```
+
+Every `npm` command runs from `typescript/`. `npm run check` is the whole gate; `npm test` alone is the
+unit project.
+
 ## Running the tests
 
 Most of the suite needs no deployment at all. The tiers that need one are gated on an environment
@@ -66,6 +77,9 @@ variable and skip when it is empty, so a first run on a laptop with no cluster i
 | `integration` | `MONGODB_ATLAS_URI` | Atlas, or an Atlas CLI local deployment with `mongot` |
 | `autoembed` | `MONGODB_AUTOEMBED_URI` | A cluster with an Atlas embedding model registered |
 | `build` | `STRANDS_MONGODB_BUILD_TIER` | Network only. Builds a wheel and installs it into an empty venv |
+
+The TypeScript suite reads the same variables and skips the same way; `npm run test:contract` and its
+siblings select one tier each.
 
 Put the URIs in a `.env` file at the repository root, which is gitignored. Never commit one, and never
 paste a connection string into an issue, a test or a document: a test in the suite walks every Markdown
@@ -100,6 +114,15 @@ starts the workflow by hand from the Actions tab:
 
 ![Where each test tier runs: the unit and contract tiers and the integration tier on every change, the Atlas tiers on a throwaway cluster weekly or on demand](docs/images/ci-tiers.png)
 
+The TypeScript package has its own workflow, `.github/workflows/ci-typescript.yml`, which runs on a change
+under `typescript/`. Two jobs gate a change today, one of them twice over two Node versions, and
+`npm run check` from `typescript/` is the local form of both:
+
+| Job | Runs |
+|---|---|
+| `Lint` | `npm run format:check`, `npm run lint`, `npm run type-check`, `npm run build` |
+| `Test - Node <version>` | `npm run test:coverage` on Node 22 and 24. No deployment, so no secrets |
+
 Every change gets the `integration` tier, from a fork as readily as from a branch, because the Atlas local
 container carries the search process it needs. Only `autoembed` needs a real Atlas cluster: automated
 embedding runs on Atlas, on an M10 or larger with storage auto-scaling on. So the `Atlas tiers` job creates
@@ -128,9 +151,11 @@ workflow reads three repository secrets:
 
 1. Work against `main` and keep the change focused on one thing.
 2. **Add or update a test** that fails without your change.
-3. **Update the documentation if behaviour changed.** `python/README.md` is the reference a user reads.
-4. Use a conventional commit subject: `feat:`, `fix:`, `docs:`, `test:`, `refactor:` or `chore:`.
-5. Run `hatch run prepare` and make sure it is clean.
+3. **Update the documentation if behaviour changed.** `python/README.md` and `typescript/README.md` are
+   the references a user reads, one per package.
+4. Use a conventional commit subject: `feat:`, `fix:`, `docs:`, `test:`, `refactor:` or `chore:`, with
+   the `(typescript)` scope for a change under `typescript/`.
+5. Run `hatch run prepare`, or `npm run check` from `typescript/`, and make sure it is clean.
 6. Open the pull request against `main`, describe what changed and why, and mention any issue it closes.
 7. Stay engaged with review. Squash and rebase if asked.
 

@@ -59,6 +59,7 @@ _AGENTS = _ROOT / "AGENTS.md"
 _CONTRIBUTING = _ROOT / "CONTRIBUTING.md"
 _PYPROJECT = _PACKAGE / "pyproject.toml"
 _WORKFLOW = _ROOT / ".github" / "workflows" / "ci-python.yml"
+_TYPESCRIPT_WORKFLOW = _ROOT / ".github" / "workflows" / "ci-typescript.yml"
 _GITIGNORE = _ROOT / ".gitignore"
 _SECURITY = _ROOT / "SECURITY.md"
 _SOURCE = _PACKAGE / "src" / "strands_mongodb"
@@ -494,13 +495,18 @@ class TestTheDocumentsAndTheRepositoryAgreeBothWays:
         assert undocumented == [], f"AGENTS.md never mentions these registered markers: {undocumented}"
 
     def test_the_documented_gates_are_the_workflow_jobs(self) -> None:
-        """AT-113 — set equality, both directions, against every job in ``ci-python.yml``.
+        """AT-113 -- set equality, both directions, against every job in ``ci-python.yml`` and ``ci-typescript.yml``.
 
-        Read from the first column of ``CONTRIBUTING.md``'s table rather than from its prose, because the
+        Read from the first column of ``CONTRIBUTING.md``'s tables rather than from its prose, because the
         claim is a list and a list is the one thing a reader will assume is complete. Job names are
-        compared with their variable part cut off, so the matrix job matches under one name.
+        compared with their variable part cut off, so a matrix job matches under one name. Both workflows
+        are read as one set, because the document has one table per package and the two share a ``Lint``.
         """
-        jobs = {_canonical_job(job["name"]) for job in yaml.safe_load(_WORKFLOW.read_text())["jobs"].values()}
+        jobs = {
+            _canonical_job(job["name"])
+            for workflow in (_WORKFLOW, _TYPESCRIPT_WORKFLOW)
+            for job in yaml.safe_load(workflow.read_text())["jobs"].values()
+        }
         documented = {_canonical_job(cell) for cell in _TABLE_ROW.findall(_text(_CONTRIBUTING))}
         assert jobs <= documented, (
             f"CONTRIBUTING.md's table omits CI jobs a pull request has to pass: {sorted(jobs - documented)}"

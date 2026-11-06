@@ -32,6 +32,10 @@ neither needs a MongoDB-specific class.
 > | `0.0.1` | Package metadata, extras, import paths, public names |
 > | `0.1.0` | `MongoDBStorage` + `MongoDBMemoryStore`, the three search tiers, record expiry, OpenTelemetry spans and structured log fields, docs, tests |
 >
+> The TypeScript package on npm follows the same table: `0.0.1` is metadata and entry points, `0.1.0` is
+> both surfaces with the same three tiers, expiry, spans and log events, released on its own `typescript-v`
+> tag.
+>
 > Storage `search()` ranks by token overlap in a single aggregation over the key space, where the SDK's
 > default issues one read per key. Scores come from keys rather than payload text, so a word that appears
 > only inside a stored value will not match.
@@ -104,6 +108,19 @@ a commit for anything that has to resolve the same way twice, after the `.git` a
 pip install 'strands-mongodb[all] @ git+ssh://git@github.com/mongodb/strands-mongodb.git@<commit-sha>#subdirectory=python'
 ```
 
+## Install from npm
+
+The TypeScript package has one install line and no extras; its peer dependencies cover both surfaces.
+
+<!-- skip: these reach npm for a package that is not published yet -->
+```bash
+npm install strands-mongodb @strands-agents/sdk mongodb
+```
+
+No quoting caveat applies here: there are no brackets. Until the package is on npm,
+[`typescript/README.md`](typescript/README.md#before-the-package-reaches-npm) says how to install from
+a clone.
+
 ## Documentation
 
 [`python/README.md`](python/README.md) is the reference: quickstarts for both surfaces, every
@@ -111,6 +128,9 @@ configuration key of all three `TypedDict`s, how a search picks its tier, the te
 enforces each one, how to erase stored memories, the index and privilege handoff for a DBA, the
 spans and log fields it emits, and the limits this package does not remove. This page stays short so that
 each fact lives in one place.
+
+[`typescript/README.md`](typescript/README.md) is the same reference for the TypeScript package: the
+same sections with the TypeScript names, the `npm` scripts, and how a CommonJS application loads it.
 
 [`python/MIGRATION.md`](python/MIGRATION.md) is for readers arriving from one of the three MongoDB
 backends that already exist for Strands: the archived `mongodb_memory` tool in `strands-agents-tools`,
@@ -130,6 +150,8 @@ you run as separate processes, so the only thing that carries state between them
 |---|---|
 | Python | >= 3.10 |
 | `strands-agents` | >= 1.54.0, the first release shipping every `strands` module the storage backend imports, `strands.storage.search.keyword` among them |
+| Node.js | >= 22, for the TypeScript package |
+| `@strands-agents/sdk` | >= 1.23.0, the first release exporting `Embedder`, with the `mongodb` driver at `^7` |
 | `pymongo` | >= 4.14.0 |
 | `pymongo-search-utils` | >= 0.3.0, with the `memory` extra only |
 | `opentelemetry-api` | >= 1.30.0. The API only; exporting spans is the application's choice |
@@ -147,9 +169,10 @@ details, including the two ways this surprises people.
 | Directory | Package | Publishes to |
 |---|---|---|
 | `python/` | `strands-mongodb` | PyPI |
+| `typescript/` | `strands-mongodb` | npm |
 
-A `typescript/` sibling publishing the same name to npm may follow. The layout reserves room for it so
-it can be added without moving files.
+Both publish the same name, write the same documents and indexes, version independently, and release on
+their own tag prefix: `python-v` and `typescript-v`.
 
 ## Contributing
 

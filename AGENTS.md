@@ -9,21 +9,21 @@ test that checks it is named, because a convention nothing measures is a prefere
 
 ## Layout
 
-One repository, one published package. A TypeScript sibling publishing the same name to npm is deferred
-pending the parity spike, and the layout reserves the shape so it can be added without moving
-files.
+One repository, two published packages with one name: `strands-mongodb` on PyPI from `python/`, and on
+npm from `typescript/`. They write the same documents and indexes, so one deployment serves both.
 
 | Path | Holds |
 |---|---|
-| `python/` | The `strands-mongodb` package. `src/`, `tests/`, `examples/`, `pyproject.toml`, and the reference `README.md` and `MIGRATION.md` |
-| `.github/workflows/ci-python.yml` | Every gate a pull request meets |
-| `README.md` | The landing page. Short on purpose: `python/README.md` is the reference |
+| `python/` | The PyPI package. `src/`, `tests/`, `examples/`, `pyproject.toml`, and the reference `README.md` and `MIGRATION.md` |
+| `typescript/` | The npm package. `typescript/src/` with co-located `__tests__` directories, `typescript/test/` for the tiers and the gate, `package.json`, and the reference `typescript/README.md`. An `examples/` directory follows |
+| `.github/workflows/ci-python.yml`, `.github/workflows/ci-typescript.yml` | Every gate a pull request meets, one workflow per package, each filtered to its own paths |
+| `README.md` | The landing page. Short on purpose: `python/README.md` and `typescript/README.md` are the references |
 | `docs/images/` | The diagrams the READMEs and `CONTRIBUTING.md` show, as PNG |
 | `AGENTS.md`, `CONTRIBUTING.md` | This file and the process |
 
-Everything with a version number lives under `python/`. When a second language lands, this file gains a
-per-language section rather than splitting into two copies, because a split is how two files that describe
-one repository start disagreeing.
+Each package versions independently under its own directory and releases on its own tag prefix,
+`python-v` or `typescript-v`. This file has a TypeScript subsection under each heading rather than a
+second copy, because a split is how two files that describe one repository start disagreeing.
 
 ## Where the reasoning lives, and how tests are tagged
 
@@ -42,6 +42,11 @@ The release gate in `tests/conftest.py` collects these tags to decide which chec
 It reads the first paragraph only, so that a later sentence such as "this tier does not cover X" is never
 counted as evidence that X is covered. Use the tag nowhere else: comments, later paragraphs and the
 documentation describe the behaviour in words.
+
+In TypeScript the tag leads the test title, `it('AT-045a: initialize is idempotent', ...)`, or the title
+of an enclosing `describe`. The gate in `typescript/test/gate/` reads the ids a title starts with, from the
+source for the static half and from the last run's results for the dynamic half, and ignores comments and
+strings, so a tag anywhere else is not evidence.
 
 A `TODO(...)` in a file names the thing that has to be settled before the placeholder can go, and the test
 suite asserts that every placeholder in this file and in `CONTRIBUTING.md` names something. Do not write a
@@ -71,6 +76,24 @@ reach for `--no-cov`, so `test` stays runnable at any point mid-change and `cov`
 Working in a plain virtualenv instead is fine: `pip install -e ".[all,dev]"` from `python/` installs the
 same set, and `python -m pytest` replaces `hatch run test`. Python 3.10 is the floor, so use an
 interpreter at 3.10 or newer.
+
+### TypeScript
+
+Every command runs from `typescript/`, on Node.js 22 or newer, after `npm ci`.
+
+| Command | Does |
+|---|---|
+| `npm test` | The unit project: the `__tests__` directories under `typescript/src/`, and `typescript/test/__tests__/`. Arguments pass through, so `npm test -- src/__tests__/storage.test.ts` works |
+| `npm run test:contract`, `npm run test:integration`, `npm run test:autoembed`, `npm run test:build`, `npm run test:compat`, `npm run test:interop` | One tier each. A tier whose variable is unset skips with a reason |
+| `npm run test:coverage` | The unit project with both coverage floors: 90% aggregate and 70% per file |
+| `npm run test:gate` | The release-gate assertion, over `.vitest-results.json` from the last run. Run it after the suite it measures |
+| `npm run lint` | ESLint, over `typescript/src/`, `typescript/test/` and `typescript/scripts/` |
+| `npm run format` | Prettier, in place. `npm run format:check` is the read-only form CI runs |
+| `npm run type-check` | `tsc --noEmit` over `typescript/src/` and `typescript/test/` |
+| `npm run build` | `tsc` into `dist`, which is what the package ships |
+| `npm run check` | `format:check`, `lint`, `type-check`, `test:coverage`, `test:gate`, in that order. Run this before pushing |
+
+The coverage floors are not part of `test`, for the same reason `cov` is not part of `hatch run test`.
 
 ## Test tiers
 
@@ -109,6 +132,36 @@ Two things to know before you wait on a cluster. A first `add()` against a colle
 creates two indexes and waits for both to report `READY`, which takes minutes. A document is then not
 searchable the instant its write returns, because the search process indexes it asynchronously. Test
 helpers poll to a 180-second ceiling rather than sleeping, so a fast cluster is not slowed down.
+
+### TypeScript
+
+The same variables gate the same tiers, as vitest projects selected by `npm run test:<tier>`. A tier
+lives under `typescript/test/integ/<tier>/`, except `build`, `compat` and `gate`, which live under
+`typescript/test/` by name.
+
+| Project | Gate | Needs |
+|---|---|---|
+| `unit` | none | Nothing. A fake `MongoClient` |
+| `contract` | `MONGODB_URI` | Any MongoDB deployment, including a local one |
+| `integration` | `MONGODB_ATLAS_URI` | Atlas, or an Atlas CLI local deployment with `mongot` |
+| `autoembed` | `MONGODB_AUTOEMBED_URI` | An Atlas cluster that runs automated embedding. `python/scripts/atlas_ci_cluster.py up` creates one |
+| `build` | `STRANDS_MONGODB_BUILD_TIER` | Network. Packs the tarball and installs it into empty ESM and CommonJS projects. No deployment and no secret |
+| `compat` | none, CI cron or dispatch only | Resolves the latest published `@strands-agents/sdk` rather than the pinned one. No tests yet |
+| `interop` | `MONGODB_URI`, and `hatch` on `PATH` | Reads and writes through both packages against one deployment. No tests yet |
+| `gate` | none | The release-gate assertion. Reads `.vitest-results.json`, so it runs after the suite it measures; `npm run check` orders them |
+
+The variables are read from the process environment and from a `.env` file, the one in the `typescript/`
+directory first and then the one beside this file, with the same rule as Python: only the three
+connection-string keys are read, and a key already present in the environment is never replaced. The
+same gotcha follows, and the same opt-out:
+
+```bash
+MONGODB_URI= MONGODB_ATLAS_URI= MONGODB_AUTOEMBED_URI= npm test
+```
+
+`test:gate` judges the last recorded run, whatever it was. A filtered run of an enabled tier leaves the
+gate items whose files were filtered out without evidence, and the gate reports that as a failure rather
+than as unverified.
 
 ## House conventions
 
@@ -158,6 +211,48 @@ attribute that carries caller data: a key, content, metadata, query text, filter
 memory id. The README's observability section lists every span, attribute and event, and
 `tests/test_readme.py` fails until a new one is named there.
 
+### TypeScript
+
+The Strands TypeScript SDK's own `AGENTS.md` is where these come from. The tools catch most of them, and
+the table names which; the rest are review's job.
+
+| Convention | Checked by |
+|---|---|
+| Explicit return types on every function and method signature; locals are inferred | ESLint, `explicit-function-return-type` and `explicit-module-boundary-types`, in `src/` only |
+| No `any`. `unknown`, then narrow | ESLint, `no-explicit-any` |
+| Named exports only, never `export default` | `typescript/src/__tests__/conventions.test.ts` |
+| A TSDoc block before every export: one summary line, then `@param`, `@returns`, `@throws` tags | ESLint checks the syntax; `typescript/src/__tests__/conventions.test.ts` checks that every export has one |
+| The SDK is imported only through `@strands-agents/sdk`, `@strands-agents/sdk/storage` and `@strands-agents/sdk/storage/search` | `typescript/src/__tests__/conventions.test.ts` |
+| No semicolons, single quotes, 120 columns | Prettier, through `npm run format:check` |
+| An `interface` for an object shape, a `type` alias only for a union or a derived type | Review |
+| Kebab-case file names; the class inside stays PascalCase | Review |
+| `_`-prefixed private fields, `private readonly` where nothing assigns them later | Review |
+| Conventional commit subjects with the `(typescript)` scope: `feat(typescript):`, `fix(typescript):`, `docs(typescript):`, `test(typescript):` | Review |
+
+**The same deviation, in TypeScript form.** The SDK's log lines are template literals shaped
+`field=<${value}> | lowercase message`. This package writes the sentence first and the fields last:
+
+```typescript
+logger.warn(
+  `strands_mongodb: 'searchType' is 'auto' and the vector tier is not available on ${target}, so queries resolve to the ${first} tier. | ${logFields('below_vector', { namespace: target, tier: first })}`
+)
+```
+
+`logFields` in `typescript/src/logging.ts` renders `event=<name>, namespace=<db.coll>, tier=<tier>`, and
+`LogEvent` there is the closed list of event names, identical to the Python package's.
+`typescript/src/__tests__/conventions.test.ts` fails on a `logger` call with no `logFields` literal and on
+an event the list does not declare, and reports a declared event nothing logs. Two differ from the SDK on
+purpose and are written down here: the logger is injected through `logger` on `MongoDBConfig` rather than
+taken from the SDK's global `configureLogging`, because a store is configured by the application that
+built it, and the three barrels export nothing marked `@internal`, so the public surface is what
+`typescript/src/__tests__/exports.test.ts` lists and nothing else.
+
+Spans go through `traced`, `span` or `open` in `typescript/src/telemetry.ts`, and an attribute is recorded
+only if it is in `ATTRIBUTES`, the same allow-list as Python's. The README's observability section lists
+every span, attribute and event, and `typescript/src/__tests__/readme.test.ts` fails until a new one is
+named there. No em dash anywhere under `typescript/`, nor in this file or `CONTRIBUTING.md`; the
+conventions test checks.
+
 ## What not to do
 
 - **Do not silence a warning to make a run quiet.** Two known ones are tracked and neither is ours to fix:
@@ -172,9 +267,11 @@ memory id. The README's observability section lists every span, attribute and ev
   release is a guess about somebody's install. Do not raise or lower a floor by reading a changelog either:
   the `Dependency floors` job installs the declared floors and runs the suite against them, which is the only
   check of what the code actually needs.
-- **Do not hand-edit the index and privilege commands in `python/README.md`.** They are compared against the
-  renderer in `src/strands_mongodb/_indexes.py` that produces them, so an edit there fails a test rather
-  than shipping a command the package does not run.
-- **Do not add a runtime dependency to `dependencies`.** It is empty on purpose. Every dependency belongs to
-  the extra that needs it, so `pip install 'strands-mongodb[storage]'` never pulls vector-search machinery.
+- **Do not hand-edit the index and privilege commands in `python/README.md` or `typescript/README.md`.** They are
+  compared against the renderers in `src/strands_mongodb/_indexes.py` and `typescript/src/indexes.ts` that
+  produce them, so an edit there fails a test rather than shipping a command the package does not run.
+- **Do not add a runtime dependency to `dependencies`.** It is empty on purpose in both packages. Every Python
+  dependency belongs to the extra that needs it, so `pip install 'strands-mongodb[storage]'` never pulls
+  vector-search machinery; every TypeScript dependency the application also holds an instance of, the SDK,
+  the driver and the OpenTelemetry API, is a peer dependency.
 - **Do not skip a test to get to green.** A skip and a pass are the same colour.
