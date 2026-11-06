@@ -154,8 +154,9 @@ const agent = new Agent({
 
 The two `true`s are what let the agent save anything. `MemoryManager` always gives the model a
 `search_memory` tool, but it adds `add_memory` only when `addToolConfig` is `true`, and the SDK defaults
-that to `false`. The store must also be writable, and this package defaults `writable` to `false`. With
-neither set, the agent can recall memories but has no way to save new ones. If you would rather the SDK
+that to `false`. The store must also be writable, and this package defaults `writable` to `false`. If no
+store is writable, `addToolConfig: true` throws an `Error` when you construct the manager. With neither
+set, the agent can recall memories but has no way to save new ones. If you would rather the SDK
 pick facts out of the conversation than leave it to the model, set `extraction: true` on the writable
 store instead of, or as well as, `addToolConfig`.
 
@@ -667,6 +668,17 @@ on a `MongoDBStorage`, reads the collection's collation before anything else, be
 folds case cannot keep two scopes apart, and `listCollections` is the only command that reports it. A
 role without it fails there and not later, which is the intended direction: the alternative is a store
 that runs and compares strings by rules nothing declared.
+
+Self-managed MongoDB grants the same. On 8.2.12 with no search process, every row matches Atlas,
+`createSearchIndexes` included. The contract tier reads every row from the deployment's own `rolesInfo`, so
+a version that grants any of them differently fails a test. A role says what the server would authorize,
+not what it can do, so `readWrite` carries `createSearchIndexes` on a deployment with no search at all.
+
+Two notes for running as such a user. `rolesInfo`, which the test above uses to read the table back, needs
+`viewRole`, and no data-access role grants it, so that one test skips under a least-privilege credential
+instead of running. And `dropDatabase` is in neither role, so the test suite cannot drop the throwaway
+database it creates; it warns and leaves it. No code path in the package drops a database, and erasure
+uses `remove`, which `readWrite` grants.
 
 ## Limits
 

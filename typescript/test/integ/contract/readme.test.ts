@@ -53,7 +53,8 @@ describeTier('contract', 'README snippets against a deployment', () => {
 
   afterAll(async () => {
     snippets?.dispose()
-    await db.dropDatabase().catch(() => false)
+    // `dropDatabase` is in neither built-in role, so a least-privilege credential leaves the database behind.
+    await db.dropDatabase().catch((error: unknown) => console.warn(`could not drop ${database}: ${String(error)}`))
     await client.close()
   })
 
