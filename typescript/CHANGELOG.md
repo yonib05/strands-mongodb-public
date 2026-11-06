@@ -49,9 +49,9 @@ version heading when that version is tagged.
   tier on the latter, and the unit tier against the declared peer floors. Weekly, the compat and contract
   tiers against the latest `@strands-agents/sdk`, and the integration and autoembed tiers against a
   throwaway Atlas cluster.
-- `.github/workflows/release-typescript.yml`: a `typescript-v*` tag runs the gate, writes the version
-  from the tag, packs and verifies the tarball, and publishes it to npm once the `npm` environment's
-  reviewers approve.
+- `.github/workflows/release-typescript.yml`: a `typescript-v*` tag runs the gate and the contract
+  tier, writes the version from the tag, packs and verifies the tarball, and publishes it to npm once
+  the `npm` environment's reviewers approve.
 
 ### Changed
 

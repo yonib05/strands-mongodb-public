@@ -40,9 +40,61 @@ jobs:
       - name: Run the gate
         run: npm run check
 
+  contract:
+    name: Contract tier
+    # Not ubuntu-latest: from runner image 20261025 its kernel is 6.19 or newer, where MongoDB 8.x refuses to
+    # start (log id 12257600, SERVER-125742). ubuntu-22.04 runs kernel 6.8. Move back once MongoDB lifts the guard.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    services:
+      mongodb:
+        image: mongo:8
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      MONGODB_URI: mongodb://localhost:27017
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: typescript/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the contract tier
+        run: npm run test:contract
+
+      - name: Run the release gate over the contract tier
+        run: npm run test:gate
+
+      - name: Assert the tier left the working tree clean
+        run: |
+          dirty="$(git status --porcelain)"
+          if [ -n "$dirty" ]; then
+            echo "The contract tier left files behind:"
+            echo "$dirty"
+            exit 1
+          fi
+
   build:
     name: Build and verify the artifact
-    needs: [gate]
+    needs: [gate, contract]
     runs-on: ubuntu-latest
     timeout-minutes: 15
 

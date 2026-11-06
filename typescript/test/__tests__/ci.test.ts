@@ -318,13 +318,26 @@ describe('release-typescript.yml', () => {
     expect(uses.filter((line) => !/uses: [\w.-]+\/[\w.-]+@[0-9a-f]{40} {2}# v\d+\.\d+\.\d+$/.test(line))).toEqual([])
   })
 
+  it('runs the contract tier against a mongo:8 container, then the gate over it, with no secret', () => {
+    const contract = release().jobs.contract!
+
+    expect(contract.name).toBe('Contract tier')
+    expect(contract.services!.mongodb!.image).toBe('mongo:8')
+    expect(contract.services!.mongodb!.options).toContain(`--health-cmd "${MONGO_HEALTH}"`)
+    expect(contract.env).toEqual({ MONGODB_URI: 'mongodb://localhost:27017' })
+    expect(stepIndex(contract, 'npm ci')).toBeGreaterThan(-1)
+    expect(stepIndex(contract, 'npm run test:gate')).toBeGreaterThan(stepIndex(contract, 'npm run test:contract'))
+    expect(runs(contract).at(-1)).toContain('git status --porcelain')
+    expect(referencesSecret(contract)).toBe(false)
+  })
+
   it('gates, versions from the tag, checks the version, then packs', () => {
     const [gate, build] = [job(release(), 'Release gate'), job(release(), 'Build and verify the artifact')]
     const version = stepIndex(build, 'npm version --no-git-tag-version "${GITHUB_REF_NAME#typescript-v}"')
 
     expect(stepIndex(gate, 'npm ci')).toBeGreaterThan(-1)
     expect(stepIndex(gate, 'npm run check')).toBeGreaterThan(stepIndex(gate, 'npm ci'))
-    expect(build.needs).toEqual(['gate'])
+    expect(build.needs).toEqual(['gate', 'contract'])
     expect(version).toBeGreaterThan(-1)
     expect(stepIndex(build, 'npm pack --dry-run --json')).toBeGreaterThan(version)
     expect(stepIndex(build, 'npm run test:build')).toBeGreaterThan(version)

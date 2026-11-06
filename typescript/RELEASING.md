@@ -51,12 +51,13 @@ and version independently, which is the reason for the prefixes.
 
 ## What runs, in order
 
-The workflow runs three jobs, each after the one before it succeeds. To publish by hand instead, run the
-same steps from `typescript/` in the same order.
+The workflow runs four jobs. The first two run side by side, and each later job starts only after the
+ones before it succeed. To publish by hand instead, run the same steps from `typescript/` in the same order.
 
 | Job | What it does |
 |---|---|
 | `Release gate` | `npm ci`, then `npm run check` |
+| `Contract tier` | `npm run test:contract` against a `mongo:8` service container, then `npm run test:gate` over that run, then checks the working tree is still clean. No secret |
 | `Build and verify the artifact` | Checks that the tag carries a semantic version, runs `npm version --no-git-tag-version "${GITHUB_REF_NAME#typescript-v}"` so `package.json` says what the tag says, and checks that `npm pack --dry-run --json` reports that version. Then `npm run build`, `npm run test:build` against a packed tarball, and `npm pack`, uploading the tarball for the next job |
 | `Publish to npm` | Waits for approval in the `npm` environment, downloads that tarball and runs `npm publish` on it. A prerelease version such as `0.1.0-rc.1` goes to the `next` dist-tag rather than `latest` |
 
