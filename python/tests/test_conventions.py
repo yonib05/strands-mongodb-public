@@ -75,7 +75,7 @@ _BUILD_VARIABLE: Final = "STRANDS_MONGODB_BUILD_TIER"
 #: excluded on purpose and ``TestNoShippedDocumentCarriesACredential`` says why; the rest hold copies of files
 #: this repository does not own.
 _UNSWEPT_DIRECTORIES: Final = frozenset(
-    {".git", ".venv", ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__", "node_modules"}
+    {".git", ".superpowers", ".venv", ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__", "node_modules"}
 )
 
 #: Every Markdown file that ships or is read in place, checked against the sweep so that a walk which
