@@ -6,14 +6,14 @@ name: CI - TypeScript
 on:
   pull_request:
     paths:
-      # Every file a test in typescript/ reads; the conventions test sweeps every Markdown file for credentials.
+      # Every file a test in typescript/ reads or runs, the interop tier running the whole Python package; the
+      # conventions test sweeps every Markdown file for credentials.
       - 'typescript/**'
       - '.github/workflows/ci-typescript.yml'
       - '.github/workflows/release-typescript.yml'
       - '.github/dependabot.yml'
-      - 'python/src/strands_mongodb/_telemetry.py'
-      - 'python/src/strands_mongodb/_pipeline.py'
-      - 'python/src/strands_mongodb/_indexes.py'
+      - 'python/src/strands_mongodb/**'
+      - 'python/pyproject.toml'
       - '**.md'
   push:
     branches: [ main ]
@@ -22,9 +22,8 @@ on:
       - '.github/workflows/ci-typescript.yml'
       - '.github/workflows/release-typescript.yml'
       - '.github/dependabot.yml'
-      - 'python/src/strands_mongodb/_telemetry.py'
-      - 'python/src/strands_mongodb/_pipeline.py'
-      - 'python/src/strands_mongodb/_indexes.py'
+      - 'python/src/strands_mongodb/**'
+      - 'python/pyproject.toml'
       - '**.md'
   schedule:
     - cron: '0 6 * * 1'
@@ -228,7 +227,18 @@ jobs:
         if: matrix.deployment.expect_search == '1'
         run: pip install hatch
 
-      # The first `hatch run` builds the env from python/pyproject.toml, which takes about a minute.
+      # Built here, not on the first `hatch run`, which would spend most of a minute inside a test hook.
+      - name: Build the hatch environment
+        if: matrix.deployment.expect_search == '1'
+        working-directory: python
+        run: hatch env create
+
+      # File paths, not the directory: `tool.ruff.include` filters out anything outside python/.
+      - name: Lint the interop scripts
+        if: matrix.deployment.expect_search == '1'
+        working-directory: python
+        run: hatch run ruff check ../typescript/scripts/interop/*.py
+
       - name: Run the interop tier
         if: matrix.deployment.expect_search == '1'
         env:

@@ -11,6 +11,7 @@ interface Step {
   if?: string
   env?: Record<string, string>
   with?: Record<string, unknown>
+  'working-directory'?: string
 }
 
 interface Job {
@@ -61,15 +62,14 @@ const CI_JOBS = [
   'Atlas tiers',
 ]
 
-// Everything outside `typescript/` that a test in this package reads.
+// Everything outside `typescript/` that a test in this package reads or runs.
 const WATCHED_PATHS = [
   'typescript/**',
   '.github/workflows/ci-typescript.yml',
   '.github/workflows/release-typescript.yml',
   '.github/dependabot.yml',
-  'python/src/strands_mongodb/_telemetry.py',
-  'python/src/strands_mongodb/_pipeline.py',
-  'python/src/strands_mongodb/_indexes.py',
+  'python/src/strands_mongodb/**',
+  'python/pyproject.toml',
   '**.md',
 ]
 
@@ -211,19 +211,23 @@ describe('ci-typescript.yml', () => {
       expect(integration.env).toEqual({ MONGODB_ATLAS_URI: '${{ matrix.deployment.uri }}' })
     })
 
-    it('runs the interop tier on the leg with a search process only, after installing hatch', () => {
+    it('runs the interop tier on the leg with a search process only, after building and linting with hatch', () => {
+      const steps = contract().steps
       const interop = stepIndex(contract(), 'npm run test:interop')
-      const python = contract().steps.findIndex((step) => step.uses?.startsWith('actions/setup-python@'))
+      const python = steps.findIndex((step) => step.uses?.startsWith('actions/setup-python@'))
       const hatch = stepIndex(contract(), 'pip install hatch')
+      const env = stepIndex(contract(), 'hatch env create')
+      const lint = stepIndex(contract(), 'hatch run ruff check ../typescript/scripts/interop/*.py')
 
-      expect(interop).toBeGreaterThan(-1)
       expect(python).toBeGreaterThan(-1)
-      expect(hatch).toBeGreaterThan(python)
-      expect(interop).toBeGreaterThan(hatch)
-      for (const index of [python, hatch, interop]) {
-        expect(contract().steps[index]!.if).toBe("matrix.deployment.expect_search == '1'")
+      const order = [python, hatch, env, lint, interop]
+      expect(order).toEqual([...order].sort((a, b) => a - b))
+      expect(steps[env]!['working-directory']).toBe('python')
+      expect(steps[lint]!['working-directory']).toBe('python')
+      for (const index of [python, hatch, env, lint, interop]) {
+        expect(steps[index]!.if).toBe("matrix.deployment.expect_search == '1'")
       }
-      expect(contract().steps[interop]!.env).toEqual({ MONGODB_ATLAS_URI: '${{ matrix.deployment.uri }}' })
+      expect(steps[interop]!.env).toEqual({ MONGODB_ATLAS_URI: '${{ matrix.deployment.uri }}' })
     })
 
     it('runs the gate after each tier, before the next one replaces the results it reads', () => {

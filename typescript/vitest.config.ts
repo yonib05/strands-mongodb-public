@@ -7,6 +7,7 @@ const tier = (name: string) => ({
     include: [`test/integ/${name}/**/*.test.ts`],
     fileParallelism: false,
     testTimeout: 180_000,
+    hookTimeout: 180_000,
   },
 })
 
