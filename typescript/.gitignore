@@ -6,3 +6,4 @@ coverage/
 *.tgz
 # The root .gitignore drops every build/ directory for Python.
 !test/build/
+.readme-snippets-*/

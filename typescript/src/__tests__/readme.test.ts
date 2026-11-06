@@ -1,0 +1,519 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import type { MemoryStoreConfig } from '@strands-agents/sdk'
+import { AuthMechanism } from 'mongodb'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import {
+  blocks,
+  EXECUTABLE_LANGUAGES,
+  PACKAGE_README,
+  PACKAGE_ROOT,
+  prepare,
+  ROOT_README,
+  RUN_TIERS,
+  runCommandLines,
+  selected,
+  type Snippets,
+  unconfigured,
+  where,
+} from '../../test/readme.js'
+import * as root from '../index.js'
+import {
+  DEFAULT_EMBEDDING_MODEL,
+  DEFAULT_TEXT_INDEX_NAME,
+  DEFAULT_VECTOR_INDEX_NAME,
+  MAX_DIMENSIONS,
+  MAX_NUM_CANDIDATES,
+  memorySearchSpecs,
+  memorySpecs,
+  READY_TIMEOUT_SECONDS,
+  storageSpecs,
+  VECTOR_FIELD,
+} from '../indexes.js'
+import type { LogEvent } from '../logging.js'
+import { DEFAULT_COLLECTION } from '../memory-store.js'
+import { RANK_FUSION_PENALTY } from '../pipeline.js'
+import { MAX_DOCUMENT_BYTES, MAX_KEY_BYTES } from '../storage.js'
+import { ATTRIBUTES, type EventName, type SpanName } from '../telemetry.js'
+import {
+  DEFAULT_MAX_SEARCH_RESULTS,
+  DEFAULT_OVERSAMPLING_FACTOR,
+  type MongoDBConfig,
+  type MongoDBMemoryStoreConfig,
+  type MongoDBSearchQuery,
+  RESERVED_METADATA_KEYS,
+} from '../types.js'
+
+const README = readFileSync(PACKAGE_README, 'utf8')
+const LANDING = readFileSync(ROOT_README, 'utf8')
+const PACKAGE_BLOCKS = blocks(PACKAGE_README)
+const PACKAGE_JSON = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'package.json'), 'utf8')) as {
+  engines: { node: string }
+  peerDependencies: Record<string, string>
+}
+
+const CREDENTIALED_URI = /mongodb(\+srv)?:\/\/(?!<redacted>@)[^\s/`]*@/
+
+// The passage following a marker comment, up to the next heading of any level.
+function markedSection(marker: string, text = README): string {
+  const lines = text.split('\n')
+  const start = lines.indexOf(`<!-- ${marker} -->`)
+  if (start === -1) return ''
+  const body: string[] = []
+  for (const line of lines.slice(start + 1)) {
+    if (line.startsWith('#')) break
+    body.push(line)
+  }
+  return body.join('\n')
+}
+
+// The body rows of the first table after a marker, each as its trimmed cells.
+function tableRows(marker: string): string[][] {
+  const rows: string[][] = []
+  for (const line of markedSection(marker).split('\n')) {
+    if (!line.startsWith('|')) {
+      if (rows.length > 0) break
+      continue
+    }
+    const cells = line
+      .trim()
+      .replace(/^\||\|$/g, '')
+      .split('|')
+      .map((cell) => cell.trim())
+    if (cells.every((cell) => /^[-:]*$/.test(cell))) continue
+    rows.push(cells)
+  }
+  return rows.slice(1)
+}
+
+function section(heading: string, text = README): string {
+  const start = text.indexOf(`\n${heading}\n`)
+  if (start === -1) return ''
+  const end = text.indexOf('\n## ', start + 1)
+  return end === -1 ? text.slice(start) : text.slice(start, end)
+}
+
+function sourceOf(file: string): string {
+  return readFileSync(join(PACKAGE_ROOT, 'src', file), 'utf8')
+}
+
+// Every `strands_mongodb.<surface>.<operation>` span, read off the calls that open one.
+function operationSpans(): string[] {
+  const named = (surface: string, source: string) =>
+    [...source.matchAll(/\b_run\('([a-z_]+)'/g)].map((match) => `strands_mongodb.${surface}.${match[1]}`)
+  const explicit = (source: string) =>
+    [...source.matchAll(/traced\('(storage|memory)', '([a-z_]+)'/g)].map(
+      (match) => `strands_mongodb.${match[1]}.${match[2]}`
+    )
+  const storage = sourceOf('storage.ts')
+  const memory = sourceOf('memory-store.ts')
+  return [
+    ...new Set([...named('storage', storage), ...explicit(storage), ...named('memory', memory), ...explicit(memory)]),
+  ]
+}
+
+type RequiredKeys<T> = { [K in keyof T]-?: Record<never, never> extends Pick<T, K> ? never : K }[keyof T]
+
+// `satisfies` makes each list exhaustive at compile time, in both directions, so a key added to a type fails here.
+const CONFIG_KEYS = {
+  database: true,
+  client: true,
+  connectionString: true,
+  clientOptions: true,
+  ensureIndexes: true,
+  indexReadyTimeout: true,
+  searchType: true,
+  embeddingModel: true,
+  embeddingDimensions: true,
+  similarity: true,
+  filterFields: true,
+  vectorIndexName: true,
+  textIndexName: true,
+  logger: true,
+} satisfies Record<keyof MongoDBConfig, true>
+const CONFIG_REQUIRED = { database: true } satisfies Record<RequiredKeys<MongoDBConfig>, true>
+
+const STORE_KEYS = {
+  name: true,
+  description: true,
+  maxSearchResults: true,
+  writable: true,
+  extraction: true,
+  config: true,
+  collection: true,
+  scope: true,
+  filter: true,
+  minScore: true,
+  maxScore: true,
+  ttlSeconds: true,
+  embedder: true,
+} satisfies Record<keyof MongoDBMemoryStoreConfig | keyof MemoryStoreConfig, true>
+const STORE_REQUIRED = { name: true, config: true } satisfies Record<RequiredKeys<MongoDBMemoryStoreConfig>, true>
+
+const QUERY_KEYS = {
+  text: true,
+  vector: true,
+  filter: true,
+  limit: true,
+  oversamplingFactor: true,
+} satisfies Record<keyof MongoDBSearchQuery, true>
+const QUERY_REQUIRED = {} satisfies Record<RequiredKeys<MongoDBSearchQuery>, true>
+
+const SPAN_NAMES = {
+  'strands_mongodb.indexes.ensure': true,
+  'strands_mongodb.indexes.probe': true,
+  'strands_mongodb.indexes.wait': true,
+} satisfies Record<SpanName, true>
+const EVENT_NAMES = { 'strands_mongodb.client.acquired': true } satisfies Record<EventName, true>
+const LOG_EVENTS = {
+  retry_writes_disabled: true,
+  attribution_not_visible: true,
+  closed_loop_client_dropped: true,
+  reserved_key_collision: true,
+  no_search_setup: true,
+  tier_unavailable: true,
+  tier_building: true,
+  below_vector: true,
+  bound_declined_fusion: true,
+  score_bound_applied: true,
+  creating_indexes: true,
+  creating_search_index: true,
+  search_index_status: true,
+  attribute_dropped: true,
+} satisfies Record<LogEvent, true>
+
+const TRACEABLE_VALUES: Record<string, string[]> = {
+  MAX_KEY_BYTES: [String(MAX_KEY_BYTES)],
+  MAX_DOCUMENT_BYTES: [`${MAX_DOCUMENT_BYTES / 1024 / 1024} MB`, String(MAX_DOCUMENT_BYTES)],
+  DEFAULT_MAX_SEARCH_RESULTS: [String(DEFAULT_MAX_SEARCH_RESULTS)],
+  DEFAULT_OVERSAMPLING_FACTOR: [String(DEFAULT_OVERSAMPLING_FACTOR)],
+  MAX_DIMENSIONS: [String(MAX_DIMENSIONS)],
+  MAX_NUM_CANDIDATES: [String(MAX_NUM_CANDIDATES)],
+  READY_TIMEOUT_SECONDS: [String(READY_TIMEOUT_SECONDS)],
+}
+
+const TRACEABLE_IDS = new Set([
+  'MongoDBConfig',
+  'MongoDBStorage.close()',
+  'MongoDBMemoryStore.close()',
+  'MongoDBMemoryStore.add()',
+  'MongoDBMemoryStore.search()',
+  'Storage.list()',
+  'MongoDBStorage.ensureIndexes()',
+])
+
+const REQUIRED_SECTIONS = [
+  '## Install',
+  '## Quickstart',
+  '### Creating them by hand',
+  '## Search: what answers a query',
+  '### Reserved metadata keys',
+  '## Tenancy',
+  '## Requirements',
+  '## Limits',
+  '## Erasing memories',
+]
+
+function renderedCommands(): { create: string[]; drop: string[] } {
+  const config: MongoDBConfig = { database: 'agents' }
+  const search = memorySearchSpecs(config)
+  return {
+    create: [
+      ...storageSpecs().map((spec) => spec.creationCommand('storage')),
+      ...memorySpecs().map((spec) => spec.creationCommand(DEFAULT_COLLECTION)),
+      ...search.map((spec) => spec.creationCommand(DEFAULT_COLLECTION)),
+    ],
+    drop: search.map((spec) => spec.dropCommand(DEFAULT_COLLECTION)),
+  }
+}
+
+describe('AT-097: every block declares what happens to it', () => {
+  it('finds a directive above every executable block', () => {
+    expect(
+      PACKAGE_BLOCKS.filter((block) => EXECUTABLE_LANGUAGES.has(block.language) && block.kind === '').map(where)
+    ).toEqual([])
+  })
+
+  it('finds a reason of at least three words on every skip', () => {
+    expect(
+      PACKAGE_BLOCKS.filter((block) => block.kind === 'skip' && block.value.split(/\s+/).length < 3).map(where)
+    ).toEqual([])
+  })
+
+  it('finds only tiers the suite runs on every run directive', () => {
+    const known: readonly string[] = RUN_TIERS
+    expect(PACKAGE_BLOCKS.filter((block) => block.kind === 'run' && !known.includes(block.value)).map(where)).toEqual(
+      []
+    )
+  })
+
+  it('finds no connection string with credentials in the document', () => {
+    expect(CREDENTIALED_URI.test(README)).toBe(false)
+  })
+
+  it('reads the deployment from the environment in every connecting snippet', () => {
+    const connecting = PACKAGE_BLOCKS.filter(
+      (block) => ['ts', 'typescript'].includes(block.language) && /connectionString|new MongoClient\(/.test(block.body)
+    )
+    expect(connecting.length).toBeGreaterThan(0)
+    expect(connecting.filter((block) => !block.body.includes('process.env')).map(where)).toEqual([])
+  })
+})
+
+describe('AT-092: the quickstarts are executed from the README text', () => {
+  const unit = selected('unit', PACKAGE_BLOCKS)
+  let snippets: Snippets
+
+  beforeAll(() => {
+    snippets = prepare(unit)
+  })
+
+  afterAll(() => {
+    snippets?.dispose()
+  })
+
+  it('has an executed snippet constructing each backend', () => {
+    const bodies = PACKAGE_BLOCKS.filter((block) => block.kind === 'run')
+      .map((block) => block.body)
+      .join('\n')
+    expect(bodies).toContain('new MongoDBStorage(')
+    expect(bodies).toContain('new MongoDBMemoryStore(')
+  })
+
+  it('type-checks every unit snippet against the package', { timeout: 120_000 }, () => {
+    expect(unit.length).toBeGreaterThan(0)
+    expect(() => snippets.typeCheck()).not.toThrow()
+  })
+
+  it.each(unit.map((block) => [where(block), block] as const))(
+    'runs %s with nothing reachable',
+    (_location, block) => {
+      expect(() => snippets.run(block, unconfigured())).not.toThrow()
+    },
+    60_000
+  )
+})
+
+describe('AT-093: the landing page and the reference agree', () => {
+  it('points at the reference', () => {
+    expect(LANDING).toContain('typescript/README.md')
+  })
+
+  it('tells a reader to install the same thing', () => {
+    const install = (path: string) => blocks(path).find((block) => block.body.includes('npm install strands-mongodb'))
+    expect(install(PACKAGE_README)?.body).toBeDefined()
+    expect(install(ROOT_README)?.body).toBe(install(PACKAGE_README)?.body)
+  })
+
+  it('states the floors package.json declares', () => {
+    const requirements = section('## Requirements')
+    expect(PACKAGE_JSON.engines.node.startsWith('>=22')).toBe(true)
+    expect(requirements).toMatch(/^\| Node(\.js)? \| .*>= ?22/m)
+    for (const [name, range] of Object.entries(PACKAGE_JSON.peerDependencies)) {
+      const row = requirements.split('\n').find((line) => line.startsWith(`| \`${name}\` |`))
+      expect(row, `no requirements row for ${name}`).toBeDefined()
+      expect(row).toContain(`\`${range}\``)
+    }
+  })
+})
+
+describe('AT-094: the configuration tables match the types', () => {
+  it.each([
+    ['MongoDBConfig', CONFIG_KEYS, CONFIG_REQUIRED],
+    ['MongoDBMemoryStoreConfig', STORE_KEYS, STORE_REQUIRED],
+    ['MongoDBSearchQuery', QUERY_KEYS, QUERY_REQUIRED],
+  ] as const)('lists every key of %s, no others, with its required flag', (marker, keys, required) => {
+    const rows = tableRows(`keys: ${marker}`)
+    expect(rows.length, `no table marked '<!-- keys: ${marker} -->'`).toBeGreaterThan(0)
+    const documented = Object.fromEntries(rows.map((cells) => [cells[0]!.replace(/`/g, ''), cells[2]!]))
+    expect(Object.keys(documented).sort()).toEqual(Object.keys(keys).sort())
+    for (const [key, cell] of Object.entries(documented)) {
+      expect(cell.toLowerCase().startsWith('yes'), `${marker}.${key} required column`).toBe(key in required)
+    }
+  })
+})
+
+describe('AT-095: the documented values are the values', () => {
+  const limitRows = () =>
+    tableRows('limits').map((cells) => [cells[0]!, cells[1]!, cells[2]!.replace(/`/g, '')] as const)
+
+  it('names a traceable source on every limits row', () => {
+    const rows = limitRows()
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.filter(([, , source]) => !(source in TRACEABLE_VALUES) && !TRACEABLE_IDS.has(source))).toEqual([])
+  })
+
+  it('keeps every limit that has no constant behind it', () => {
+    const cited = new Set(limitRows().map(([, , source]) => source))
+    expect([...TRACEABLE_IDS].filter((id) => !cited.has(id))).toEqual([])
+  })
+
+  it('quotes the current value on every row citing a constant', () => {
+    for (const [limit, value, source] of limitRows()) {
+      const accepted = TRACEABLE_VALUES[source]
+      if (accepted === undefined) continue
+      expect(
+        accepted.some((form) => value.includes(form)),
+        `${limit}: ${value} is not ${accepted.join(' or ')}`
+      ).toBe(true)
+    }
+  })
+
+  it('states every default a reader plans around', () => {
+    for (const value of [
+      DEFAULT_EMBEDDING_MODEL,
+      DEFAULT_VECTOR_INDEX_NAME,
+      DEFAULT_TEXT_INDEX_NAME,
+      DEFAULT_COLLECTION,
+      'storage',
+      String(DEFAULT_MAX_SEARCH_RESULTS),
+      String(DEFAULT_OVERSAMPLING_FACTOR),
+    ]) {
+      expect(README).toContain(value)
+    }
+  })
+
+  it('lists every reserved metadata key', () => {
+    expect([...RESERVED_METADATA_KEYS].filter((key) => !README.includes(`\`${key}\``))).toEqual([])
+  })
+
+  it('names every authentication mechanism the driver declares', () => {
+    const mechanisms = Object.values(AuthMechanism).filter((name) => name !== 'DEFAULT')
+    expect(mechanisms.length).toBeGreaterThan(5)
+    expect(mechanisms.filter((name) => !README.includes(`\`${name}\``))).toEqual([])
+  })
+
+  it('documents every runtime export of the root barrel', () => {
+    expect(Object.keys(root).filter((name) => !README.includes(`\`${name}\``))).toEqual([])
+  })
+
+  it('names the field the manual vector path indexes, inside the search section', () => {
+    const passage = markedSection('manual-vectors')
+    expect(passage).toContain(`\`${VECTOR_FIELD}\``)
+    expect(passage.toLowerCase()).toContain('`embedder`')
+    const search = README.indexOf('## Search: what answers a query')
+    const marker = README.indexOf('<!-- manual-vectors -->')
+    expect(search).toBeGreaterThan(-1)
+    expect(marker).toBeGreaterThan(search)
+    expect(marker).toBeLessThan(README.indexOf('\n## ', search + 1))
+  })
+})
+
+describe('AT-151: the fused scale is stated where a bound is chosen', () => {
+  it('quotes the live penalty and the two scores it implies', () => {
+    const passage = markedSection('rrf')
+    expect(passage).not.toBe('')
+    expect(passage).toContain(String(RANK_FUSION_PENALTY))
+    expect(passage).toContain((2 / (RANK_FUSION_PENALTY + 1)).toFixed(3))
+    expect(passage).toContain((1 / (RANK_FUSION_PENALTY + 1)).toFixed(3))
+    expect(passage).toContain('minScore')
+    expect(passage).toContain('maxScore')
+  })
+})
+
+describe('AT-096: the index and privilege commands are generated, not written', () => {
+  it('documents exactly the rendered creation and drop commands, in order', () => {
+    const rendered = renderedCommands()
+    expect(runCommandLines(PACKAGE_BLOCKS)).toEqual([...rendered.create, ...rendered.drop])
+  })
+
+  it('names every index the package creates', () => {
+    const names = [...storageSpecs(), ...memorySpecs(), ...memorySearchSpecs({ database: 'agents' })].map(
+      (spec) => spec.name
+    )
+    expect(names.filter((name) => !README.includes(name))).toEqual([])
+  })
+
+  it('keeps the command blocks inside the marked section', () => {
+    const indexes = markedSection('indexes')
+    for (const block of selected('mongosh', PACKAGE_BLOCKS)) expect(indexes).toContain(block.body.trim())
+  })
+
+  it('states the three verify-mode behaviours', () => {
+    const rows = tableRows('verify').map((cells) => cells.map((cell) => cell.toLowerCase()))
+    expect(rows).toHaveLength(3)
+    const ordinary = rows.find(([kind]) => kind!.includes('ordinary'))!
+    const auto = rows.find(([kind]) => kind!.includes('auto'))!
+    const named = rows.find(([kind]) => kind!.includes('search') && !kind!.includes('auto'))!
+    expect(ordinary[2]).toMatch(/throw/)
+    expect(auto[2]).toMatch(/warn/)
+    expect(named[2]).toMatch(/throw/)
+  })
+
+  it('lists the privilege actions the package needs', () => {
+    const actions = tableRows('privileges').map((cells) => cells[0]!.replace(/`/g, ''))
+    expect(actions).toEqual(
+      expect.arrayContaining([
+        'find',
+        'insert',
+        'update',
+        'remove',
+        'listCollections',
+        'listIndexes',
+        'listSearchIndexes',
+        'createIndex',
+        'createCollection',
+        'createSearchIndexes',
+      ])
+    )
+  })
+})
+
+describe('AT-120: the README covers every required subject', () => {
+  it('has a section for each', () => {
+    const headings = new Set(
+      README.split('\n')
+        .filter((line) => line.startsWith('#'))
+        .map((line) => line.trimEnd())
+    )
+    expect(REQUIRED_SECTIONS.filter((heading) => !headings.has(heading))).toEqual([])
+  })
+
+  it('states the document ceiling as a number in the limits section', () => {
+    expect(section('## Limits')).toContain(`${MAX_DOCUMENT_BYTES / 1024 / 1024} MB`)
+  })
+})
+
+describe('AT-213: the observability section matches the code', () => {
+  const observability = markedSection('observability')
+
+  it('names every span, attribute and event the code can emit', () => {
+    const spans = operationSpans()
+    expect(spans).toHaveLength(12)
+    const expected = [...spans, ...Object.keys(SPAN_NAMES), ...Object.keys(EVENT_NAMES), ...ATTRIBUTES]
+    expect(expected.filter((name) => !observability.includes(`\`${name}\``))).toEqual([])
+    expect(observability).toContain('`error.type`')
+  })
+
+  it('names nothing the code does not emit', () => {
+    const expected = new Set([
+      ...operationSpans(),
+      ...Object.keys(SPAN_NAMES),
+      ...Object.keys(EVENT_NAMES),
+      ...ATTRIBUTES,
+    ])
+    const named = [...observability.matchAll(/`(strands_mongodb\.[a-z_.]+)`/g)].map((match) => match[1]!)
+    expect(named.filter((name) => !expected.has(name))).toEqual([])
+  })
+
+  it('AT-210: names every log event and the line shape', () => {
+    expect(Object.keys(LOG_EVENTS).filter((event) => !observability.includes(`\`${event}\``))).toEqual([])
+    expect(observability).toContain('`logger`')
+    expect(observability).toContain('event=')
+    expect(observability).toContain('namespace=')
+    expect(observability).toContain('tier=')
+  })
+
+  it('states the exclusions and how to turn export on', () => {
+    const lowered = observability.toLowerCase()
+    for (const value of ['key', 'content', 'metadata', 'query', 'filter', 'scope', 'memory id', 'connection string']) {
+      expect(lowered, `${value} is never recorded`).toContain(value)
+    }
+    expect(lowered).toContain('configures nothing')
+    expect(lowered).toContain('setuptracer')
+    expect(lowered).toContain('first operation')
+    expect(lowered).toContain('`timed_out`')
+    expect(lowered).toContain('unset')
+    expect(observability).toContain('`memory.initialize`')
+  })
+})
