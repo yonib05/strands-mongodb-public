@@ -22,8 +22,7 @@ The stub (those imports plus `StorageError`, `Logger`, `JSONValue`, `Tool`, `Mem
 | 1.18.0 to 1.22.0 | fail | `@strands-agents/sdk/storage/search` has no `Embedder` export |
 | 1.23.0, 1.24.0 | pass | |
 
-With the import path above on TypeScript 5.9.3: 1.22.0 fails with `TS2305: Module '"@strands-agents/sdk/storage/search"' has no exported member 'Embedder'`, and 1.23.0 passes.
-The floor was measured in a scratch project on TypeScript 5.9.3; this package pins `typescript` `^6.0.3`.
+Measured in a scratch project with the import path above on TypeScript 5.9.3, while this package pins `typescript` `^6.0.3`: 1.22.0 fails with `TS2305: Module '"@strands-agents/sdk/storage/search"' has no exported member 'Embedder'`, and 1.23.0 passes.
 
 ## 2. Keyword tokenizer: identical
 

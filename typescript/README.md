@@ -252,7 +252,7 @@ one connection pool.
 | `connectionString` | `string` | no | | A MongoDB URI. Required unless `client` is set; supplying neither throws `TypeError`. |
 | `clientOptions` | `MongoClientOptions` | no | | Extra options for the client this package builds. Ignored when `client` is set. |
 | `ensureIndexes` | `boolean` | no | `true` | Whether to create missing indexes. `false` verifies and reports instead. See below. |
-| `indexReadyTimeout` | `number` | no | `300` | Seconds to wait for each search index to become queryable, timed separately per index, so an `auto` store can wait this long once per tier. Raise it on a shared deployment where a build queues behind somebody else's. |
+| `indexReadyTimeout` | `number` | no | `300` | Seconds to wait for a search index to become queryable: per index under a named `searchType`, and under `auto` once, on the first search, for whichever tier is ready first. Raise it on a shared deployment where a build queues behind somebody else's. |
 | `searchType` | `'auto' \| 'vector' \| 'text' \| 'hybrid'` | no | `'auto'` | Which memory search tiers to prepare and query. |
 | `embeddingModel` | `string` | no | `voyage-4-lite` | Atlas embedding model, on the AutoEmbeddings path where the deployment embeds your text. |
 | `embeddingDimensions` | `number` | no | | Vector length, on the manual path where you supply the vectors. Mutually exclusive with `embeddingModel`, and requires `similarity`. |
@@ -722,8 +722,9 @@ setupTracer({ exporters: { otlp: true } })
 ```
 
 Or register a provider yourself. The tracer is looked up on every call, so it does not matter whether
-that happens before or after this package is imported. The two packages below arrive with the SDK's
-own OpenTelemetry peers; this package depends on neither:
+that happens before or after this package is imported. The two packages below are dependencies of the
+SDK, which resolve under npm's default hoisting; under pnpm or strict hoisting, install them explicitly.
+This package depends on neither:
 
 <!-- run: unit -->
 ```ts
@@ -881,6 +882,8 @@ with a reason, never silently passed:
 | Integration | `npm run test:integration` | Atlas or Atlas CLI local, with `mongot` | `MONGODB_ATLAS_URI` |
 | AutoEmbeddings | `npm run test:autoembed` | Cluster with a registered Atlas embedding model | `MONGODB_AUTOEMBED_URI` |
 | Build | `npm run test:build` | Network: packs the tarball and installs it into empty ESM and CommonJS projects | `STRANDS_MONGODB_BUILD_TIER` |
+| Compat | `npm run test:compat` | Nothing beyond the installed SDK: checks it meets the floor, exports what the package imports, and accepts both stores at the type level. CI runs it weekly against the latest published `@strands-agents/sdk` | Always runs |
+| Interop | `npm run test:interop` | Any real MongoDB, and `hatch` on `PATH`: writes through each package and reads through the other. The memory suite also needs `MONGODB_ATLAS_URI`, for the text tier | `MONGODB_URI` |
 | Gate | `npm run test:gate` | The last run's `.vitest-results.json` | Run it after the suite it measures |
 
 The three connection-string variables are also read from a `.env` file, in `typescript/` first and then
