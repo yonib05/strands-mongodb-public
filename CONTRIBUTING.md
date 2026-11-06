@@ -124,7 +124,7 @@ the first two:
 | `Lint` | `npm run format:check`, `npm run lint`, `npm run type-check`, `npm run build` |
 | `Test - Node <version>` | `npm run test:coverage` on Node 22 and 24, which enforces both coverage floors (90% aggregate, 70% per file), then `npm run test:gate`. No deployment, so no secrets |
 | `Dependency floors` | `node scripts/pin-floors.mjs --install` puts the lowest version of every peer range in place, on Node 22, then `npm test` and `npm run type-check` run against them |
-| `Contract tier (<deployment>)` | `npm run test:contract` against a `mongo:8` service container and against a `mongodb/mongodb-atlas-local:8` one. The second leg also runs `npm run test:integration`. `npm run test:gate` follows each tier. No secret either time |
+| `Contract tier (<deployment>)` | `npm run test:contract` against a `mongo:8` service container and against a `mongodb/mongodb-atlas-local:8` one. The second leg also runs `npm run test:integration`, then installs hatch and runs `npm run test:interop`. `npm run test:gate` follows each tier. No secret either time |
 | `Latest SDK compatibility` | Weekly or on demand, against the newest published `@strands-agents/sdk`. Type-checks, then runs `npm run test:compat`, then `npm run test:contract` against the Atlas local image |
 | `Atlas tiers` | Weekly, or on demand. Creates an Atlas cluster with `python/scripts/atlas_ci_cluster.py`, runs `npm run test:integration` and `npm run test:autoembed` against it, and deletes it |
 

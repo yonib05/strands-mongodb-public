@@ -217,6 +217,28 @@ jobs:
         if: matrix.deployment.expect_search == '1'
         run: npm run test:gate
 
+      - name: Set up Python
+        if: matrix.deployment.expect_search == '1'
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install hatch
+        if: matrix.deployment.expect_search == '1'
+        run: pip install hatch
+
+      # The first `hatch run` builds the env from python/pyproject.toml, which takes about a minute.
+      - name: Run the interop tier
+        if: matrix.deployment.expect_search == '1'
+        env:
+          MONGODB_ATLAS_URI: ${{ matrix.deployment.uri }}
+        run: npm run test:interop
+
+      - name: Run the release gate over the interop tier
+        if: matrix.deployment.expect_search == '1'
+        run: npm run test:gate
+
       - name: Assert the tiers left the working tree clean
         run: |
           dirty="$(git status --porcelain)"

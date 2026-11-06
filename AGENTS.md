@@ -147,7 +147,7 @@ lives under `typescript/test/integ/<tier>/`, except `build`, `compat` and `gate`
 | `autoembed` | `MONGODB_AUTOEMBED_URI` | An Atlas cluster that runs automated embedding. `python/scripts/atlas_ci_cluster.py up` creates one |
 | `build` | `STRANDS_MONGODB_BUILD_TIER` | Network. Packs the tarball and installs it into empty ESM and CommonJS projects. No deployment and no secret |
 | `compat` | none | Nothing beyond the installed SDK. Checks it meets the floor, exports what the package imports, and accepts both stores at the type level. CI runs it weekly against the latest published `@strands-agents/sdk` |
-| `interop` | `MONGODB_URI`, and `hatch` on `PATH` | Reads and writes through both packages against one deployment. No tests yet |
+| `interop` | `MONGODB_URI`, and `hatch` on `PATH` | Writes through each package and reads through the other against one deployment, the Python halves in `typescript/scripts/interop/`. The memory suite also needs `MONGODB_ATLAS_URI`, for the text tier |
 | `gate` | none | The release-gate assertion. Reads `.vitest-results.json`, so it runs after the suite it measures; `npm run check` orders them |
 
 The variables are read from the process environment and from a `.env` file, the one in the `typescript/`

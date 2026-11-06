@@ -211,12 +211,29 @@ describe('ci-typescript.yml', () => {
       expect(integration.env).toEqual({ MONGODB_ATLAS_URI: '${{ matrix.deployment.uri }}' })
     })
 
+    it('runs the interop tier on the leg with a search process only, after installing hatch', () => {
+      const interop = stepIndex(contract(), 'npm run test:interop')
+      const python = contract().steps.findIndex((step) => step.uses?.startsWith('actions/setup-python@'))
+      const hatch = stepIndex(contract(), 'pip install hatch')
+
+      expect(interop).toBeGreaterThan(-1)
+      expect(python).toBeGreaterThan(-1)
+      expect(hatch).toBeGreaterThan(python)
+      expect(interop).toBeGreaterThan(hatch)
+      for (const index of [python, hatch, interop]) {
+        expect(contract().steps[index]!.if).toBe("matrix.deployment.expect_search == '1'")
+      }
+      expect(contract().steps[interop]!.env).toEqual({ MONGODB_ATLAS_URI: '${{ matrix.deployment.uri }}' })
+    })
+
     it('runs the gate after each tier, before the next one replaces the results it reads', () => {
       const steps = runs(contract())
-      const tiers = steps.flatMap((run, index) => (/npm run test:(contract|integration)\b/.test(run) ? [index] : []))
+      const tiers = steps.flatMap((run, index) =>
+        /npm run test:(contract|integration|interop)\b/.test(run) ? [index] : []
+      )
       const gates = steps.flatMap((run, index) => (run.includes('npm run test:gate') ? [index] : []))
 
-      expect(tiers).toHaveLength(2)
+      expect(tiers).toHaveLength(3)
       tiers.forEach((tier, position) => {
         const next = tiers[position + 1] ?? steps.length
         expect(

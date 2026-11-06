@@ -217,7 +217,13 @@ describe('the release gate', () => {
       behaviour: 'the behaviour whose verdict is under test',
       ids: ['AT-999'],
     }
-    const ALL_OFF: RecordedRun['enabled'] = { contract: false, integration: false, autoembed: false, build: false }
+    const ALL_OFF: RecordedRun['enabled'] = {
+      contract: false,
+      integration: false,
+      autoembed: false,
+      build: false,
+      interop: false,
+    }
 
     const recorded = (
       state: RecordedTest['state'],

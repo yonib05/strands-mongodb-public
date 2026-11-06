@@ -7,6 +7,7 @@ export const TIER_VARIABLES = {
   integration: 'MONGODB_ATLAS_URI',
   autoembed: 'MONGODB_AUTOEMBED_URI',
   build: 'STRANDS_MONGODB_BUILD_TIER',
+  interop: 'MONGODB_URI',
 } as const
 
 export type Tier = keyof typeof TIER_VARIABLES
