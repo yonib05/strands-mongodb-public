@@ -88,3 +88,7 @@ Every combination of four keys (1 to 26 UTF-8 bytes) and four `data` lengths (0 
 key                    keyBytes  size   plain  python  withTtl  pythonTtl
 'strands/session/abc'  19        1000   1065   1065    1085     1085
 ```
+
+## 7. `listIndexes` on an absent collection: code 26
+
+The Node driver surfaces `NamespaceNotFound` (code 26) from `listIndexes` on a collection that does not exist, where pymongo returns an empty cursor. `readIndexes` in `src/indexes.ts` reads 26 as "no indexes" so verify mode reports the missing indexes rather than the missing collection.
