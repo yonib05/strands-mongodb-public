@@ -140,7 +140,8 @@ gives the script.
 
 ## Examples
 
-Two runnable scripts in [`python/examples/`](python/examples/README.md). Each splits into two commands
+Two runnable scripts in [`python/examples/`](python/examples/README.md), ported to TypeScript in
+[`typescript/examples/`](typescript/examples/README.md). Each splits into two commands
 you run as separate processes, so the only thing that carries state between them is MongoDB.
 `MONGODB_URI` is all either one needs, and `--dry-run` shows what a step would do before it connects.
 

@@ -25,7 +25,7 @@ export default [
     },
   },
   {
-    files: ['src/**/*.ts', 'test/**/*.ts'],
+    files: ['src/**/*.ts', 'test/**/*.ts', 'examples/**/*.ts'],
     languageOptions: {
       parser: tsparser,
       globals: nodeGlobals,
@@ -43,7 +43,7 @@ export default [
     },
   },
   {
-    files: ['src/**/__tests__/**/*.ts', 'src/**/__fixtures__/**', 'test/**/*.ts'],
+    files: ['src/**/__tests__/**/*.ts', 'src/**/__fixtures__/**', 'test/**/*.ts', 'examples/**/*.ts'],
     rules: {
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/explicit-module-boundary-types': 'off',

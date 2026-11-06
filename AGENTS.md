@@ -15,7 +15,7 @@ npm from `typescript/`. They write the same documents and indexes, so one deploy
 | Path | Holds |
 |---|---|
 | `python/` | The PyPI package. `src/`, `tests/`, `examples/`, `pyproject.toml`, and the reference `README.md` and `MIGRATION.md` |
-| `typescript/` | The npm package. `typescript/src/` with co-located `__tests__` directories, `typescript/test/` for the tiers and the gate, `package.json`, and the reference `typescript/README.md`. An `examples/` directory follows |
+| `typescript/` | The npm package. `typescript/src/` with co-located `__tests__` directories, `typescript/test/` for the tiers and the gate, `package.json`, the reference `typescript/README.md`, and `examples/` |
 | `.github/workflows/ci-python.yml`, `.github/workflows/ci-typescript.yml` | Every gate a pull request meets, one workflow per package, each filtered to its own paths |
 | `README.md` | The landing page. Short on purpose: `python/README.md` and `typescript/README.md` are the references |
 | `docs/images/` | The diagrams the READMEs and `CONTRIBUTING.md` show, as PNG |

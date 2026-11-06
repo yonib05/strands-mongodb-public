@@ -42,6 +42,9 @@ version heading when that version is tagged.
   package's event names.
 - The `strands-mongodb`, `strands-mongodb/storage` and `strands-mongodb/memory` entry points, as ES
   modules loadable from CommonJS on Node 22.12 and later.
+- Two runnable examples in `examples/`, ported from `python/examples/`: `memory-recall.ts` recalls in a
+  second process a fact the first stored, and `unified-storage.ts` puts sessions, context and file memory
+  in one collection and resumes the session in a new process.
 
 ## [0.1.0]
 

@@ -835,10 +835,17 @@ stable, and identical to the Python package's `strands_mongodb_event` values:
 
 ## Examples
 
-TypeScript ports of the two Python examples in [`python/examples/`](../python/examples/README.md) are
-not written yet. Until they are, the quickstarts above are the runnable code, and the Python scripts show
-the two-process pattern the ports will follow: write in one process, recall or resume in another, with
-MongoDB the only thing carrying state between them.
+Two runnable scripts in [`examples/`](examples/README.md), ported from
+[`python/examples/`](../python/examples/README.md). Each splits into two commands you run as separate
+processes, so the only thing that carries state between them is MongoDB:
+
+<!-- skip: each line is a whole process run against a deployment -->
+```bash
+npx tsx examples/memory-recall.ts write      # then: recall
+npx tsx examples/unified-storage.ts run      # then: resume
+```
+
+`MONGODB_URI` is all either one needs, and `--dry-run` shows what a step would do before it connects.
 
 ## Requirements
 
