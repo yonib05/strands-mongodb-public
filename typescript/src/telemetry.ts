@@ -1,6 +1,7 @@
 import { context, type AttributeValue, type Span, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
 import type { Logger } from '@strands-agents/sdk'
 import { logFields } from './logging.js'
+import { packageVersion } from './version.js'
 
 /** Every attribute name the package may set, identical to the Python package's. */
 export const ATTRIBUTES = [
@@ -129,7 +130,7 @@ export interface OpenSpan {
  */
 export function open(name: SpanName, attributes: Partial<Record<Attribute, AttributeValue>>): OpenSpan {
   const current = trace
-    .getTracer('strands_mongodb')
+    .getTracer('strands_mongodb', packageVersion())
     .startSpan(name, { kind: SpanKind.INTERNAL, attributes: allowed(attributes) })
   return {
     set: (attribute, value): void => {
@@ -148,7 +149,9 @@ async function run<T>(
   attributes: Partial<Record<Attribute, AttributeValue>>,
   fn: () => Promise<T>
 ): Promise<T> {
-  const current = trace.getTracer('strands_mongodb').startSpan(name, { kind: SpanKind.INTERNAL, attributes })
+  const current = trace
+    .getTracer('strands_mongodb', packageVersion())
+    .startSpan(name, { kind: SpanKind.INTERNAL, attributes })
   try {
     return await context.with(trace.setSpan(context.active(), current), fn)
   } catch (error) {

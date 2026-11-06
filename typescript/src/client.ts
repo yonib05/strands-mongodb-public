@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
-import { createRequire } from 'node:module'
 import { MongoClient } from 'mongodb'
 import { defaultLogger, logFields } from './logging.js'
 import { event } from './telemetry.js'
 import type { MongoDBConfig } from './types.js'
+import { packageVersion } from './version.js'
 
 // The `driver.name` entry server logs and Atlas telemetry group by. Changing it orphans usage data.
 /** Name this package appends to the driver's handshake metadata. */
@@ -68,15 +68,6 @@ const objectIds = new WeakMap<object, number>()
 let nextObjectId = 0
 
 /**
- * Reads this package's version from its `package.json`, for driver attribution.
- *
- * @returns The `version` field
- */
-export function packageVersion(): string {
-  return (createRequire(import.meta.url)('../package.json') as { version: string }).version
-}
-
-/**
  * Returns the shared connection for a config, creating it on first use.
  *
  * @param config - Only the connection fields are read; `database` does not affect identity
@@ -100,10 +91,8 @@ export function resolve(config: MongoDBConfig): Connection {
   const key = identity(config)
   const existing = constructed.get(key)
   if (existing !== undefined) return existing
-  const created = new MongoClient(config.connectionString!, {
-    ...config.clientOptions,
-    driverInfo: { name: DRIVER_NAME, version: packageVersion() },
-  })
+  const created = new MongoClient(config.connectionString!, config.clientOptions)
+  created.appendMetadata({ name: DRIVER_NAME, version: packageVersion() })
   const connection = register(created, true, config)
   constructed.set(key, connection)
   return connection

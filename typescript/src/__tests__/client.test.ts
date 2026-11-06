@@ -8,8 +8,9 @@ import type { MongoClient, MongoClientOptions } from 'mongodb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConstructedMongoClient, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
 import { recordSpans } from '../__fixtures__/spans.js'
-import { close, type Connection, DRIVER_NAME, packageVersion, resolve } from '../client.js'
+import { close, type Connection, DRIVER_NAME, resolve } from '../client.js'
 import type { MongoDBConfig } from '../types.js'
+import { packageVersion } from '../version.js'
 
 vi.mock('mongodb', async () => ({
   MongoClient: (await import('../__fixtures__/fake-mongo.js')).ConstructedMongoClient,
@@ -260,17 +261,24 @@ describe('resolve', () => {
       expect(packageVersion()).toBe(pkg.version)
     })
 
-    it('builds a client with driverInfo alongside the caller options', () => {
+    it('builds a client with the caller options unchanged and attributes it through appendMetadata', () => {
       const connectionString = uri()
 
       const client = built(track({ database: 'appdb', connectionString, clientOptions: { appName: 'mine' } }))
 
       expect(client.url).toBe(connectionString)
-      expect(client.clientOptions).toEqual({
-        appName: 'mine',
-        driverInfo: { name: 'Strands-MongoDB', version: packageVersion() },
-      })
-      expect(client.appended).toEqual([])
+      expect(client.clientOptions).toEqual({ appName: 'mine' })
+      expect(client.appended).toEqual([{ name: 'Strands-MongoDB', version: packageVersion() }])
+    })
+
+    it("keeps a caller's own driverInfo beside this package's", () => {
+      const driverInfo = { name: 'my-framework', version: '2.0.0' }
+
+      const client = built(track({ database: 'appdb', connectionString: uri(), clientOptions: { driverInfo } }))
+
+      expect(client.clientOptions).toEqual({ driverInfo })
+      expect(client.options.metadata.driver.name).toBe('nodejs|my-framework|Strands-MongoDB')
+      expect(client.options.metadata.driver.version).toBe(`7.8.0|2.0.0|${packageVersion()}`)
     })
 
     it('attributes an injected client through appendMetadata', () => {

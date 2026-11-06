@@ -1,6 +1,7 @@
 import { type Document, MongoClient } from 'mongodb'
 import { expect, it, vi } from 'vitest'
-import { close, DRIVER_NAME, packageVersion, resolve } from '../../../src/client.js'
+import { close, DRIVER_NAME, resolve } from '../../../src/client.js'
+import { packageVersion } from '../../../src/version.js'
 import { tierUri } from '../../env.js'
 import { describeTier } from '../../tiers.js'
 

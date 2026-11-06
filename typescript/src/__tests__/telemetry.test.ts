@@ -56,6 +56,22 @@ describe('traced', () => {
       expect(recorded.status.code).toBe(SpanStatusCode.UNSET)
     })
 
+    it("names the package's version as the scope version, on both kinds of span", async () => {
+      const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
+        version: string
+      }
+
+      await traced(
+        'memory',
+        'initialize',
+        { database: 'appdb', collection: 'things', logger: silentLogger() },
+        async () => open('strands_mongodb.indexes.wait', {}).end()
+      )
+
+      expect(one('strands_mongodb.memory.initialize').instrumentationScope.version).toBe(pkg.version)
+      expect(one('strands_mongodb.indexes.wait').instrumentationScope.version).toBe(pkg.version)
+    })
+
     it('omits the store name when there is none', async () => {
       await traced(
         'storage',
