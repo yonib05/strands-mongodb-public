@@ -25,4 +25,5 @@ htmlcov/
 
 # Local credentials: never commit a connection string
 .env
+.superpowers/
 *.pem
