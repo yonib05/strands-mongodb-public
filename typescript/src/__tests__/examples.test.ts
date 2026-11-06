@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { expectNoCredentials, runExample, streams, summaryOf, words } from '../../test/examples.js'
+import { redact } from '../../examples/support.js'
+import { CREDENTIALED_URI, expectNoCredentials, runExample, streams, summaryOf, words } from '../../test/examples.js'
 import { unconfigured } from '../../test/readme.js'
 
 const PASSWORD = 'hunter2-example-secret'
@@ -111,5 +112,35 @@ describe('AT-086: examples/memory-recall.ts on --dry-run', () => {
     expect(fact, run.stdout).toBe('the guest prefers a window table for two on Thursday evenings')
     expect(query, run.stdout).toBe('where should we seat them?')
     expect([...words(fact!)].filter((word) => words(query!).has(word))).toEqual([])
+  })
+})
+
+// Assembled from parts for the same reason as CREDENTIALED above.
+const uri = (scheme: string, userinfo: string, rest: string) => `${scheme}://${userinfo}@${rest}`
+
+describe('AT-088: redact', () => {
+  it.each([
+    [uri('mongodb+srv', 'app:s3cret', 'c.example.net/'), 'mongodb+srv://<redacted>@c.example.net/'],
+    [uri('mongodb+srv', 'app:pa/ss', 'c.example.net/'), 'mongodb+srv://<redacted>@c.example.net/'],
+    [uri('mongodb', 'app:p@ss', 'h:27017/'), 'mongodb://<redacted>@h:27017/'],
+    ['mongodb://h:27017/?directConnection=true', 'mongodb://h:27017/?directConnection=true'],
+  ])('replaces everything between the scheme and the last @ in %s', (given, expected) => {
+    expect(redact(given)).toBe(expected)
+    expect(redact(given)).not.toMatch(CREDENTIALED_URI)
+  })
+})
+
+describe('AT-088: the credential guard permits only the exact redaction', () => {
+  it.each([
+    [uri('mongodb+srv', '<redacted>', 'cluster.example.mongodb.net/'), false],
+    [uri('mongodb', '<redacted>', '127.0.0.1:27017/'), false],
+    ['connecting to mongodb+srv://cluster.example.mongodb.net/', false],
+    [uri('mongodb+srv', 'appuser:s3cret', 'cluster.example.mongodb.net/'), true],
+    [uri('mongodb+srv', 'appuser:<redacted>', 'cluster.example.mongodb.net/'), true],
+    [uri('mongodb+srv', '<redacted>:pw', 'cluster.example.mongodb.net/'), true],
+    [uri('mongodb+srv', 'app:pa/ss', 'c.example.net/'), true],
+    [uri('mongodb', 'app:p@ss', 'h:27017/'), true],
+  ])('reads %s as a leak: %s', (line, leak) => {
+    expect(CREDENTIALED_URI.test(`connecting to ${line}`)).toBe(leak)
   })
 })

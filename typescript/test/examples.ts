@@ -5,8 +5,8 @@ import { PACKAGE_ROOT } from './readme.js'
 
 const TSX = join(PACKAGE_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs')
 
-// Any credentialed URI except the exact redaction `support.ts` writes, as in `python/tests/test_examples.py`.
-export const CREDENTIALED_URI = /mongodb(\+srv)?:\/\/(?!<redacted>@)[^\s/]*@/
+// Any credentialed URI except the exact redaction `support.ts` writes, up to the last `@`, so `/` in a password counts.
+export const CREDENTIALED_URI = /mongodb(\+srv)?:\/\/(?!<redacted>@)\S*@/
 
 /** One finished example process. */
 export interface ExampleRun {
@@ -51,7 +51,7 @@ export function streams(run: ExampleRun): string {
 export function expectNoCredentials(run: ExampleRun, uri?: string): void {
   const output = streams(run)
   expect(output).not.toMatch(CREDENTIALED_URI)
-  const password = uri ? /:\/\/[^:@/]+:([^@]+)@/.exec(uri)?.[1] : undefined
+  const password = uri ? /:\/\/[^:@/]+:(.+)@/.exec(uri)?.[1] : undefined
   if (password) expect(output).not.toContain(password)
 }
 

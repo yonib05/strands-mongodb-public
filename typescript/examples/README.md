@@ -23,7 +23,7 @@ npx tsx examples/unified-storage.ts run
 
 `MONGODB_URI` is the only variable either script requires. Both refuse to run without it, name it in
 the message and exit with code 2. Where a script prints the URI it prints it redacted, with everything
-between `://` and `@` replaced by `<redacted>`. `MONGODB_DATABASE` picks the database, `strands_examples`
+between `://` and the last `@` replaced by `<redacted>`. `MONGODB_DATABASE` picks the database, `strands_examples`
 by default, and `--collection` the collection, `example` by default.
 
 Keep the URI in a file you do not commit and load it at the shell:

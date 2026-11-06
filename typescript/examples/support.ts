@@ -67,13 +67,15 @@ export function quoted(text: string): string {
 }
 
 /**
- * Replaces everything between `://` and `@`, which is where a password sits.
+ * Replaces everything between `://` and the last `@`, so an unencoded `/` or `@` in a password is covered too.
  *
  * @param uri - A MongoDB connection string
  * @returns The same string with any credentials replaced by `<redacted>`
  */
 export function redact(uri: string): string {
-  return uri.replace(/:\/\/[^@/]+@/, '://<redacted>@')
+  const scheme = uri.indexOf('://')
+  const at = uri.lastIndexOf('@')
+  return scheme === -1 || at < scheme ? uri : `${uri.slice(0, scheme + 3)}<redacted>${uri.slice(at)}`
 }
 
 /**
