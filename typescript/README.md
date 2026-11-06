@@ -778,7 +778,7 @@ driver. This package does not duplicate either.
 | `strands_mongodb.duplicate` | `memory.add` | Whether the fact was already stored, so nothing was written |
 | `strands_mongodb.indexes.mode` | `indexes.ensure` | `ensure`, or `verify` when `ensureIndexes` is `false` |
 | `strands_mongodb.indexes.created` | `indexes.ensure` | Indexes this call created, `0` when they were all there |
-| `strands_mongodb.indexes.outcome` | `indexes.wait` | `ready`, or `timed_out` when `indexReadyTimeout` ran out. Absent when a build reports `FAILED`, which ends the span in `ERROR` instead |
+| `strands_mongodb.indexes.outcome` | `indexes.wait`, `indexes.ensure` | On `indexes.wait`, `ready`, or `timed_out` when `indexReadyTimeout` ran out. Absent when a build reports `FAILED`, which ends the span in `ERROR` instead. On `indexes.ensure`, `abandoned` when an `auto` store stopped waiting because another tier was ready first; the span's status stays unset |
 | `strands_mongodb.indexes.probe` | `indexes.probe` | `search`, `rank_fusion` or `collation` |
 | `strands_mongodb.client.injected` | the `client.acquired` event | Whether you supplied the `client` |
 | `error.type` | a failed span | The error's class name, `StorageError` or `MongoServerError` for example |

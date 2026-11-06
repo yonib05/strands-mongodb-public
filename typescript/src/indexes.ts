@@ -506,7 +506,7 @@ export function rankFusionSupport(collection: Collection, _logger: Logger): Prom
  * @throws StorageError if an existing index conflicts with a declared one, a search build has failed, something is
  * missing and `create` is `false`, or a driver call fails; {@link SearchIndexNotReady} if a build outlives `timeout`
  */
-export function ensure(collection: Collection, options: EnsureOptions): Promise<void> {
+export async function ensure(collection: Collection, options: EnsureOptions): Promise<void> {
   const { ordinary = [], search = [], create, timeout, logger, signal } = options
   const attributes: Attributes = {
     ...namespaceAttributes(collection),
@@ -514,14 +514,21 @@ export function ensure(collection: Collection, options: EnsureOptions): Promise<
   }
   // Mutated by the helpers, so the span still gets the count when one of them throws part way.
   const created = { count: 0 }
-  return span('strands_mongodb.indexes.ensure', attributes, async () => {
+  // An abandoned wait is rethrown outside the span, so the caller's lost interest is not recorded as an error.
+  let abandonment: StorageError | undefined
+  await span('strands_mongodb.indexes.ensure', attributes, async () => {
     try {
       if (ordinary.length > 0) await ensureOrdinary(collection, ordinary, { create, created, logger })
       if (search.length > 0) await ensureSearch(collection, search, { create, timeout, created, logger, signal })
+    } catch (error) {
+      if (!(signal?.aborted && error instanceof StorageError && error.cause === signal.reason)) throw error
+      annotate('strands_mongodb.indexes.outcome', 'abandoned', logger)
+      abandonment = error
     } finally {
       annotate('strands_mongodb.indexes.created', created.count, logger)
     }
   })
+  if (abandonment !== undefined) throw abandonment
 }
 
 function namespaceOf(collection: Collection): string {
@@ -915,6 +922,7 @@ async function readStatus(collection: Collection, entry: Waiting, namespace: str
 
 // Resolves early on abort, so the caller's next check sees it within the round rather than after the full interval.
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve()
   return new Promise((resolve) => {
     const done = (): void => {
       clearTimeout(timer)

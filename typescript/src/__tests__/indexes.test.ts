@@ -1396,7 +1396,34 @@ describe('indexes', () => {
         const wait = oneSpan(exporter, 'strands_mongodb.indexes.wait')
         expect(wait.status.code).toBe(SpanStatusCode.UNSET)
         expect(wait.attributes).not.toHaveProperty('strands_mongodb.indexes.outcome')
-        expect(oneSpan(exporter, 'strands_mongodb.indexes.ensure').status.code).toBe(SpanStatusCode.ERROR)
+        const ensured = oneSpan(exporter, 'strands_mongodb.indexes.ensure')
+        expect(ensured.status.code).toBe(SpanStatusCode.UNSET)
+        expect(ensured.attributes['strands_mongodb.indexes.outcome']).toBe('abandoned')
+        expect(ensured.attributes).not.toHaveProperty('error.type')
+      })
+
+      it('does not add a round for an abort that lands while a read is in flight', async () => {
+        vi.useFakeTimers()
+        const collection = fakeCollection()
+        collection.addSearchIndex(textSpec().toDescription(), 'PENDING')
+        const losers = new AbortController()
+        const read = collection.listSearchIndexes.bind(collection)
+        vi.spyOn(collection, 'listSearchIndexes').mockImplementation((name) => {
+          // The cold read, then the first polled one, which the abort lands during.
+          if (collection.searchIndexReads === 1) losers.abort()
+          return read(name)
+        })
+        let settled = false
+        const pending = rejectionOf(ensureSearch(collection, [textSpec()], { timeout: 60, signal: losers.signal }))
+        void pending.finally(() => {
+          settled = true
+        })
+
+        await vi.advanceTimersByTimeAsync(POLL_INTERVAL_SECONDS * 1000 - 1)
+
+        expect(settled).toBe(true)
+        expect((await pending).message).toContain('abandoned')
+        expect(collection.searchIndexReads).toBe(2)
       })
 
       it('reads at most once for a signal that is already aborted, and still ends its spans', async () => {

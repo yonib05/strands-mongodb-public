@@ -923,6 +923,24 @@ describe('MongoDBMemoryStore', () => {
         expect(outcomes).toHaveLength(4)
       })
 
+      it("ends the loser's ensure span abandoned rather than in error once the first tier is ready", async () => {
+        vi.useFakeTimers()
+        const { store, collection } = withoutFusion({ config: { indexReadyTimeout: 60 } })
+        reporting(collection, 'PENDING', 'vector_index', 'text_index')
+        await store.initialize()
+        exporter.reset()
+
+        collection.setSearchIndexStatus('text_index', 'READY')
+        await store['_waitForATier']()
+
+        const abandoned = spansNamed(exporter, 'strands_mongodb.indexes.ensure').filter(
+          (span) => span.attributes['strands_mongodb.indexes.outcome'] === 'abandoned'
+        )
+        expect(abandoned).toHaveLength(1)
+        expect(abandoned[0]?.status.code).toBe(SpanStatusCode.UNSET)
+        expect(abandoned[0]?.attributes).not.toHaveProperty('error.type')
+      })
+
       it('warns each tier when the wait runs out', async () => {
         vi.useFakeTimers()
         const { store, collection, logger } = withoutFusion({ config: { indexReadyTimeout: 1 } })
