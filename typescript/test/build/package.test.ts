@@ -1,13 +1,29 @@
-import { execFileSync } from 'node:child_process'
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { PACKAGE_ROOT } from '../readme.js'
 import { describeTier } from '../tiers.js'
 
-const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
+
+// What a TypeScript consumer writes: it compiles only if the `types` conditions of all three entry points resolve.
+const CONSUMER = `import { type MongoDBConfig, MongoDBStorage } from 'strands-mongodb'
+import { MongoDBMemoryStore } from 'strands-mongodb/memory'
+import { MongoDBVectorSearchStrategy } from 'strands-mongodb/storage'
+
+const config: MongoDBConfig = { database: 'x', connectionString: 'mongodb://localhost' }
+export const built = [new MongoDBStorage(config), new MongoDBMemoryStore({ name: 'facts', config })]
+export const strategy: typeof MongoDBVectorSearchStrategy = MongoDBVectorSearchStrategy
+`
+
+// The peer at the version the lockfile installed here, so an upstream release cannot turn this tier red.
+function installed(name: string): string {
+  const manifest = join(PACKAGE_ROOT, 'node_modules', name, 'package.json')
+  return `${name}@${(JSON.parse(readFileSync(manifest, 'utf8')) as { version: string }).version}`
+}
 
 interface PackResult {
   filename: string
@@ -40,7 +56,7 @@ describeTier('build', 'package', () => {
   function install(fixture: string): string {
     const dir = join(workDir, fixture)
     cpSync(join(FIXTURES, fixture), dir, { recursive: true })
-    npm(['install', '--no-audit', '--no-fund', tarball, '@strands-agents/sdk', 'mongodb'], dir)
+    npm(['install', '--no-audit', '--no-fund', tarball, installed('@strands-agents/sdk'), installed('mongodb')], dir)
     return dir
   }
 
@@ -57,21 +73,33 @@ describeTier('build', 'package', () => {
     })
   })
 
-  describe('published types', () => {
-    it('carry no member marked @internal', () => {
-      const types = (file: string) => readFileSync(join(PACKAGE_ROOT, 'dist', file), 'utf8')
+  describe('ESM consumer', () => {
+    let dir: string
+
+    beforeAll(() => {
+      dir = install('esm')
+    })
+
+    it('imports the root and both subpaths', () => {
+      expect(execFileSync(process.execPath, ['index.js'], { cwd: dir, encoding: 'utf8' }).trim()).toBe('ok')
+    })
+
+    it('type-checks against the published types', () => {
+      writeFileSync(join(dir, 'consumer.ts'), CONSUMER)
+      const tsc = join(PACKAGE_ROOT, 'node_modules', 'typescript', 'bin', 'tsc')
+      const options = ['--noEmit', '--strict', '--skipLibCheck', '--module', 'nodenext', 'consumer.ts']
+
+      // tsc prints its diagnostics on stdout, so an empty one is a clean compile.
+      expect(spawnSync(process.execPath, [tsc, ...options], { cwd: dir, encoding: 'utf8' }).stdout).toBe('')
+    })
+
+    it('ships types with no member marked @internal', () => {
+      const types = (file: string): string =>
+        readFileSync(join(dir, 'node_modules', 'strands-mongodb', 'dist', file), 'utf8')
 
       expect(types('storage.d.ts')).toContain('deletePrefix(')
       expect(types('storage.d.ts')).not.toContain('_collection(')
       expect(types('vector-search.d.ts')).not.toContain('indexSpec(')
-    })
-  })
-
-  describe('ESM consumer', () => {
-    it('imports the root and both subpaths', () => {
-      const dir = install('esm')
-
-      expect(execFileSync(process.execPath, ['index.js'], { cwd: dir, encoding: 'utf8' }).trim()).toBe('ok')
     })
   })
 
