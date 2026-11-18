@@ -8,17 +8,9 @@ import { defaultLogger } from '../../../src/logging.js'
 import { rankFusionSupport, requireBinaryComparison, searchSupport } from '../../../src/probes.js'
 import { tierUri } from '../../env.js'
 import { describeTier } from '../../tiers.js'
+import { rejectionOf } from '../../../src/__fixtures__/errors.js'
 
 const FOLDING = { locale: 'en', strength: 2 }
-
-async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
-  try {
-    await pending
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a rejection')
-}
 
 async function indexNames(collection: Collection): Promise<string[]> {
   return (await collection.listIndexes().toArray()).map((index) => String(index.name))

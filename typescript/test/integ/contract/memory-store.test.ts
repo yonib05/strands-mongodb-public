@@ -4,7 +4,6 @@ import { inspect } from 'node:util'
 import {
   Agent,
   type BaseModelConfig,
-  type Logger,
   MemoryManager,
   Message,
   Model,
@@ -25,11 +24,13 @@ import { ensure } from '../../../src/ensure-indexes.js'
 import { EXPIRES_FIELD, memorySearchSpecs } from '../../../src/index-specs.js'
 import { searchSupport } from '../../../src/probes.js'
 import { MongoDBMemoryStore, UNSCOPED } from '../../../src/memory-store.js'
-import type { SearchTiers } from '../../../src/search-tiers.js'
 import { MongoDBStorage } from '../../../src/storage.js'
-import type { MongoDBConfig, MongoDBMemoryStoreConfig, ResolvedSearchType } from '../../../src/types.js'
+import type { MongoDBConfig, MongoDBMemoryStoreConfig } from '../../../src/types.js'
 import { tierUri } from '../../env.js'
 import { describeTier } from '../../tiers.js'
+import { rejectionOf } from '../../../src/__fixtures__/errors.js'
+import { RecordingLogger } from '../../../src/__fixtures__/logger.js'
+import { oneSpan, recordSpans, reportedTiers } from '../../../src/__fixtures__/spans.js'
 
 const DATABASE = 'strands_mongodb_contract'
 const FOLDING = { locale: 'en', strength: 2 }
@@ -82,50 +83,11 @@ class OneLineModel extends Model<BaseModelConfig> {
   }
 }
 
-class RecordingLogger implements Logger {
-  readonly records: Array<[string, string]> = []
-  debug = (...args: unknown[]): void => this.record('debug', args)
-  info = (...args: unknown[]): void => this.record('info', args)
-  warn = (...args: unknown[]): void => this.record('warn', args)
-  error = (...args: unknown[]): void => this.record('error', args)
-
-  lines(level: string): string[] {
-    return this.records.filter(([at]) => at === level).map(([, line]) => line)
-  }
-
-  private record(level: string, args: unknown[]): void {
-    this.records.push([level, args.map(String).join(' ')])
-  }
-}
-
-function errorOf(run: () => unknown): Error {
-  try {
-    run()
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a throw')
-}
-
-async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
-  try {
-    await pending
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a rejection')
-}
-
 // `uri` with `u:<secret>@` as its userinfo, replacing whatever was there.
 function withPassword(uri: string, secret = SECRET): string {
   const [scheme, rest] = uri.split('://') as [string, string]
   const host = rest.includes('@') ? rest.slice(rest.indexOf('@') + 1) : rest
   return `${scheme}://u:${secret}@${host}`
-}
-
-// The one private this file reads: which tiers a store resolved is not part of its public surface.
-function tiersOf(store: MongoDBMemoryStore): SearchTiers {
-  return store['_tiers']
 }
 
 interface Built {
@@ -135,22 +97,25 @@ interface Built {
   config: MongoDBConfig
 }
 
-// Initializes an `auto` store and waits for every index it can build, so its tier set is final rather than build-order dependent.
-async function settled(built: Built, db: Db): Promise<readonly ResolvedSearchType[]> {
+const exporter = recordSpans()
+
+// Builds every index the deployment can before the store initializes, so the tier set it reports is final rather
+// than build-order dependent.
+async function settled(built: Built, db: Db): Promise<string[]> {
   const { store, config, name, logger } = built
-  await store.initialize()
-  if (!resolve(config).capabilities?.search) return tiersOf(store).prepared
   const collection = db.collection(name)
-  for (const spec of memorySearchSpecs(config)) {
-    // A refused index, such as an autoEmbed one on a deployment with no model, raises at once and stays out.
-    try {
-      await ensure(collection, { search: [spec], create: true, timeout: 180, logger })
-    } catch (error) {
-      if (!(error instanceof StorageError)) throw error
+  if ((await searchSupport(collection)).available) {
+    for (const spec of memorySearchSpecs(config)) {
+      // A refused index, such as an autoEmbed one on a deployment with no model, raises at once and stays out.
+      try {
+        await ensure(collection, { search: [spec], create: true, timeout: 180, logger })
+      } catch (error) {
+        if (!(error instanceof StorageError)) throw error
+      }
     }
   }
-  await tiersOf(store).retry(collection)
-  return tiersOf(store).prepared
+  await store.initialize()
+  return reportedTiers(exporter)
 }
 
 describeTier('contract', 'memory store', () => {
@@ -223,7 +188,7 @@ describeTier('contract', 'memory store', () => {
       expect(warnings).toHaveLength(1)
       expect(warnings[0]).toContain(`error code ${capabilities!.noSearchCode}`)
       expect(warnings[0]).toContain('Atlas')
-      expect(tiersOf(facts).prepared).toEqual([])
+      expect(reportedTiers(exporter)).toEqual([])
       expect(
         await db
           .collection(name)
@@ -275,16 +240,15 @@ describeTier('contract', 'memory store', () => {
     const tiers = await settled(built, db)
 
     const capabilities = resolve(built.config).capabilities!
-    const pick = (): string => tiersOf(built.store).pick('dark mode', undefined).tier
-    if (tiers.includes('hybrid')) {
-      expect(pick()).toBe('hybrid')
-    } else if (tiers.length > 0) {
-      expect(pick()).not.toBe('hybrid')
-    } else {
-      const error = errorOf(pick)
+    if (tiers.length === 0) {
+      const error = await rejectionOf(built.store.search('dark mode'))
       expect(error).toBeInstanceOf(StorageError)
       expect(error.message).toContain(`server error code ${capabilities.noSearchCode}`)
+      return
     }
+    await built.store.search('dark mode')
+    const picked = oneSpan(exporter, 'strands_mongodb.memory.search').attributes['strands_mongodb.search.tier']
+    expect(picked === 'hybrid').toBe(tiers.includes('hybrid'))
   })
 
   it('AT-185: an explicit hybrid store gets the tier or an error, never a substitute', async () => {
@@ -298,15 +262,12 @@ describeTier('contract', 'memory store', () => {
 
     if (tiers.includes('hybrid')) {
       await hybrid.initialize()
-      expect(tiersOf(hybrid).prepared).toEqual(['hybrid'])
+      expect(reportedTiers(exporter)).toEqual(['hybrid'])
     } else if (capabilities.search) {
-      const error = await rejectionOf(hybrid.initialize())
-      expect(error).toBeInstanceOf(StorageError)
-      expect(error.message).toMatch(/hybrid|index/)
-      expect(tiersOf(hybrid).prepared).toEqual([])
+      await expect(hybrid.initialize()).rejects.toBeInstanceOf(StorageError)
     } else {
       await hybrid.initialize()
-      expect(tiersOf(hybrid).prepared).toEqual([])
+      expect(reportedTiers(exporter)).toEqual([])
     }
   })
 

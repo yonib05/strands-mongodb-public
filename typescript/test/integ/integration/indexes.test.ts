@@ -8,19 +8,11 @@ import { defaultLogger } from '../../../src/logging.js'
 import type { MongoDBConfig } from '../../../src/types.js'
 import { tierUri } from '../../env.js'
 import { describeTier } from '../../tiers.js'
+import { rejectionOf } from '../../../src/__fixtures__/errors.js'
 
 // The manual-vector path: an `autoEmbed` index is rejected at creation on atlas-local (PARITY.md section 4).
 const MANUAL: MongoDBConfig = { database: 'unused', embeddingDimensions: 4, similarity: 'cosine' }
 const TIMEOUT_SECONDS = 120
-
-async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
-  try {
-    await pending
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a rejection')
-}
 
 async function listed(collection: Collection): Promise<Document[]> {
   return collection.listSearchIndexes().toArray()

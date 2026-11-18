@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
 import { StorageError } from '@strands-agents/sdk'
-import { Binary, type Db, type Document, MongoClient } from 'mongodb'
+import { Binary, type Db, type Document, MongoClient, MongoError } from 'mongodb'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { close, resolve } from '../../../src/client.js'
 import { EXPIRES_FIELD } from '../../../src/index-specs.js'
@@ -10,6 +10,7 @@ import { MAX_DOCUMENT_BYTES, MongoDBStorage } from '../../../src/storage.js'
 import type { MongoDBConfig } from '../../../src/types.js'
 import { tierUri } from '../../env.js'
 import { describeTier } from '../../tiers.js'
+import { rejectionOf } from '../../../src/__fixtures__/errors.js'
 
 const DATABASE = 'strands_mongodb_contract'
 const FOLDING = { locale: 'en', strength: 2 }
@@ -24,15 +25,6 @@ const KEYS = [
 
 function bytes(text: string): Uint8Array {
   return new Uint8Array(Buffer.from(text))
-}
-
-async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
-  try {
-    await pending
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a rejection')
 }
 
 // The SDK's `tokenOverlapScore` over the key alone, which is what the aggregation computes.
@@ -105,6 +97,25 @@ describeTier('contract', 'storage', () => {
 
     expect(await storage.read('a/b')).toBeNull()
     expect(await storage.list('')).toEqual(['a/bytes', 'a/empty', 'a/😀'])
+  })
+
+  it('AT-022: a read the server refuses throws a StorageError chaining the driver error, rather than returning null', async () => {
+    const [scheme, rest] = tierUri('contract')!.split('://') as [string, string]
+    const refused: MongoDBConfig = {
+      database: DATABASE,
+      connectionString: `${scheme}://nobody:wrong@${rest.slice(rest.indexOf('@') + 1)}`,
+      clientOptions: { serverSelectionTimeoutMS: 5000 },
+    }
+    const storage = new MongoDBStorage(refused, { collection: fresh('refused') })
+
+    try {
+      const error = await rejectionOf(storage.read('a/b'))
+
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.cause).toBeInstanceOf(MongoError)
+    } finally {
+      await close(refused)
+    }
   })
 
   it('reads a payload stored under another binary subtype as a Uint8Array', async () => {
