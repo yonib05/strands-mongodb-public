@@ -2610,7 +2610,11 @@ class TestSearchIndexesAgainstAtlas:
         self, atlas_database: Any, unique_collection_name: str
     ) -> None:
         """The cursor fake's behavioural check. The unit tier reads ``name``, ``status``, ``latestDefinition`` and
-        ``statusDetail`` off programmed dicts; this is what fails if the server stops sending them."""
+        ``statusDetail`` off programmed dicts; this is what fails if the server stops sending them.
+
+        The set is the fake's, and no wider. ``type`` was once in it, and not every deployment sends it
+        (INTPYTHON-1182). Nothing in the package reads it, so requiring it failed a server the package works on.
+        """
         collection = atlas_database[unique_collection_name]
         specs = _indexes.memory_search_specs(MANUAL_VECTOR_CONFIG)
         await _indexes.ensure(collection, search=specs, create=True)
@@ -2619,7 +2623,7 @@ class TestSearchIndexesAgainstAtlas:
 
         assert documents
         for document in documents:
-            assert {"name", "status", "queryable", "latestDefinition", "type"} <= set(document)
+            assert {"name", "status", "queryable", "latestDefinition"} <= set(document)
 
     async def test_the_vector_definition_the_server_reports_back_is_the_one_we_sent(
         self, atlas_database: Any, unique_collection_name: str

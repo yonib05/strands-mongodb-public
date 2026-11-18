@@ -1,0 +1,67 @@
+name: Workflow security analysis
+
+# Static analysis of the workflows themselves. The other suites check what the workflows *do*;
+# this one checks the workflows as code — template injection into a `run:` block, a token with more
+# permission than the job needs, credentials left behind in a checkout, a mutable action reference.
+#
+# Findings are argued with or fixed, never silenced in passing: `.github/zizmor.yml` holds the
+# exceptions, and each one states what the rule is right about and why this use is not that.
+#
+# tests/test_ci.py asserts this file exists, scans every workflow, and is pinned to digests, so the
+# scan cannot be quietly removed or narrowed.
+
+on:
+  pull_request:
+    # No `branches:` filter, for the same reason as the CI workflow: a pull request stacked on another
+    # topic branch would otherwise run no scan at all.
+    paths:
+      - '.github/workflows/**'
+      - '.github/zizmor.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/**'
+      - '.github/zizmor.yml'
+
+# Read-only, and the scan job needs nothing more: findings are reported as annotations on the
+# changed lines, not filed through the code scanning API. See the `advanced-security` note below.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # To read the workflows. Nothing else: with `advanced-security: false` below there is no SARIF
+      # upload, so the job has no use for `security-events`, and a permission a job cannot use is
+      # exactly the kind of finding this scan exists to report.
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The scan reads the tree and pushes nothing. A credential left in `.git/config` is the
+          # thing zizmor's own `artipacked` rule is about, so this workflow had better not trip it.
+          persist-credentials: false
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
+        with:
+          # Pinned, not `latest`. The action's default resolves the newest release at run time, so a
+          # new zizmor version silently changes what this gate enforces: 1.32.0 promoted
+          # `unpinned-uses` to a default audit, which turned a green branch red on a release nobody
+          # here chose. Raising this is a reviewed change, like any other dependency bump.
+          version: 1.32.0
+          # Code Security is disabled on this repository, so the SARIF upload the action does by
+          # default fails with `Resource not accessible by integration` whatever zizmor itself found.
+          # Annotations put each finding on the line it is about in the pull request diff instead.
+          # If Code Security is ever enabled here, prefer flipping these two back.
+          advanced-security: false
+          annotations: true

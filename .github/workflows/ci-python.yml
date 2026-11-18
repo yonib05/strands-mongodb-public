@@ -21,6 +21,8 @@ on:
       - '.github/workflows/release-python.yml'
       - '.github/workflows/ci-typescript.yml'
       - '.github/dependabot.yml'
+      - '.github/workflows/zizmor.yml'
+      - '.github/zizmor.yml'
       - 'AGENTS.md'
       - 'CONTRIBUTING.md'
       - 'README.md'
@@ -38,6 +40,8 @@ on:
       - '.github/workflows/release-python.yml'
       - '.github/workflows/ci-typescript.yml'
       - '.github/dependabot.yml'
+      - '.github/workflows/zizmor.yml'
+      - '.github/zizmor.yml'
       - 'AGENTS.md'
       - 'CONTRIBUTING.md'
       - 'README.md'
@@ -417,14 +421,16 @@ jobs:
       MONGODB_ATLAS_SKIP_UPDATE_CHECK: 'yes'
 
     steps:
+      # Digest-pinned, unlike the rest of this workflow: this is the one job that receives the Atlas
+      # service account, and `checkout` writes the workspace its credentialed steps run code from.
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7.1.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.13'
           cache: 'pip'
@@ -439,7 +445,8 @@ jobs:
           ATLAS_CLI_SHA256: 045948133107b87f4b3af670ab3931f8a7ac82e5fbe21204943adb336d5e11d4
         run: |
           archive="mongodb-atlas-cli_${ATLAS_CLI_VERSION}_linux_x86_64.tar.gz"
-          curl -sSfL -o "$RUNNER_TEMP/$archive" \
+          # Retried because a transient 504 from GitHub's release download failed the 2026-11-09 run.
+          curl -sSfL --retry 3 --retry-all-errors -o "$RUNNER_TEMP/$archive" \
             "https://github.com/mongodb/mongodb-atlas-cli/releases/download/atlascli%2Fv${ATLAS_CLI_VERSION}/${archive}"
           echo "${ATLAS_CLI_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"

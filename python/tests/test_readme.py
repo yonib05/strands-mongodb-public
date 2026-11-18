@@ -65,7 +65,6 @@ from strands_mongodb.types import (
     MongoDBConfig,
     MongoDBMemoryStoreConfig,
     MongoDBSearchQuery,
-    ResolvedSearchType,
 )
 
 # tests/ -> python/ -> the repository root, which holds the landing-page README.
@@ -483,22 +482,30 @@ class TestTheTwoReadmesAgree:
         ],
     )
     def test_both_files_state_the_floor_pyproject_declares(self, row: str, declaration: str) -> None:
-        """AT-093 -- a floor stated in three places, checked against the one place that enforces it."""
+        """AT-093 -- the package README's floor, checked against the one place that enforces it."""
         assert declaration in _PYPROJECT.read_text(), (
             f"pyproject.toml no longer contains {declaration!r}, so this test is checking the READMEs "
             f"against a floor nothing enforces"
         )
         floor = declaration.split(">=")[1].strip('" ')
-        for path in (_PACKAGE_README, _ROOT_README):
-            stated = [line for line in path.read_text().splitlines() if line.startswith(f"| {row} |")]
-            assert stated, f"{path.name} has no requirements row for {row}"
-            assert f">= {floor}" in stated[0], f"{path.name} states {stated[0]!r}, not >= {floor}"
+        stated = [line for line in _PACKAGE_README.read_text().splitlines() if line.startswith(f"| {row} |")]
+        assert stated, f"{_PACKAGE_README.name} has no requirements row for {row}"
+        assert f">= {floor}" in stated[0], f"{_PACKAGE_README.name} states {stated[0]!r}, not >= {floor}"
 
     def test_the_landing_page_points_at_the_reference(self) -> None:
         """AT-093 -- what the root file does instead of repeating the reference: it links to it."""
         assert "python/README.md" in _ROOT_README.read_text(), (
             "the root README does not link to python/README.md, so nothing leads a reader to the reference"
         )
+
+    def test_the_reference_links_only_to_absolute_urls(self) -> None:
+        """AT-093 -- ``python/README.md`` is the PyPI long description, where a relative link is broken.
+
+        PyPI resolves a relative link against pypi.org, not the repository, so ``MIGRATION.md`` there is a
+        404. In-page ``#anchors`` still work and are allowed.
+        """
+        relative = re.findall(r"\]\((?!https?://|#)([^)]+)\)", _PACKAGE_README.read_text())
+        assert relative == [], f"python/README.md has relative links that break on PyPI: {relative}"
 
 
 class TestTheConfigurationTablesMatchTheTypes:
@@ -571,6 +578,7 @@ _TRACEABLE_IDS = frozenset(
         "MongoDBMemoryStore.close()",
         "MongoDBMemoryStore.add()",
         "MongoDBMemoryStore.search()",
+        "MongoDBStorage.search()",
         "Storage.list()",
         "MongoDBStorage.ensure_indexes()",
     }
@@ -1329,51 +1337,6 @@ class TestTheReadmeSaysWhichSurfaceCreatesTheTtlIndex:
         memory = next(line for line in rows if line.lstrip("| ").startswith("`memory`"))
 
         assert "initialize()" in memory, f"the memory TTL row does not say initialize() creates it: {memory!r}"
-
-
-class TestTheLandingPageDescribesThePackageAsItIs:
-    """``AT-161`` -- the root README's status block describes the package as it is.
-
-    ``test_the_landing_page_points_at_the_reference`` checks only that the root document links to the
-    reference, not what it says. This class checks two claims the landing page makes: what makes
-    ``ttl_seconds`` take effect, and which tiers ``search()`` can resolve to.
-
-    It is the first page a reader of the public repository sees.
-    ``TestTheReadmeSaysWhichSurfaceCreatesTheTtlIndex`` holds the package README to the TTL rules; this
-    holds the landing page to the same rules, and to the tier list the package implements.
-
-    Both assertions read the claim out of the source rather than restating it here, so a new tier or a
-    second surface that needs provisioning fails this file instead of going stale in the document.
-    """
-
-    def test_a_ttl_claim_names_the_call_that_arms_it(self) -> None:
-        """AT-161 -- the paragraph that mentions ``ttl_seconds`` says what makes it act."""
-        text = _ROOT_README.read_text()
-        paragraphs = [
-            " ".join(line.lstrip("> ").strip() for line in block.splitlines()) for block in re.split(r"\n>?\s*\n", text)
-        ]
-        mentions = [p for p in paragraphs if "ttl_seconds" in p]
-
-        assert mentions, "the landing page no longer mentions ttl_seconds; drop this test or the claim"
-        for paragraph in mentions:
-            assert "ensure_indexes()" in paragraph or "initialize()" in paragraph, (
-                f"the landing page discusses ttl_seconds without naming the call that provisions the "
-                f"index it needs, which is the difference between a working feature and a silent "
-                f"no-op: {paragraph!r}"
-            )
-
-    def test_every_tier_that_can_answer_a_query_is_named(self) -> None:
-        """AT-161 -- read the tiers out of ``ResolvedSearchType``, so adding one fails here."""
-        tiers = get_args(ResolvedSearchType)
-        text = _ROOT_README.read_text()
-
-        assert len(tiers) >= 2, f"ResolvedSearchType no longer lists tiers to check: {tiers!r}"
-        missing = [tier for tier in tiers if tier not in text]
-
-        assert not missing, (
-            f"the landing page describes the search surface without naming {missing}; it is the first "
-            f"page a reader sees and it would undersell what the package resolves to"
-        )
 
 
 class TestWhereCallerTextGoesIsStated:

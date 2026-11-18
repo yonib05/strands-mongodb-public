@@ -114,6 +114,19 @@ that it formats the tree in place where CI only reads it:
 hatch run prepare
 ```
 
+Or let git run the `Lint` checks for you. `.pre-commit-config.yaml` holds hooks that call the same
+`hatch run format-check`, `hatch run lint` and `hatch run typecheck` the `Lint` job calls, so a
+formatting or typing defect is caught before the commit exists rather than on the pull request:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+This is a local convenience and never the authority. A clone without it commits exactly as before, and
+CI stays the thing that decides, which is why none of the hooks is a relaxed version of the CI check.
+Run them over the whole tree at any time with `pre-commit run --all-files`.
+
 Then the jobs in `.github/workflows/ci-python.yml`. Five gate a change, one of them twice over two
 deployments, so six checks have to go green; two more jobs run on the weekly cron, or whenever a maintainer
 starts the workflow by hand from the Actions tab:

@@ -442,6 +442,15 @@ class TestCoreMetadata:
         assert raw_options["tag_regex"] == "^python-v(?P<version>.+)$"
         assert raw_options["root"] == ".."
 
+    def test_a_commit_after_a_dev_tag_gets_a_version(self, manifest: dict[str, Any]) -> None:
+        """The scheme is ``release-branch-semver``: the default cannot number a commit after a ``.dev`` tag.
+
+        This pins the configuration choice, not the build backend's behaviour. Without it, every build
+        after a tag such as ``python-v0.1.0.dev1`` fails at install, and it fails only once such a tag is
+        the nearest one, which can be the middle of a release.
+        """
+        assert manifest["tool"]["hatch"]["version"]["raw-options"]["version_scheme"] == "release-branch-semver"
+
     def test_untagged_builds_are_unmistakable(self, manifest: dict[str, Any]) -> None:
         """The fallback version is ``0.0.0``, which no release will ever be."""
         assert manifest["tool"]["hatch"]["version"]["raw-options"]["fallback_version"] == "0.0.0"

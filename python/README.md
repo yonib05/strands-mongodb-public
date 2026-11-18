@@ -2,7 +2,7 @@
 
 MongoDB storage and memory backends for the [Strands Agents](https://strandsagents.com) SDK.
 
-This is the Python half of the [strands-mongodb](../README.md) repository. One MongoDB deployment
+This is the Python half of the [strands-mongodb](https://github.com/mongodb/strands-mongodb) repository. One MongoDB deployment
 sits behind both of the SDK's persistence extension points:
 
 | Surface | Class | Module | Extra | SDK protocol | Serves |
@@ -36,7 +36,7 @@ management and context offloading. Each is still turned on with the SDK's own ob
 
 **Already using another MongoDB backend for Strands?** Three exist: the archived `mongodb_memory` tool
 in `strands-agents-tools`, and the community `strands-mongodb-store` and `strands-mongodb-storage`
-packages. [MIGRATION.md](MIGRATION.md) maps each one's settings and document fields onto this
+packages. [MIGRATION.md](https://github.com/mongodb/strands-mongodb/blob/main/python/MIGRATION.md) maps each one's settings and document fields onto this
 package's, says which of the three need data copied and which do not, and covers the index-name
 collision all three run into.
 
@@ -44,7 +44,7 @@ collision all three run into.
 
 Pick the surface you need. Each extra pulls only its own dependencies.
 
-<!-- skip: these reach PyPI for a package that is not published yet -->
+<!-- skip: installs from PyPI, which no test tier reaches -->
 ```bash
 pip install 'strands-mongodb[storage]'   # MongoDBStorage
 pip install 'strands-mongodb[memory]'    # MongoDBMemoryStore
@@ -58,46 +58,6 @@ pip install 'strands-mongodb[all]'       # both
 A bare `pip install strands-mongodb` installs no runtime dependencies and gives you no working
 backend. It is metadata only. The extra you choose is what selects the dependency set, so
 `[storage]` never drags in vector-search machinery you are not using.
-
-### Before the package reaches PyPI
-
-Nothing is published yet, so the commands above resolve to nothing. Until they do, install from this
-repository. The plain `https://` URL fails for two separate reasons.
-
-The repository is private and MongoDB enforces SAML single sign-on, so an unauthenticated `https://`
-clone stops before pip ever sees a package:
-
-```text
-remote: The 'mongodb' organization has enabled or enforced SAML SSO.
-fatal: unable to access 'https://github.com/mongodb/strands-mongodb.git/': The requested URL returned error: 403
-```
-
-And this is a monorepo. The distribution lives in `python/`, a sibling of a future `typescript/`, so
-there is no `pyproject.toml` at the repository root for pip to build even once the clone succeeds.
-
-One URL addresses both: SSH for the first, a `subdirectory` fragment for the second.
-
-<!-- skip: it clones a private repository over SSH, which no test tier holds a key for -->
-```bash
-pip install 'strands-mongodb[all] @ git+ssh://git@github.com/mongodb/strands-mongodb.git#subdirectory=python'
-uv add 'strands-mongodb[all] @ git+ssh://git@github.com/mongodb/strands-mongodb.git#subdirectory=python'
-```
-
-`[all]` is the same choice as above: `[storage]` and `[memory]` work here too, and the extra is still
-what selects the dependency set.
-
-This needs a GitHub account in the `mongodb` organization holding an SSH key authorized for single
-sign-on. A CI runner needs a deploy key for the same reason. There is no anonymous path to this
-package until it is published.
-
-What you get is not a release. No release tag exists yet, so the version is a development version of
-the form `0.0.1.devN+g<sha>`, counted from the first commit, and it changes every time `main` does. Pin
-a commit for anything that has to resolve the same way twice, after the `.git` and before the fragment:
-
-<!-- skip: the same private clone as above, against a commit this document does not pin for you -->
-```bash
-pip install 'strands-mongodb[all] @ git+ssh://git@github.com/mongodb/strands-mongodb.git@<commit-sha>#subdirectory=python'
-```
 
 ## Quickstart
 
@@ -751,6 +711,8 @@ to the package: it is named so the value can be traced, not so it can be importe
 | `close()` is scoped to the config | Closing one store's connection closes the pool that every store built from the same config is sharing. Siblings with an operation in flight are the ones that notice. | `MongoDBMemoryStore.close()` |
 | A memory is not searchable when `add()` returns | Atlas embeds and indexes asynchronously, after the write is acknowledged. Poll for the memory rather than reading straight back. | `MongoDBMemoryStore.add()` |
 | An empty search result is ambiguous | `MemoryManager` turns a failed store into a warning and returns what survived, so zero hits can mean zero matches or a search that failed. Watch for `store search failed` in your logs. | `MongoDBMemoryStore.search()` |
+| Embedding throughput on the default path | On the AutoEmbeddings path the deployment embeds every query that reaches the vector tier, the vector half of a `hybrid` search included, and Atlas limits how fast it will. Atlas accepted about 2,000 embedding requests a minute (about 33 a second) in load testing on an M30. Above that, searches fail with "Embedding provider rate limit exceeded", and `MemoryManager` turns the failure into a warning (see the empty-result row above). The default memory search issues two searches per agent turn, so this supports about 16 turns a second per deployment. `search_type="text"` embeds nothing and is not affected, and the manual-vector path embeds in your own `embedder`. | `MongoDBMemoryStore.search()` |
+| Default storage search examines every key | `search()` with no `search_strategy` scores each key under the instance's prefix, in one server-side query that reads no values. Cost grows with the number of keys examined: about 30 ms at 1,000 keys, 1.5 s at 100,000 and 4.6 s at 300,000 in load testing on an M30. Sessions, `read`, `write`, `list` and `MongoDBMemoryStore` are unaffected. Search a narrower key space with `namespace()` or a `prefix`, since the scan is bounded by the instance's prefix. Where the searched keys are ephemeral, give them their own instance or collection with `ttl_seconds` and call `ensure_indexes()` at startup to keep the key count down. A TTL deletes what it covers and applies to everything that instance writes, so never set it on the storage that holds sessions or memories you need to keep. | `MongoDBStorage.search()` |
 | Document size | 16 MB, the server's `BSON` ceiling. Checked before the write, so you get the SDK's `StorageError` naming the size instead of a driver error. Chunk, or store a pointer. | `MAX_DOCUMENT_BYTES` |
 | Storage key length | 1024 bytes, which keeps a key inside an index entry. Same early `StorageError`. | `MAX_KEY_BYTES` |
 | `list()` is unpaginated | The SDK's protocol takes a prefix and no cursor, so a prefix matching a million keys returns a million keys. Use narrower prefixes, or `namespace()`. | `Storage.list()` |
@@ -887,7 +849,7 @@ about one. The event names are stable:
 
 ## Examples
 
-Two runnable scripts in [`examples/`](examples/README.md), each split into two commands you run as two
+Two runnable scripts in [`examples/`](https://github.com/mongodb/strands-mongodb/blob/main/python/examples/README.md), each split into two commands you run as two
 processes, so the only thing crossing between them is MongoDB:
 
 <!-- skip: the examples are run by their own tests, which supply the second command and the backend -->
@@ -975,4 +937,4 @@ databases, but is still not recommended.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache-2.0. See [LICENSE](https://github.com/mongodb/strands-mongodb/blob/main/python/LICENSE) and [NOTICE](https://github.com/mongodb/strands-mongodb/blob/main/python/NOTICE).

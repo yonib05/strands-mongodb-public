@@ -114,6 +114,7 @@ root = ".."
 # Release tags are `python-v0.1.0`, so the python and typescript artifacts version
 # independently off the same repo.
 tag_regex = "^python-v(?P<version>.+)$"
+version_scheme = "release-branch-semver"
 # setuptools-scm refuses a non-default `root` without a reference file; pyproject.toml is
 # always next to itself.
 relative_to = "pyproject.toml"

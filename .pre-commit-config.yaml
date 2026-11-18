@@ -1,0 +1,72 @@
+# Local parity with the `Lint` job in .github/workflows/ci-python.yml. That job is what gates a
+# pull request, so the hooks below run the same commands rather than approximations of them: a
+# gate that disagrees with CI teaches people to ignore it.
+#
+# Install with `pre-commit install` from the repository root. A clone without that step commits
+# exactly as before -- pre-commit is a local convenience, never the authority. CI remains the
+# authority, which is why nothing here is relaxed to make a commit pass.
+
+# The repository root holds more than one language. `python/` has its own pyproject.toml, its own
+# tool configuration and its own hatch environment, so every Python hook is scoped to that prefix
+# and a sibling tree is left untouched.
+exclude: '^docs/images/'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  # The workflows are the release mechanism. A typo in one is not found by the test suite, and an
+  # invalid `on:` block silently never triggers.
+  - repo: https://github.com/sirosen/check-jsonschema
+    rev: 0.39.0
+    hooks:
+      - id: check-github-workflows
+
+  # `hatch build` does not check the manifest against PyPI's schemas, and the release gate runs this
+  # too. A manifest defect found here is found before a tag exists.
+  - repo: https://github.com/abravalheri/validate-pyproject
+    rev: v0.27
+    hooks:
+      - id: validate-pyproject
+        files: ^python/pyproject\.toml$
+
+  # These three are the `Lint` job, in its order. They are `language: system` because they must use
+  # the project's own pinned ruff and mypy -- the versions in python/pyproject.toml's hatch
+  # environment -- and not a second copy that pre-commit resolves independently and that would drift
+  # from CI.
+  #
+  # `pass_filenames: false` is deliberate, not laziness. `tool.ruff.include` in python/pyproject.toml
+  # is the single list of files ruff checks, and an explicit path argument overrides it, so a hook
+  # that passed filenames would check a different set than CI does. `files:` still decides *whether*
+  # each hook runs; the command then checks the project as the workflow checks it.
+  - repo: local
+    hooks:
+      - id: python-format-check
+        name: ruff format --check (python/)
+        # format-check, not format. `hatch run format` rewrites the checkout and exits 0, so a hook
+        # built on it reports success on unformatted code and stages nothing.
+        entry: bash -c 'cd python && exec hatch run format-check'
+        language: system
+        files: ^python/.*\.py$
+        pass_filenames: false
+
+      - id: python-lint
+        name: ruff check (python/)
+        entry: bash -c 'cd python && exec hatch run lint'
+        language: system
+        files: ^python/.*\.py$
+        pass_filenames: false
+
+      - id: python-typecheck
+        name: mypy (python/)
+        entry: bash -c 'cd python && exec hatch run typecheck'
+        language: system
+        files: ^python/.*\.py$
+        pass_filenames: false

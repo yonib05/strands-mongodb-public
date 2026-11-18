@@ -3700,7 +3700,9 @@ class TestTheTierSetIsTheOneTheDeploymentImplies:
         )
         reference = _real_store(contract_uri, test_database_name, unique_collection_name)
         try:
-            await reference.initialize()
+            # Settled, not just initialized: `auto` does not wait for a build, so on a fresh collection its
+            # tiers say what had finished, not what the deployment offers, while the explicit store waits.
+            await _settled(reference)
             capabilities = reference._connection.capabilities
             assert capabilities is not None
 
