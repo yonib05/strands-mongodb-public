@@ -118,7 +118,7 @@ Every command runs from `typescript/`, on Node.js 22 or newer, after `npm ci`.
 | `npm run lint` | ESLint, over `typescript/src/`, `typescript/test/`, `typescript/scripts/` and `typescript/examples/` |
 | `npm run format` | Prettier, in place. `npm run format:check` is the read-only form CI runs |
 | `npm run type-check` | `tsc --noEmit` over `typescript/src/`, `typescript/test/`, `typescript/examples/` and `typescript/vitest.config.ts` |
-| `npm run build` | Writes `src/version.ts` from `package.json`, empties `dist`, then `tsc` into it. `dist` is what the package ships |
+| `npm run build` | Writes `typescript/src/version.ts` from `package.json`, empties `dist`, then `tsc` into it. `dist` is what the package ships |
 | `npm run check` | `format:check`, `lint`, `type-check`, `test:coverage`, `test:docs`, `test:gate`, in that order. Run this before pushing |
 
 The coverage floors are not part of `test`, for the same reason `cov` is not part of `hatch run test`.
