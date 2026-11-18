@@ -77,7 +77,7 @@ The first two jobs run side by side. Each later job needs the ones before it.
 | Job | What it does |
 |---|---|
 | `Release gate` | Fails unless `main` contains the tagged commit. Then `npm ci` and `npm run check` |
-| `Contract tier` | Against a `mongodb/mongodb-atlas-local:8` service container: `npm run test:contract`, `npm run test:integration`, then `npm run test:gate:release`, which fails unless every release-gate item passed in those two tiers. Then checks the working tree is clean |
+| `Contract tier` | Against a `mongodb/mongodb-atlas-local:8` service container: `npm run test:contract`, `npm run test:integration`, then `npm run test:gate:release`, which fails unless every release-gate item passed in those two tiers and no other test in them failed. Then checks the working tree is clean |
 | `Build and verify the artifact` | Checks the tag carries a semantic version, writes it into `package.json`, and checks `npm pack` reports it. Packs the tarball once, runs `npm run test:build` on that tarball, and uploads it |
 | `Publish to npm` | Waits for approval in the `npm` environment, downloads the tarball and runs `npm publish`. A prerelease such as `0.1.0-rc.1` goes to the `next` dist-tag |
 

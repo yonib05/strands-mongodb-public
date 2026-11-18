@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { CHECKLIST, RELEASE_GATE, type Item } from './checklist.js'
 import { REAL_DEPLOYMENT_PROJECTS, type RecordedRun, type RecordedTest } from './reporter.js'
-import { leadingIds, stale, unproven } from './verdict.js'
+import { failures, leadingIds, stale, unproven } from './verdict.js'
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const TEST_ROOTS = ['src/__tests__', 'test/integ', 'test/docs']
@@ -121,5 +121,16 @@ describe('the release gate verdict', () => {
         'item 1 (AT-999) did not pass: t.test.ts > AT-999: two',
       ])
     }
+  })
+
+  it('fails on a failed test that carries no gate item, naming the count and the run', () => {
+    const other = (state: RecordedTest['state']) => recorded(state, ['not a gate item'])
+
+    expect(
+      failures({ contract: run(recorded('passed'), other('skipped')), integration: run(other('passed')) })
+    ).toEqual([])
+    expect(failures({ contract: run(recorded('passed'), other('failed'), other('failed')) })).toEqual([
+      '2 test(s) failed in the contract run: fix them, then rerun npm run test:contract',
+    ])
   })
 })

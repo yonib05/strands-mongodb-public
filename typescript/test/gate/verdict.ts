@@ -56,3 +56,18 @@ export function unproven(results: Results, items: readonly Item[]): string[] {
     })
   )
 }
+
+/**
+ * Refuses recorded runs in which any test failed, gate item or not.
+ *
+ * @param results - The recorded runs
+ * @returns One line per run with a failed test, naming how many
+ */
+export function failures(results: Results): string[] {
+  return REAL_DEPLOYMENT_PROJECTS.flatMap((project) => {
+    const failed = (results[project]?.tests ?? []).filter((test) => test.state === 'failed').length
+    return failed === 0
+      ? []
+      : [`${failed} test(s) failed in the ${project} run: fix them, then rerun npm run test:${project}`]
+  })
+}
