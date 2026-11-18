@@ -11,7 +11,12 @@
     "noFallthroughCasesInSwitch": true,
     "verbatimModuleSyntax": true,
     "resolveJsonModule": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "strands-mongodb": ["./src/index.ts"],
+      "strands-mongodb/storage": ["./src/storage/index.ts"],
+      "strands-mongodb/memory": ["./src/memory/index.ts"]
+    }
   },
   "include": ["src", "test", "examples", "vitest.config.ts"]
 }

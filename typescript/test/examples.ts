@@ -47,12 +47,6 @@ export function expectNoCredentials(run: ExampleRun, uri?: string): void {
   if (password) expect(output).not.toContain(password)
 }
 
-/** Parses the `--summary-json` line, which is the last line of stdout. */
-export function summaryOf(run: ExampleRun): Record<string, unknown> {
-  const last = run.stdout.trim().split('\n').at(-1) ?? ''
-  return JSON.parse(last) as Record<string, unknown>
-}
-
 /** The distinct lowercase words in `text`. */
 export function words(text: string): Set<string> {
   return new Set(

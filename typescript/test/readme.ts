@@ -135,7 +135,7 @@ export function unconfigured(): Record<string, string | undefined> {
   return { ...process.env, MONGODB_URI: '', MONGODB_ATLAS_URI: '', MONGODB_AUTOEMBED_URI: '' }
 }
 
-/** Snippets written to disk beside a tsconfig that resolves `strands-mongodb` to `src/`. */
+/** Snippets written to disk beside a tsconfig extending the package's, which resolves `strands-mongodb` to `src/`. */
 export interface Snippets {
   /** Type-checks every snippet in one `tsc` run; throws with the diagnostics on a failure. */
   typeCheck(): void
@@ -162,14 +162,7 @@ export function prepare(all: readonly Block[]): Snippets {
     JSON.stringify(
       {
         extends: '../tsconfig.json',
-        compilerOptions: {
-          noEmit: true,
-          paths: {
-            'strands-mongodb': ['../src/index.ts'],
-            'strands-mongodb/storage': ['../src/storage/index.ts'],
-            'strands-mongodb/memory': ['../src/memory/index.ts'],
-          },
-        },
+        compilerOptions: { noEmit: true },
         include: ['*.ts'],
       },
       null,
