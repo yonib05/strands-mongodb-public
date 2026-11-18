@@ -522,10 +522,10 @@ export async function ensure(collection: Collection, options: EnsureOptions): Pr
       if (search.length > 0) await ensureSearch(collection, search, { create, timeout, created, logger, signal })
     } catch (error) {
       if (!(signal?.aborted && error instanceof StorageError && error.cause === signal.reason)) throw error
-      annotate('strands_mongodb.indexes.outcome', 'abandoned', logger)
+      annotate('strands_mongodb.indexes.outcome', 'abandoned')
       abandonment = error
     } finally {
-      annotate('strands_mongodb.indexes.created', created.count, logger)
+      annotate('strands_mongodb.indexes.created', created.count)
     }
   })
   if (abandonment !== undefined) throw abandonment
@@ -860,20 +860,17 @@ async function waitUntilReady(
         try {
           ready = await readStatus(collection, entry, namespace, logger)
         } catch (error) {
-          settle(pending, entry).fail(error)
+          settle(pending, entry).end({ error })
           throw error
         }
         if (ready) {
-          const ended = settle(pending, entry)
-          ended.set('strands_mongodb.indexes.outcome', 'ready')
-          ended.end()
+          settle(pending, entry).end({ attributes: { 'strands_mongodb.indexes.outcome': 'ready' } })
         }
       }
       if (pending.length === 0) return []
       if (Date.now() >= deadline) {
         return pending.splice(0).map((entry) => {
-          entry.span.set('strands_mongodb.indexes.outcome', 'timed_out')
-          entry.span.end()
+          entry.span.end({ attributes: { 'strands_mongodb.indexes.outcome': 'timed_out' } })
           return `${entry.spec.name} is ${entry.last}`
         })
       }

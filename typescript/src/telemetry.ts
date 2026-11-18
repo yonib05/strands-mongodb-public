@@ -1,9 +1,7 @@
 import { context, type AttributeValue, type Span, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
-import type { Logger } from '@strands-agents/sdk'
-import { logFields } from './logging.js'
 import { PACKAGE_VERSION } from './version.js'
 
-/** Every attribute name the package may set, identical to the Python package's. */
+/** Every `strands_mongodb.*` attribute name the package may set, identical to the Python package's. */
 export const ATTRIBUTES = [
   'strands_mongodb.store_name',
   'strands_mongodb.search.requested',
@@ -22,10 +20,13 @@ export const ATTRIBUTES = [
   'strands_mongodb.indexes.probe',
 ] as const
 
-/** One of {@link ATTRIBUTES}. */
+/** One of {@link ATTRIBUTES}. The type is the guard that keeps caller data off a span. */
 export type Attribute = (typeof ATTRIBUTES)[number]
 
-/** Every span opened by {@link span} rather than by {@link traced}: index work under the operation that needed it. */
+/** Attributes for a span or an event. */
+export type Attributes = Partial<Record<Attribute, AttributeValue>>
+
+/** Every span opened by {@link span} or {@link open} rather than by {@link traced}. */
 export type SpanName =
   'strands_mongodb.indexes.ensure' | 'strands_mongodb.indexes.probe' | 'strands_mongodb.indexes.wait'
 
@@ -37,18 +38,14 @@ export interface SpanBase {
   database: string
   collection: string
   storeName?: string
-  logger: Logger
 }
-
-// The allow-list exists so no caller data (keys, content, metadata, query text, filter values) reaches a span.
-const ALLOWED: ReadonlySet<string> = new Set(ATTRIBUTES)
 
 /**
  * Records one `INTERNAL` span named `strands_mongodb.<surface>.<operation>` around a store operation.
  *
  * @param surface - `storage` or `memory`
  * @param operation - The public method's name
- * @param base - The store's namespace, its name for a memory store, and its logger
+ * @param base - The store's namespace, and its name for a memory store
  * @param fn - The operation, run with the span active
  * @returns Whatever `fn` resolves to
  * @throws Whatever `fn` throws, as the same object, after the span is marked
@@ -59,7 +56,7 @@ export function traced<T>(
   base: SpanBase,
   fn: () => Promise<T>
 ): Promise<T> {
-  const attributes: Partial<Record<Attribute, AttributeValue>> = {
+  const attributes: Attributes = {
     'strands_mongodb.database': base.database,
     'strands_mongodb.collection': base.collection,
   }
@@ -71,87 +68,75 @@ export function traced<T>(
  * Opens an `INTERNAL` child span under the active one, for work a store operation causes.
  *
  * @param name - An index span name
- * @param attributes - Its starting attributes; names off the allow-list are dropped
+ * @param attributes - Its starting attributes
  * @param fn - The work, run with the span active
  * @returns Whatever `fn` resolves to
  * @throws Whatever `fn` throws, as the same object, after the span is marked
  */
-export function span<T>(
-  name: SpanName,
-  attributes: Partial<Record<Attribute, AttributeValue>>,
-  fn: () => Promise<T>
-): Promise<T> {
-  return run(name, allowed(attributes), fn)
+export function span<T>(name: SpanName, attributes: Attributes, fn: () => Promise<T>): Promise<T> {
+  return run(name, attributes, fn)
 }
 
 /**
  * Sets an outcome attribute on the active span; a no-op when there is none.
  *
- * @param name - An allow-listed attribute name; any other is dropped and logged at `debug`
+ * @param name - The attribute name
  * @param value - A count, flag, tier name or configuration value, never anything the caller supplied
- * @param logger - Where a dropped name is logged
  */
-export function annotate(name: Attribute, value: AttributeValue, logger: Logger): void {
-  if (!ALLOWED.has(name)) {
-    logger.debug(
-      `strands_mongodb: dropped span attribute ${name}, which is not on the allow-list | ${logFields('attribute_dropped')}`
-    )
-    return
-  }
+export function annotate(name: Attribute, value: AttributeValue): void {
   trace.getActiveSpan()?.setAttribute(name, value)
 }
 
 /**
- * Adds an event to the active span, keeping only allow-listed attributes.
+ * Adds an event to the active span; a no-op when there is none.
  *
  * @param name - The event name
  * @param attributes - The event's attributes
  */
-export function event(name: EventName, attributes: Partial<Record<Attribute, AttributeValue>>): void {
-  trace.getActiveSpan()?.addEvent(name, allowed(attributes))
+export function event(name: EventName, attributes: Attributes): void {
+  trace.getActiveSpan()?.addEvent(name, attributes)
+}
+
+/** How a span ended by hand finished. */
+export interface SpanEnd {
+  /** Attributes to set before ending. */
+  attributes?: Attributes
+  /** Marks the span as failed by this error's class. */
+  error?: unknown
+  /** End time in epoch milliseconds. Defaults to now. */
+  at?: number
 }
 
 /** A span ended by hand, for work that spans several rounds of a loop rather than one function. */
 export interface OpenSpan {
-  /** Sets an allow-listed attribute; any other name is dropped. */
-  set(name: Attribute, value: AttributeValue): void
-  /** Ends the span with its status unset. */
-  end(): void
-  /** Marks the span as failed by `error`'s class and ends it. */
-  fail(error: unknown): void
+  /** Ends the span, with its status unset unless `error` is given. */
+  end(result?: SpanEnd): void
 }
 
 /**
  * Opens an `INTERNAL` child span under the active one and hands it back for the caller to end.
  *
  * @param name - An index span name
- * @param attributes - Its starting attributes; names off the allow-list are dropped
+ * @param attributes - Its starting attributes
  * @returns The handle that ends the span
  */
-export function open(name: SpanName, attributes: Partial<Record<Attribute, AttributeValue>>): OpenSpan {
-  const current = trace
-    .getTracer('strands_mongodb', PACKAGE_VERSION)
-    .startSpan(name, { kind: SpanKind.INTERNAL, attributes: allowed(attributes) })
+export function open(name: SpanName, attributes: Attributes): OpenSpan {
+  const current = tracer().startSpan(name, { kind: SpanKind.INTERNAL, attributes })
   return {
-    set: (attribute, value): void => {
-      if (ALLOWED.has(attribute)) current.setAttribute(attribute, value)
-    },
-    end: (): void => current.end(),
-    fail: (error): void => {
-      mark(current, error)
-      current.end()
+    end: ({ attributes: final = {}, error, at } = {}): void => {
+      current.setAttributes(final)
+      if (error !== undefined) mark(current, error)
+      current.end(at)
     },
   }
 }
 
-async function run<T>(
-  name: string,
-  attributes: Partial<Record<Attribute, AttributeValue>>,
-  fn: () => Promise<T>
-): Promise<T> {
-  const current = trace
-    .getTracer('strands_mongodb', PACKAGE_VERSION)
-    .startSpan(name, { kind: SpanKind.INTERNAL, attributes })
+function tracer(): ReturnType<typeof trace.getTracer> {
+  return trace.getTracer('strands_mongodb', PACKAGE_VERSION)
+}
+
+async function run<T>(name: string, attributes: Attributes, fn: () => Promise<T>): Promise<T> {
+  const current = tracer().startSpan(name, { kind: SpanKind.INTERNAL, attributes })
   try {
     return await context.with(trace.setSpan(context.active(), current), fn)
   } catch (error) {
@@ -160,10 +145,6 @@ async function run<T>(
   } finally {
     current.end()
   }
-}
-
-function allowed(attributes: Partial<Record<Attribute, AttributeValue>>): Partial<Record<Attribute, AttributeValue>> {
-  return Object.fromEntries(Object.entries(attributes).filter(([key]) => ALLOWED.has(key)))
 }
 
 function mark(current: Span, error: unknown): void {

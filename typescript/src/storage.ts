@@ -15,7 +15,7 @@ import {
 } from './indexes.js'
 import { abbreviate, NAMESPACED, normalizeKey, normalizePrefix, successor, tokenize } from './keys.js'
 import { defaultLogger } from './logging.js'
-import { annotate, traced } from './telemetry.js'
+import { annotate, type SpanBase, traced } from './telemetry.js'
 import type { MongoDBConfig } from './types.js'
 
 /** Longest key this package writes, in UTF-8 bytes, prefix included. A package limit, not a server one. */
@@ -162,7 +162,7 @@ export class MongoDBStorage implements Storage {
     return this._run('read', 'reading', key, async () => {
       await this._requireBinaryKeys()
       const document = await this._typed().findOne({ _id: this._idFor(key) })
-      annotate('strands_mongodb.found', document !== null, this._logger)
+      annotate('strands_mongodb.found', document !== null)
       if (document === null) return null
       // The driver hands back a `Binary` by default and a `Buffer` under `promoteBuffers`; both become one type here.
       const data: unknown = document.data
@@ -180,7 +180,7 @@ export class MongoDBStorage implements Storage {
     return this._run('delete', 'deleting', key, async () => {
       await this._requireBinaryKeys()
       const result = await this._typed().deleteOne({ _id: this._idFor(key) })
-      annotate('strands_mongodb.deleted_count', result.deletedCount, this._logger)
+      annotate('strands_mongodb.deleted_count', result.deletedCount)
     })
   }
 
@@ -200,7 +200,7 @@ export class MongoDBStorage implements Storage {
         .toArray()
       // Strip only the instance prefix, so the keys returned can be passed straight back to `read`.
       const keys = documents.map((document) => document._id.slice(this._prefix.length))
-      annotate('strands_mongodb.result_count', keys.length, this._logger)
+      annotate('strands_mongodb.result_count', keys.length)
       return keys
     })
   }
@@ -226,7 +226,7 @@ export class MongoDBStorage implements Storage {
         key: String(document._id).slice(this._prefix.length),
         score: Number(document.score),
       }))
-      annotate('strands_mongodb.result_count', results.length, this._logger)
+      annotate('strands_mongodb.result_count', results.length)
       return results
     })
   }
@@ -242,7 +242,7 @@ export class MongoDBStorage implements Storage {
     return this._run('delete_prefix', 'deleting the prefix', prefix, async () => {
       await this._requireBinaryKeys()
       const result = await this._typed().deleteMany(this._rangeFor(prefix))
-      annotate('strands_mongodb.deleted_count', result.deletedCount, this._logger)
+      annotate('strands_mongodb.deleted_count', result.deletedCount)
       return result.deletedCount
     })
   }
@@ -329,7 +329,7 @@ export class MongoDBStorage implements Storage {
       if (error instanceof StorageError || error instanceof MongoError) throw error
       throw new StorageError(`strands_mongodb: searching in ${this._target} failed: ${reason(error)}`, { cause: error })
     }
-    annotate('strands_mongodb.result_count', results.length, this._logger)
+    annotate('strands_mongodb.result_count', results.length)
     return results
   }
 
@@ -365,8 +365,8 @@ export class MongoDBStorage implements Storage {
     if (await requireBinaryComparison(this._collection(), this._logger)) connection.binaryKeys.add(this._target)
   }
 
-  private _spanBase(): { database: string; collection: string; logger: Logger } {
-    return { database: this._databaseName, collection: this._collectionName, logger: this._logger }
+  private _spanBase(): SpanBase {
+    return { database: this._databaseName, collection: this._collectionName }
   }
 
   private get _target(): string {

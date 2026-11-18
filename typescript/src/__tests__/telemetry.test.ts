@@ -2,17 +2,11 @@ import { readFileSync } from 'node:fs'
 import { URL } from 'node:url'
 import { SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
 import type { ReadableSpan } from '@opentelemetry/sdk-trace-base'
-import type { Logger } from '@strands-agents/sdk'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { oneSpan, recordSpans } from '../__fixtures__/spans.js'
-import type { Attribute } from '../telemetry.js'
 import { annotate, ATTRIBUTES, event, open, span, traced } from '../telemetry.js'
 
 const exporter = recordSpans()
-
-function silentLogger(): Logger {
-  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
-}
 
 function one(name: string): ReadableSpan {
   return oneSpan(exporter, name)
@@ -34,12 +28,11 @@ describe('ATTRIBUTES', () => {
 describe('traced', () => {
   describe('AT-205: kind, namespace attributes, and no db.* key', () => {
     it('records an internal span carrying the namespace and the store', async () => {
-      const logger = silentLogger()
-      const base = { database: 'appdb', collection: 'things', storeName: 'facts', logger }
+      const base = { database: 'appdb', collection: 'things', storeName: 'facts' }
 
       const result = await traced('memory', 'probe', base, async () => {
         await Promise.resolve()
-        annotate('strands_mongodb.result_count', 3, logger)
+        annotate('strands_mongodb.result_count', 3)
         return 'x'
       })
 
@@ -61,11 +54,8 @@ describe('traced', () => {
         version: string
       }
 
-      await traced(
-        'memory',
-        'initialize',
-        { database: 'appdb', collection: 'things', logger: silentLogger() },
-        async () => open('strands_mongodb.indexes.wait', {}).end()
+      await traced('memory', 'initialize', { database: 'appdb', collection: 'things' }, async () =>
+        open('strands_mongodb.indexes.wait', {}).end()
       )
 
       expect(one('strands_mongodb.memory.initialize').instrumentationScope.version).toBe(pkg.version)
@@ -73,12 +63,7 @@ describe('traced', () => {
     })
 
     it('omits the store name when there is none', async () => {
-      await traced(
-        'storage',
-        'read',
-        { database: 'appdb', collection: 'things', logger: silentLogger() },
-        async () => {}
-      )
+      await traced('storage', 'read', { database: 'appdb', collection: 'things' }, async () => {})
 
       expect(one('strands_mongodb.storage.read').attributes).toEqual({
         'strands_mongodb.database': 'appdb',
@@ -90,7 +75,7 @@ describe('traced', () => {
   describe('AT-207: status and type, never the message, and the raise unchanged', () => {
     it('marks a raising operation as an error named by class alone', async () => {
       const thrown = new StorageError('strands_mongodb: searching MARKER-KEY failed')
-      const base = { database: 'appdb', collection: 'things', logger: silentLogger() }
+      const base = { database: 'appdb', collection: 'things' }
 
       const caught = await traced('memory', 'probe', base, async () => {
         await Promise.resolve()
@@ -106,7 +91,7 @@ describe('traced', () => {
     })
 
     it('names a non-Error throw Error and rethrows it unchanged', async () => {
-      const base = { database: 'appdb', collection: 'things', logger: silentLogger() }
+      const base = { database: 'appdb', collection: 'things' }
 
       const caught = await traced('storage', 'write', base, () => Promise.reject('MARKER-KEY')).catch(
         (error: unknown) => error
@@ -123,14 +108,13 @@ describe('traced', () => {
 describe('span', () => {
   describe('AT-204: index work is a child of the operation that caused it', () => {
     it('opens under the traced span across an await', async () => {
-      const logger = silentLogger()
-      const base = { database: 'appdb', collection: 'things', storeName: 'facts', logger }
+      const base = { database: 'appdb', collection: 'things', storeName: 'facts' }
 
       await traced('memory', 'initialize', base, async () => {
         await Promise.resolve()
         await span('strands_mongodb.indexes.ensure', { 'strands_mongodb.indexes.mode': 'create' }, async () => {
           await Promise.resolve()
-          annotate('strands_mongodb.indexes.created', 2, logger)
+          annotate('strands_mongodb.indexes.created', 2)
         })
       })
 
@@ -158,28 +142,18 @@ describe('span', () => {
       expect(recorded.status).toEqual({ code: SpanStatusCode.ERROR, message: 'TypeError' })
       expect(recorded.attributes).toEqual({ 'error.type': 'TypeError' })
     })
-
-    it('drops an attribute that is not on the allow-list', async () => {
-      const attributes = { 'strands_mongodb.query': 'MARKER-KEY' } as Partial<Record<Attribute, string>>
-
-      await span('strands_mongodb.indexes.probe', attributes, async () => {})
-
-      expect(one('strands_mongodb.indexes.probe').attributes).toEqual({})
-    })
   })
 })
 
 describe('open', () => {
   describe('AT-204: a span ended by hand still sits under the operation that caused it', () => {
-    it('opens under the active span, keeps allow-listed attributes, and ends unset', async () => {
-      const base = { database: 'appdb', collection: 'things', logger: silentLogger() }
+    it('opens under the active span, sets the closing attributes, and ends unset', async () => {
+      const base = { database: 'appdb', collection: 'things' }
 
       await traced('memory', 'initialize', base, async () => {
         const wait = open('strands_mongodb.indexes.wait', { 'strands_mongodb.collection': 'things' })
         await Promise.resolve()
-        wait.set('strands_mongodb.indexes.outcome', 'ready')
-        wait.set('strands_mongodb.query' as Attribute, 'MARKER-KEY')
-        wait.end()
+        wait.end({ attributes: { 'strands_mongodb.indexes.outcome': 'ready' } })
       })
 
       const recorded = one('strands_mongodb.indexes.wait')
@@ -192,10 +166,19 @@ describe('open', () => {
       expect(recorded.status.code).toBe(SpanStatusCode.UNSET)
     })
 
+    it('ends at the time it is given', () => {
+      const at = Date.now() + 5000
+
+      open('strands_mongodb.indexes.wait', {}).end({ at })
+
+      const [seconds, nanoseconds] = one('strands_mongodb.indexes.wait').endTime
+      expect(seconds * 1000 + Math.floor(nanoseconds / 1e6)).toBe(at)
+    })
+
     it('marks a failure by class alone', () => {
       const wait = open('strands_mongodb.indexes.wait', {})
 
-      wait.fail(new StorageError('strands_mongodb: MARKER-KEY'))
+      wait.end({ error: new StorageError('strands_mongodb: MARKER-KEY') })
 
       const recorded = one('strands_mongodb.indexes.wait')
       expect(recorded.status).toEqual({ code: SpanStatusCode.ERROR, message: 'StorageError' })
@@ -205,46 +188,28 @@ describe('open', () => {
 })
 
 describe('annotate', () => {
-  describe('AT-214: dropped rather than raised at runtime', () => {
-    it('is a no-op outside any span', () => {
-      const logger = silentLogger()
+  it('is a no-op outside any span', () => {
+    annotate('strands_mongodb.result_count', 1)
 
-      annotate('strands_mongodb.result_count', 1, logger)
+    expect(exporter.getFinishedSpans()).toEqual([])
+  })
 
-      expect(exporter.getFinishedSpans()).toEqual([])
-      expect(logger.debug).not.toHaveBeenCalled()
+  it('sets the attribute on the active span', async () => {
+    await trace.getTracer('host').startActiveSpan('host', async (host) => {
+      annotate('strands_mongodb.result_count', 1)
+      host.end()
     })
 
-    it('drops an unknown name and logs it at debug', async () => {
-      const logger = silentLogger()
-
-      await trace.getTracer('host').startActiveSpan('host', async (host) => {
-        annotate('strands_mongodb.query' as Attribute, 'MARKER-KEY', logger)
-        host.end()
-      })
-
-      expect(one('host').attributes).toEqual({})
-      expect(logger.debug).toHaveBeenCalledExactlyOnceWith(
-        'strands_mongodb: dropped span attribute strands_mongodb.query, which is not on the allow-list | event=attribute_dropped'
-      )
-      expect(logger.info).not.toHaveBeenCalled()
-      expect(logger.warn).not.toHaveBeenCalled()
-    })
+    expect(one('host').attributes).toEqual({ 'strands_mongodb.result_count': 1 })
   })
 })
 
 describe('event', () => {
   describe('AT-203: a new pool is an event on the span that caused it', () => {
-    it('lands on the active span with only the allowed attributes', async () => {
-      const base = { database: 'appdb', collection: 'things', logger: silentLogger() }
-      const attributes = {
-        'strands_mongodb.client.injected': false,
-        'strands_mongodb.scope': 'MARKER-KEY',
-      } as Partial<Record<Attribute, boolean | string>>
-
-      await traced('storage', 'write', base, async () => {
+    it('lands on the active span with its attributes', async () => {
+      await traced('storage', 'write', { database: 'appdb', collection: 'things' }, async () => {
         await Promise.resolve()
-        event('strands_mongodb.client.acquired', attributes)
+        event('strands_mongodb.client.acquired', { 'strands_mongodb.client.injected': false })
       })
 
       const recorded = one('strands_mongodb.storage.write')

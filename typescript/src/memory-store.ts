@@ -351,7 +351,7 @@ export class MongoDBMemoryStore implements MemoryStore {
         throw error
       }
       if (result.upsertedId === null) return this._existing(collection, selector)
-      annotate('strands_mongodb.duplicate', false, this._logger)
+      annotate('strands_mongodb.duplicate', false)
       return { ids: [String(result.upsertedId)], inserted: 1, duplicates: 0 }
     })
   }
@@ -370,7 +370,7 @@ export class MongoDBMemoryStore implements MemoryStore {
   search(query: string | MongoDBSearchQuery, options?: SearchOptions): Promise<MemoryEntry[]> {
     return this._run('search', 'searching', async () => {
       // First, so a search that fails early still records what was requested.
-      annotate('strands_mongodb.search.requested', this._searchType, this._logger)
+      annotate('strands_mongodb.search.requested', this._searchType)
       const parts: MongoDBSearchQuery = typeof query === 'string' ? { text: query } : query
       let queryText = parts.text
       let queryVector = parts.vector
@@ -396,7 +396,7 @@ export class MongoDBMemoryStore implements MemoryStore {
         if (!this._tiers.includes('hybrid')) queryText = undefined
       }
       const tier = this._pickTier(queryText, queryVector)
-      annotate('strands_mongodb.search.tier', tier, this._logger)
+      annotate('strands_mongodb.search.tier', tier)
       const stages = this._stages(tier, {
         queryText,
         queryVector,
@@ -419,7 +419,7 @@ export class MongoDBMemoryStore implements MemoryStore {
       })
 
       const results = this._withinBounds(scored)
-      annotate('strands_mongodb.result_count', results.length, this._logger)
+      annotate('strands_mongodb.result_count', results.length)
       return results
     })
   }
@@ -441,7 +441,7 @@ export class MongoDBMemoryStore implements MemoryStore {
       await this.initialize()
       const predicate = compose([this.filter], { scope: this.scope, storeName: this.name })
       const result = await this._collection().deleteOne({ ...predicate, _id })
-      annotate('strands_mongodb.deleted_count', result.deletedCount, this._logger)
+      annotate('strands_mongodb.deleted_count', result.deletedCount)
       return result.deletedCount
     })
   }
@@ -460,7 +460,7 @@ export class MongoDBMemoryStore implements MemoryStore {
       await this.initialize()
       const predicate = compose([this.filter], { scope: this.scope, storeName: this.name })
       const result = await this._collection().deleteMany(predicate)
-      annotate('strands_mongodb.deleted_count', result.deletedCount, this._logger)
+      annotate('strands_mongodb.deleted_count', result.deletedCount)
       return result.deletedCount
     })
   }
@@ -485,7 +485,7 @@ export class MongoDBMemoryStore implements MemoryStore {
   // Projects only `_id`, because the caller already has the content.
   private async _existing(collection: Collection<Document>, selector: Document): Promise<MongoDBAddResult> {
     const document = await collection.findOne(selector, { projection: { _id: 1 } })
-    annotate('strands_mongodb.duplicate', true, this._logger)
+    annotate('strands_mongodb.duplicate', true)
     return { ids: document === null ? [] : [String(document._id)], inserted: 0, duplicates: 1 }
   }
 
@@ -613,7 +613,7 @@ export class MongoDBMemoryStore implements MemoryStore {
 
   // Split from the unlocked fast path so calls that find the work done record no span.
   private async _initialize(): Promise<void> {
-    annotate('strands_mongodb.search.requested', this._searchType, this._logger)
+    annotate('strands_mongodb.search.requested', this._searchType)
     // Bound once, so the lock, the probe and the cache write all use the same connection.
     const connection = this._connection
     await connection.locked(async () => {
@@ -653,7 +653,7 @@ export class MongoDBMemoryStore implements MemoryStore {
       // An absent collection could not be verified above; creating the indexes created it, so check it now.
       if (!verified && (await requireBinaryComparison(collection, this._logger))) connection.binaryKeys.add(target)
 
-      annotate('strands_mongodb.search.tiers', this._tiers.join(','), this._logger)
+      annotate('strands_mongodb.search.tiers', this._tiers.join(','))
       this._initialized = true
     })
   }
@@ -692,7 +692,7 @@ export class MongoDBMemoryStore implements MemoryStore {
     } else {
       this._tierRetryAt = undefined
     }
-    annotate('strands_mongodb.search.tiers', this._tiers.join(','), this._logger)
+    annotate('strands_mongodb.search.tiers', this._tiers.join(','))
   }
 
   // Waits, outside the connection's lock, until the first tier `initialize()` skipped is ready. Callers share one wait.
@@ -826,7 +826,6 @@ export class MongoDBMemoryStore implements MemoryStore {
       database: this._databaseName,
       collection: this._collectionName,
       storeName: this.name,
-      logger: this._logger,
     }
   }
 
