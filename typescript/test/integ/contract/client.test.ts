@@ -1,7 +1,7 @@
 import { type Document, MongoClient } from 'mongodb'
 import { expect, it, vi } from 'vitest'
 import { close, DRIVER_NAME, resolve } from '../../../src/client.js'
-import { packageVersion } from '../../../src/version.js'
+import { PACKAGE_VERSION } from '../../../src/version.js'
 import { tierUri } from '../../env.js'
 import { describeTier } from '../../tiers.js'
 
@@ -18,7 +18,7 @@ describeTier('contract', 'client', () => {
     try {
       const driver = await driverOf(client)
       expect(driver.name.split('|')).toContain(DRIVER_NAME)
-      expect(driver.version.split('|')).toContain(packageVersion())
+      expect(driver.version.split('|')).toContain(PACKAGE_VERSION)
       await expect(client.db('admin').command({ ping: 1 })).resolves.toMatchObject({ ok: 1 })
     } finally {
       await close(config)

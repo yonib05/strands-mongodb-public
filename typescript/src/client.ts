@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb'
 import { defaultLogger, logFields } from './logging.js'
 import { event } from './telemetry.js'
 import type { MongoDBConfig } from './types.js'
-import { packageVersion } from './version.js'
+import { PACKAGE_VERSION } from './version.js'
 
 // The `driver.name` entry server logs and Atlas telemetry group by. Changing it orphans usage data.
 /** Name this package appends to the driver's handshake metadata. */
@@ -80,7 +80,7 @@ export function resolve(config: MongoDBConfig): Connection {
     const existing = injected.get(client)
     if (existing !== undefined) return existing
     if (!attributed.has(client)) {
-      client.appendMetadata({ name: DRIVER_NAME, version: packageVersion() })
+      client.appendMetadata({ name: DRIVER_NAME, version: PACKAGE_VERSION })
       attributed.add(client)
     }
     const connection = register(client, false, config)
@@ -92,7 +92,7 @@ export function resolve(config: MongoDBConfig): Connection {
   const existing = constructed.get(key)
   if (existing !== undefined) return existing
   const created = new MongoClient(config.connectionString!, config.clientOptions)
-  created.appendMetadata({ name: DRIVER_NAME, version: packageVersion() })
+  created.appendMetadata({ name: DRIVER_NAME, version: PACKAGE_VERSION })
   const connection = register(created, true, config)
   constructed.set(key, connection)
   return connection

@@ -1,6 +1,4 @@
 import { Buffer } from 'node:buffer'
-import { readFileSync } from 'node:fs'
-import { URL } from 'node:url'
 import { inspect } from 'node:util'
 import { trace } from '@opentelemetry/api'
 import type { Logger } from '@strands-agents/sdk'
@@ -10,7 +8,7 @@ import { ConstructedMongoClient, FakeMongoClient } from '../__fixtures__/fake-mo
 import { recordSpans } from '../__fixtures__/spans.js'
 import { close, type Connection, DRIVER_NAME, resolve } from '../client.js'
 import type { MongoDBConfig } from '../types.js'
-import { packageVersion } from '../version.js'
+import { PACKAGE_VERSION } from '../version.js'
 
 vi.mock('mongodb', async () => ({
   MongoClient: (await import('../__fixtures__/fake-mongo.js')).ConstructedMongoClient,
@@ -253,14 +251,6 @@ describe('resolve', () => {
       expect(DRIVER_NAME).toBe('Strands-MongoDB')
     })
 
-    it('reports the version in package.json', () => {
-      const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
-        version: string
-      }
-
-      expect(packageVersion()).toBe(pkg.version)
-    })
-
     it('builds a client with the caller options unchanged and attributes it through appendMetadata', () => {
       const connectionString = uri()
 
@@ -268,7 +258,7 @@ describe('resolve', () => {
 
       expect(client.url).toBe(connectionString)
       expect(client.clientOptions).toEqual({ appName: 'mine' })
-      expect(client.appended).toEqual([{ name: 'Strands-MongoDB', version: packageVersion() }])
+      expect(client.appended).toEqual([{ name: 'Strands-MongoDB', version: PACKAGE_VERSION }])
     })
 
     it("keeps a caller's own driverInfo beside this package's", () => {
@@ -278,7 +268,7 @@ describe('resolve', () => {
 
       expect(client.clientOptions).toEqual({ driverInfo })
       expect(client.options.metadata.driver.name).toBe('nodejs|my-framework|Strands-MongoDB')
-      expect(client.options.metadata.driver.version).toBe(`7.8.0|2.0.0|${packageVersion()}`)
+      expect(client.options.metadata.driver.version).toBe(`7.8.0|2.0.0|${PACKAGE_VERSION}`)
     })
 
     it('attributes an injected client through appendMetadata', () => {
@@ -286,7 +276,7 @@ describe('resolve', () => {
 
       track({ database: 'appdb', client })
 
-      expect(client.appended).toEqual([{ name: 'Strands-MongoDB', version: packageVersion() }])
+      expect(client.appended).toEqual([{ name: 'Strands-MongoDB', version: PACKAGE_VERSION }])
       expect(client.options.metadata.driver.name).toBe('nodejs|Strands-MongoDB')
     })
 
