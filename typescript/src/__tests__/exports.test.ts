@@ -41,6 +41,7 @@ const MEMORY_VALUES = [
   'UNSCOPED',
 ]
 
+// The `expectTypeOf` tests assert nothing at run time: `npm run type-check` is what enforces them.
 describe('public surface', () => {
   describe('strands-mongodb', () => {
     it('exports exactly the public runtime values', async () => {

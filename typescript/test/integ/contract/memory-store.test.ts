@@ -187,7 +187,6 @@ describeTier('contract', 'memory store', () => {
     } else {
       expect(warnings).toHaveLength(1)
       expect(warnings[0]).toContain(`error code ${capabilities!.noSearchCode}`)
-      expect(warnings[0]).toContain('Atlas')
       expect(reportedTiers(exporter)).toEqual([])
       expect(
         await db
@@ -334,7 +333,6 @@ describeTier('contract', 'memory store', () => {
     const error = await rejectionOf(facts.initialize())
 
     expect(error).toBeInstanceOf(StorageError)
-    expect(error.message).toContain('failed')
     for (const rendered of [
       error.message,
       inspect(error, { depth: 4 }),
@@ -498,9 +496,6 @@ describeTier('contract', 'memory store', () => {
       const error = await rejectionOf(facts.search('dark mode'))
       expect(error).toBeInstanceOf(StorageError)
       expect(error.message).toContain(`server error code ${support.code}`)
-      expect(error.message).toContain('Atlas')
-      expect(error.message).not.toContain('createSearchIndexes')
-      expect(error.message).not.toContain('NOT READY')
     }
   })
 

@@ -80,13 +80,13 @@ describe('validate', () => {
     })
 
     it('allows arrays of plain values', () => {
-      validate({ tier: ['gold', 'silver'] }, { declaredFields: ['tier'] })
-      validate({ tier: [] }, { declaredFields: ['tier'] })
-      validate({ tier: [{ nested: 'ok' }] }, { declaredFields: ['tier'] })
+      expect(() => validate({ tier: ['gold', 'silver'] }, { declaredFields: ['tier'] })).not.toThrow()
+      expect(() => validate({ tier: [] }, { declaredFields: ['tier'] })).not.toThrow()
+      expect(() => validate({ tier: [{ nested: 'ok' }] }, { declaredFields: ['tier'] })).not.toThrow()
     })
 
     it('allows a $ that is not a prefix', () => {
-      validate({ price$usd: 10 }, { declaredFields: ['price$usd'] })
+      expect(() => validate({ price$usd: 10 }, { declaredFields: ['price$usd'] })).not.toThrow()
     })
 
     it('rejects a benign comparison operator too, since there is no allow-list', () => {
@@ -162,7 +162,7 @@ describe('validate', () => {
     ])('passes %s value, since the driver encodes it as a scalar', (_kind, value) => {
       const filter = { tier: value, nested: [{ tier: value }] }
 
-      validate(filter, { declaredFields: ['tier', 'nested'] })
+      expect(() => validate(filter, { declaredFields: ['tier', 'nested'] })).not.toThrow()
     })
 
     it.each([
@@ -204,12 +204,12 @@ describe('validate', () => {
     it('accepts a null-prototype object as the filter itself', () => {
       const filter = Object.assign(Object.create(null) as Record<string, unknown>, { tier: 'gold' })
 
-      validate(filter, { declaredFields: DECLARED })
+      expect(() => validate(filter, { declaredFields: DECLARED })).not.toThrow()
     })
 
     it('allows a clean mapping value as exact subdocument equality', () => {
       for (const [, value] of mappings({ inner: 'gold' })) {
-        validate({ tier: value }, { declaredFields: DECLARED })
+        expect(() => validate({ tier: value }, { declaredFields: DECLARED })).not.toThrow()
       }
     })
   })
@@ -260,8 +260,8 @@ describe('validate', () => {
     })
 
     it('allows a string that looks like a pattern', () => {
-      validate({ tier: '^gol.*$' }, { declaredFields: DECLARED })
-      validate({ tier: ['^gol', 'silver'] }, { declaredFields: DECLARED })
+      expect(() => validate({ tier: '^gol.*$' }, { declaredFields: DECLARED })).not.toThrow()
+      expect(() => validate({ tier: ['^gol', 'silver'] }, { declaredFields: DECLARED })).not.toThrow()
     })
 
     it('reports the operator key when a filter has both faults', () => {
@@ -290,12 +290,14 @@ describe('validate', () => {
     })
 
     it('passes a declared field', () => {
-      validate({ 'metadata.tier': 'gold' }, { declaredFields: ['scope', 'store_name', 'metadata.tier'] })
+      expect(() =>
+        validate({ 'metadata.tier': 'gold' }, { declaredFields: ['scope', 'store_name', 'metadata.tier'] })
+      ).not.toThrow()
     })
 
     it('treats the baked-in paths as filterable', () => {
-      validate({ scope: 'tenant-a' }, { declaredFields: BAKED_IN })
-      validate({ store_name: 'facts' }, { declaredFields: BAKED_IN })
+      expect(() => validate({ scope: 'tenant-a' }, { declaredFields: BAKED_IN })).not.toThrow()
+      expect(() => validate({ store_name: 'facts' }, { declaredFields: BAKED_IN })).not.toThrow()
     })
 
     it('names every undeclared field, sorted', () => {
@@ -307,17 +309,17 @@ describe('validate', () => {
     })
 
     it('accepts any iterable of declared fields', () => {
-      validate({ tier: 'gold' }, { declaredFields: new Set(['tier']) })
+      expect(() => validate({ tier: 'gold' }, { declaredFields: new Set(['tier']) })).not.toThrow()
     })
 
     it('treats only top-level keys as field paths', () => {
-      validate({ metadata: { tier: 'gold' } }, { declaredFields: ['metadata'] })
+      expect(() => validate({ metadata: { tier: 'gold' } }, { declaredFields: ['metadata'] })).not.toThrow()
 
       expect(() => validate({ metadata: { tier: 'gold' } }, { declaredFields: ['metadata.tier'] })).toThrow(/metadata/)
     })
 
     it('accepts an empty filter', () => {
-      validate({}, { declaredFields: [] })
+      expect(() => validate({}, { declaredFields: [] })).not.toThrow()
     })
 
     it('runs the operator guard before the declared-field guard', () => {

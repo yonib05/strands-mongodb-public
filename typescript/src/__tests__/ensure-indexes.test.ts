@@ -16,7 +16,6 @@ import {
 import type { MongoDBConfig } from '../types.js'
 import { rejectionOf, serverError } from '../__fixtures__/errors.js'
 
-const MEMORY_ROWS = ['3', '4', '7']
 const FOLDING = { locale: 'en', strength: 2 }
 const POLL_INTERVAL_MS = 500
 const exporter = recordSpans()
@@ -98,8 +97,8 @@ describe('ensure', () => {
       await ensureOrdinary(collection, memorySpecs())
 
       expect(created).toHaveBeenCalledOnce()
-      expect(created.mock.calls[0]?.[0]).toHaveLength(MEMORY_ROWS.length)
-      expect(userIndexes(collection)).toHaveLength(MEMORY_ROWS.length)
+      expect(created.mock.calls[0]?.[0]).toHaveLength(3)
+      expect(userIndexes(collection)).toHaveLength(3)
     })
 
     it('leaves an index matching on keys and options alone', async () => {
@@ -186,7 +185,7 @@ describe('ensure', () => {
       expect(error).toBeInstanceOf(StorageError)
       expect(userIndexes(collection)).toEqual([])
       expect(error.message).toContain('ensureIndexes is false')
-      expect(error.message.match(/createIndexes/g)).toHaveLength(MEMORY_ROWS.length)
+      expect(error.message.match(/createIndexes/g)).toHaveLength(3)
       for (const spec of memorySpecs()) expect(error.message).toContain(spec.creationCommand('memory'))
     })
 
@@ -196,7 +195,7 @@ describe('ensure', () => {
 
       await ensureOrdinary(collection, memorySpecs(), false)
 
-      expect(userIndexes(collection)).toHaveLength(MEMORY_ROWS.length)
+      expect(userIndexes(collection)).toHaveLength(3)
     })
 
     it('surfaces an unexpected driver error as a StorageError with the cause chained', async () => {
@@ -276,11 +275,11 @@ describe('ensure', () => {
     })
 
     it('accepts an index reporting a simple collation', async () => {
-      await ensureOrdinary(matched({ locale: 'simple' }), [dedupSpec()])
+      await expect(ensureOrdinary(matched({ locale: 'simple' }), [dedupSpec()])).resolves.toBeUndefined()
     })
 
     it('accepts an index reporting no collation at all', async () => {
-      await ensureOrdinary(matched(), [dedupSpec()])
+      await expect(ensureOrdinary(matched(), [dedupSpec()])).resolves.toBeUndefined()
     })
   })
 
@@ -313,7 +312,7 @@ describe('ensure', () => {
         existing('theirs', dedup.keys, dedup.options)
       )
 
-      await ensureOrdinary(collection, [dedup])
+      await expect(ensureOrdinary(collection, [dedup])).resolves.toBeUndefined()
     })
 
     it('accepts a folding index enforcing nothing beside a correct one', async () => {
@@ -323,7 +322,7 @@ describe('ensure', () => {
         existing('theirs', dedup.keys, { collation: FOLDING })
       )
 
-      await ensureOrdinary(collection, [dedup])
+      await expect(ensureOrdinary(collection, [dedup])).resolves.toBeUndefined()
     })
 
     it('still refuses a folding index enforcing nothing when it is alone', async () => {
@@ -773,7 +772,7 @@ describe('ensure', () => {
       await polls(1)
       collection.setSearchIndexStatus('vector_index', 'READY')
       await polls(1)
-      await pending
+      await expect(pending).resolves.toBeUndefined()
     })
 
     it('names the drifted index beside a clean one', async () => {

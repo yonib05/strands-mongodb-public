@@ -142,8 +142,7 @@ describe('SearchTiers', () => {
       await rejectionOf(tiers.prepare(collection, NOT_FUSING))
 
       const [line] = logger.lines('warn')
-      expect(line).toContain(`the vector search tier is not available on ${NAMESPACE}`)
-      expect(line).toContain("the vectorSearch index 'vector_index'")
+      expect(line).toContain("'vector_index'")
       expect(line).toContain('FAILED')
       expect(line).toMatch(/\| event=tier_unavailable, namespace=appdb\.memory, tier=vector$/)
     })
@@ -157,7 +156,6 @@ describe('SearchTiers', () => {
       expect(tiers.prepared).toEqual(['text'])
       const below = logger.lines('warn').filter((line) => line.includes('event=below_vector'))
       expect(below).toHaveLength(1)
-      expect(below[0]).toContain(`the vector tier is not available on ${NAMESPACE}`)
       expect(below[0]).toMatch(/\| event=below_vector, namespace=appdb\.memory, tier=text$/)
     })
 

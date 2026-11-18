@@ -15,6 +15,7 @@ import {
   type VectorSimilarity,
 } from '../types.js'
 
+// The `expectTypeOf` tests assert nothing at run time: `npm run type-check` is what enforces them.
 describe('MongoDBAddResult', () => {
   it('AT-056 carries ids, inserted and duplicates, all required', () => {
     expectTypeOf<MongoDBAddResult>().toEqualTypeOf<{

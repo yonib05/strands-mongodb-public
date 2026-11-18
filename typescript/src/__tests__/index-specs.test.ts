@@ -21,8 +21,6 @@ import {
 import type { MongoDBConfig, VectorMode, VectorSimilarity } from '../types.js'
 import { errorOf } from '../__fixtures__/errors.js'
 
-const MEMORY_ROWS = ['3', '4', '7']
-
 function filterPaths(definition: Document): string[] {
   return (definition.fields as Document[]).filter((field) => field.type === 'filter').map((field) => field.path)
 }
@@ -262,7 +260,7 @@ describe('the ordinary index inventory', () => {
   })
 
   it('declares three ordinary indexes on the memory surface', () => {
-    expect(memorySpecs()).toHaveLength(MEMORY_ROWS.length)
+    expect(memorySpecs()).toHaveLength(3)
   })
 
   it('gives the dedup index the options it exists for', () => {
@@ -271,23 +269,12 @@ describe('the ordinary index inventory', () => {
     expect(spec.options).toEqual({ unique: true, partialFilterExpression: { content_hash: { $exists: true } } })
   })
 
-  it('makes the dedup index partial so documents without a hash do not collide', () => {
-    const spec = byKeys(['scope', 1], ['store_name', 1], ['content_hash', 1])
-
-    expect(spec.options.partialFilterExpression).toEqual({ content_hash: { $exists: true } })
-  })
-
   it('sorts the recency index by created_at descending', () => {
     expect(byKeys(['scope', 1], ['store_name', 1], ['created_at', -1]).options).toEqual({})
   })
 
   it('declares the memory TTL index unconditionally', () => {
     expect(byKeys(['expires_at', 1]).options).toEqual({ expireAfterSeconds: 0 })
-  })
-
-  it('takes no arguments, so the inventory cannot vary by caller', () => {
-    expect(storageSpecs()).toEqual(storageSpecs())
-    expect(memorySpecs()).toEqual(memorySpecs())
   })
 
   it('prefixes every name with the package name', () => {

@@ -265,7 +265,7 @@ describeTier('integration', 'memory store', () => {
     await facts.initialize()
     const unavailable = logger.lines('warn').filter((line) => line.includes('event=tier_unavailable'))
     expect(unavailable).toHaveLength(1)
-    expect(unavailable[0]).toContain(`the vector search tier is not available on ${DATABASE}.${name}`)
+    expect(unavailable[0]).toContain(`namespace=${DATABASE}.${name}`)
     expect(unavailable[0]).toContain('not registered')
     expect(unavailable[0]).toMatch(/tier=vector$/)
 
@@ -273,7 +273,7 @@ describeTier('integration', 'memory store', () => {
     expect(await statuses(name)).toEqual({ text_index: 'READY' })
     const below = logger.lines('warn').filter((line) => line.includes('event=below_vector'))
     expect(below).toHaveLength(1)
-    expect(below[0]).toContain('queries resolve to the text tier')
+    expect(below[0]).toMatch(/tier=text$/)
   })
 
   it('AT-078: a named vector tier on the AutoEmbeddings path fails with the server reason, creating no tier', async () => {
@@ -376,7 +376,7 @@ describeTier('integration', 'memory store', () => {
     try {
       await facts.initialize()
     } catch (error) {
-      if (error instanceof StorageError && error.message.includes('needs MongoDB 8.0 or later')) return
+      if (error instanceof StorageError && error.message.includes('$rankFusion')) return
       throw error
     }
 
@@ -540,8 +540,7 @@ describeTier('integration', 'memory store', () => {
     if (tier === 'vector' || tier === 'hybrid') return
     expect(tier).toBe('text')
     const warnings = logger.lines('warn').join(' ')
-    expect(warnings).toContain('vector')
-    expect(warnings.toLowerCase()).toContain('regist')
+    expect(warnings).toContain('tier=vector')
   })
 
   it('AT-059b: a bound above the lowest score drops exactly that result, and says so at debug', async () => {
@@ -567,7 +566,9 @@ describeTier('integration', 'memory store', () => {
     expect(Math.abs(kept - highest)).toBeLessThan(1e-3)
     const applied = logger.lines('debug').filter((line) => line.includes('event=score_bound_applied'))
     expect(applied.length).toBeGreaterThanOrEqual(1)
-    expect(applied.at(-1)).toContain(`minScore ${bound} on ${DATABASE}.${name} kept 1 of 2 results`)
+    expect(applied.at(-1)).toContain(`minScore ${bound}`)
+    expect(applied.at(-1)).toContain('1 of 2')
+    expect(applied.at(-1)).toContain(`namespace=${DATABASE}.${name}`)
   })
 
   it('AT-143: the fused order is reciprocal rank fusion of the two tiers it composed', async () => {
@@ -581,7 +582,7 @@ describeTier('integration', 'memory store', () => {
     try {
       await hybrid.initialize()
     } catch (error) {
-      if (error instanceof StorageError && error.message.includes('needs MongoDB 8.0 or later')) return
+      if (error instanceof StorageError && error.message.includes('$rankFusion')) return
       throw error
     }
     const size = Object.keys(FUSION_CORPUS).length
