@@ -2,10 +2,7 @@ import type { Logger, MemoryStoreConfig } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
 import type { MongoClient, MongoClientOptions } from 'mongodb'
 
-/**
- * Search tiers a caller may ask for. `auto` picks the best tier the deployment supports; `hybrid`
- * fuses vector and text and needs MongoDB 8.0 or later.
- */
+/** Search tiers a caller may ask for. `auto` picks the best available; `hybrid` needs MongoDB 8.0 or later. */
 export type SearchType = 'auto' | 'vector' | 'text' | 'hybrid'
 
 /** Distance metrics an Atlas vector index accepts, for the manual-vector path. Also checked at runtime. */
@@ -20,24 +17,24 @@ export const DEFAULT_MAX_SEARCH_RESULTS = 10
 /** Multiplier turning a result limit into a `$vectorSearch` candidate count (`numCandidates`). */
 export const DEFAULT_OVERSAMPLING_FACTOR = 10
 
-/**
- * Metadata keys set on every returned `MemoryEntry`. On a collision with caller metadata the
- * reserved value wins and the collision is logged.
- */
+/** Metadata keys set on every returned `MemoryEntry`. A colliding caller key loses, and the collision is logged. */
 export const RESERVED_METADATA_KEYS: ReadonlySet<string> = new Set(['_relevanceScore', '_id', '_searchType', '_scope'])
 
 /**
- * Connection and deployment settings. Each config owns one client and its pool, so pass the same
- * config to every store that should share a pool.
+ * Connection and deployment settings.
+ *
+ * @remarks
+ * Stores share one client and pool when their configs hold the same `client` object, or equal `connectionString`
+ * and `clientOptions`, even as separate config objects. `close()` on any of them closes that shared pool.
  */
 export interface MongoDBConfig {
   /** Database holding this deployment's collections. The only required key. */
   readonly database: string
-  /** An existing client to use. This package never closes it, not even in `close()`. */
+  /** An existing client to use. It is never closed, not even by `close()`. */
   readonly client?: MongoClient
   /** Used only when `client` is absent. Supplying neither throws. */
   readonly connectionString?: string
-  /** Extra options for the client this package constructs. Ignored when `client` is supplied. */
+  /** Options for the client built from `connectionString`. Compared by value, except non-plain values such as a `Buffer`, which are compared by identity. */
   readonly clientOptions?: MongoClientOptions
   /** Whether `initialize()` creates missing indexes. Defaults to `true`; `false` means verify only. */
   readonly ensureIndexes?: boolean
@@ -52,19 +49,16 @@ export interface MongoDBConfig {
   /** Distance metric for the manual path. No default: the wrong metric returns plausible but wrong neighbours. */
   readonly similarity?: VectorSimilarity
   /** Extra document fields to declare filterable in the vector index. Adding one later means recreating it. */
-  readonly filterFields?: string[]
+  readonly filterFields?: readonly string[]
   /** Name of the Atlas Vector Search index. */
   readonly vectorIndexName?: string
   /** Name of the Atlas Search full-text index. */
   readonly textIndexName?: string
-  /** Receives this package's log calls. Defaults to `warn` and `error` on `console`, like the SDK. */
+  /** Receives every log line. Defaults to `warn` and `error` on `console`, like the SDK. */
   readonly logger?: Logger
 }
 
-/**
- * Full configuration for a `MongoDBMemoryStore`. Extends the SDK's `MemoryStoreConfig`, so `name`
- * stays required and `writable` defaults to `false`.
- */
+/** Configuration for a `MongoDBMemoryStore`. As in the SDK, `name` is required and `writable` defaults to `false`. */
 export interface MongoDBMemoryStoreConfig extends MemoryStoreConfig {
   /** Connection to the deployment. Reuse one across stores that differ only by `scope`. */
   readonly config: MongoDBConfig
@@ -84,10 +78,7 @@ export interface MongoDBMemoryStoreConfig extends MemoryStoreConfig {
   readonly embedder?: Embedder
 }
 
-/**
- * A MongoDB-specific search query, in place of a plain string. Set `text` or `vector`; set both only
- * on a manual-vector store that can use the hybrid tier. Anything else throws at search time.
- */
+/** A search query in place of a plain string. Set `text` or `vector`, or both where the hybrid tier can fuse them. */
 export interface MongoDBSearchQuery {
   /** Natural-language query. Embedded server-side on the AutoEmbeddings path. */
   readonly text?: string

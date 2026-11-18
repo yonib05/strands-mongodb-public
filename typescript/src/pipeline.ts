@@ -27,38 +27,19 @@ export const SCORE_FIELD = 'score'
  * @throws RangeError if either number is below 1 or the product exceeds `MAX_NUM_CANDIDATES`
  */
 export function candidateCount(limit: number, oversamplingFactor = DEFAULT_OVERSAMPLING_FACTOR): number {
-  if (limit < 1) {
-    throw new RangeError(
-      `strands_mongodb: 'limit' is ${limit} and a search limit must be at least 1. The server rejects a non-positive limit outright.`
-    )
+  if (!(limit >= 1)) {
+    throw new RangeError(`strands_mongodb: 'limit' is ${limit} and must be at least 1.`)
   }
-  if (oversamplingFactor < 1) {
-    throw new RangeError(
-      `strands_mongodb: 'oversamplingFactor' is ${oversamplingFactor} and must be at least 1. A smaller factor asks for fewer candidates than results, which the server rejects as numCandidates below the limit.`
-    )
+  if (!(oversamplingFactor >= 1)) {
+    throw new RangeError(`strands_mongodb: 'oversamplingFactor' is ${oversamplingFactor} and must be at least 1.`)
   }
   const candidates = limit * oversamplingFactor
   if (candidates > MAX_NUM_CANDIDATES) {
     throw new RangeError(
-      `strands_mongodb: numCandidates would be ${candidates}, and the server requires a value within bounds [1..${MAX_NUM_CANDIDATES}]. It is limit (${limit}) times 'oversamplingFactor' (${oversamplingFactor}): lowering the limit costs results, lowering the factor costs recall.`
+      `strands_mongodb: numCandidates would be ${candidates} (limit ${limit} times 'oversamplingFactor' ${oversamplingFactor}), outside the server's bounds [1..${MAX_NUM_CANDIDATES}]. Lower the limit or the factor.`
     )
   }
   return candidates
-}
-
-/**
- * Rejects a limit larger than the candidate pool, which the server checks separately from the bounds.
- *
- * @param options - The resolved `limit` and the `numCandidates` pool
- * @throws RangeError if `limit` exceeds `numCandidates`
- */
-export function checkCandidateCount(options: { limit: number; numCandidates: number }): void {
-  const { limit, numCandidates } = options
-  if (limit > numCandidates) {
-    throw new RangeError(
-      `strands_mongodb: limit (${limit}) is greater than numCandidates (${numCandidates}), and the server requires limit <= numCandidates. Raise 'oversamplingFactor' or lower the limit.`
-    )
-  }
 }
 
 /**
@@ -66,7 +47,8 @@ export function checkCandidateCount(options: { limit: number; numCandidates: num
  *
  * @param options - Vector path, index, limit, exactly one query key, and an optional pre-filter
  * @returns The search stage, followed by the `$set` score projection when `score`
- * @throws TypeError if the query keys contradict `mode`; RangeError if the candidate count is out of bounds
+ * @throws TypeError if the query keys contradict `mode`
+ * @throws RangeError if the candidate count is out of bounds
  */
 export function vectorStages(options: {
   mode: VectorMode
@@ -83,7 +65,6 @@ export function vectorStages(options: {
   checkQueryShape(mode, queryText, queryVector)
 
   const numCandidates = candidateCount(limit, oversamplingFactor)
-  checkCandidateCount({ limit, numCandidates })
 
   const stage: Document = mode.autoEmbed
     ? { index: indexName, path: CONTENT_FIELD, query: { text: queryText }, model: mode.model, numCandidates, limit }
@@ -176,13 +157,11 @@ export function checkQueryKeys(options: {
   const { queryText, queryVector, fusionPossible = false } = options
   if (queryText !== undefined && queryVector !== undefined && !fusionPossible) {
     throw new TypeError(
-      "strands_mongodb: the query sets both 'text' and 'vector', and this store has no interpretation that uses both. Set 'text' to have the deployment embed it, or 'vector' to supply the embedding yourself. Only the hybrid tier on a manual-vector store reads both."
+      "strands_mongodb: the query sets both 'text' and 'vector', which only the hybrid tier on a manual-vector store can use. Set one of them."
     )
   }
   if (queryText === undefined && queryVector === undefined) {
-    throw new TypeError(
-      "strands_mongodb: the query sets neither 'text' nor 'vector'. Exactly one of the two has to be present."
-    )
+    throw new TypeError("strands_mongodb: the query sets neither 'text' nor 'vector'. Set one of them.")
   }
 }
 
@@ -190,12 +169,12 @@ function checkQueryShape(mode: VectorMode, queryText: string | undefined, queryV
   checkQueryKeys({ ...(queryText !== undefined && { queryText }), ...(queryVector !== undefined && { queryVector }) })
   if (mode.autoEmbed && queryVector !== undefined) {
     throw new TypeError(
-      "strands_mongodb: the query supplies 'vector', but this store is on the Atlas AutoEmbeddings path, whose index holds no caller-supplied embeddings. That path is selected by 'embeddingModel', or by setting no vector keys at all. Query with 'text' instead, or set 'embeddingDimensions' and 'similarity' to select the manual path, which means recreating the vector index."
+      "strands_mongodb: the query sets 'vector', but this store uses Atlas AutoEmbeddings, whose index holds no caller-supplied embeddings. Query with 'text', or set 'embeddingDimensions' and 'similarity' and recreate the vector index."
     )
   }
   if (!mode.autoEmbed && queryText !== undefined) {
     throw new TypeError(
-      "strands_mongodb: the query supplies 'text', but 'embeddingDimensions' and 'similarity' select the manual-vector path, where neither the deployment nor this package embeds. Supply 'vector' with an embedding you computed, or remove both keys to use Atlas AutoEmbeddings."
+      "strands_mongodb: the query sets 'text', but 'embeddingDimensions' and 'similarity' select the manual-vector path, where nothing embeds the text. Set 'vector' to an embedding you computed, or remove both keys to use Atlas AutoEmbeddings."
     )
   }
 }

@@ -268,7 +268,7 @@ conventions test checks.
   the `Dependency floors` job installs the declared floors and runs the suite against them, which is the only
   check of what the code actually needs.
 - **Do not hand-edit the index and privilege commands in `python/README.md` or `typescript/README.md`.** They are
-  compared against the renderers in `src/strands_mongodb/_indexes.py` and `typescript/src/indexes.ts` that
+  compared against the renderers in `src/strands_mongodb/_indexes.py` and `typescript/src/index-specs.ts` that
   produce them, so an edit there fails a test rather than shipping a command the package does not run.
 - **Do not add a runtime dependency to `dependencies`.** It is empty on purpose in both packages. Every Python
   dependency belongs to the extra that needs it, so `pip install 'strands-mongodb[storage]'` never pulls

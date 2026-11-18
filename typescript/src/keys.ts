@@ -2,10 +2,7 @@
 // which exports none of them from a public subpath.
 import { StorageError } from '@strands-agents/sdk'
 
-/**
- * Symbol present on namespaced storage views. The same global symbol the SDK reads, so its
- * constructs recognise a namespaced `MongoDBStorage` without importing SDK internals.
- */
+/** Symbol present on namespaced storage views: the global one the SDK reads to recognise them. */
 export const NAMESPACED: unique symbol = Symbol.for('strands.storage.namespaced')
 
 /**
@@ -66,8 +63,7 @@ export function tokenize(text: string): Set<string> {
 }
 
 /**
- * Smallest string that sorts above every key starting with `text`: the exclusive upper bound of
- * the `_id` range scan. Works on code points, stepping over the surrogate range BSON cannot encode.
+ * Finds the smallest string that sorts above every key starting with `text`, in code point order.
  *
  * @param text - The prefix the range starts at, never empty
  * @returns The bound, or `undefined` when the prefix is made only of U+10FFFF and has none
@@ -76,6 +72,7 @@ export function successor(text: string): string | undefined {
   const chars = Array.from(text)
   for (let index = chars.length - 1; index >= 0; index--) {
     let point = chars[index]!.codePointAt(0)! + 1
+    // BSON cannot encode the surrogate range.
     if (point === 0xd800) point = 0xe000
     // Carry left: every string starting with `text` also starts with the shorter prefix.
     if (point > 0x10ffff) continue

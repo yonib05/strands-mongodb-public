@@ -4,7 +4,6 @@ import fixtures from '../__fixtures__/pipeline-stages.json' with { type: 'json' 
 import { CONTENT_FIELD, DEFAULT_EMBEDDING_MODEL, MAX_NUM_CANDIDATES, VECTOR_FIELD } from '../index-specs.js'
 import {
   candidateCount,
-  checkCandidateCount,
   checkQueryKeys,
   FUSION_SCORE_META,
   hybridStages,
@@ -175,32 +174,19 @@ describe('candidateCount', () => {
       expect(error.message).toContain('oversamplingFactor')
     })
 
-    it.each([0, -1])('rejects a factor of %i', (factor) => {
+    it.each([0, -1, NaN])('rejects a factor of %d', (factor) => {
       const error = errorOf(() => candidateCount(5, factor))
 
       expect(error).toBeInstanceOf(RangeError)
       expect(error.message).toContain('oversamplingFactor')
     })
 
-    it.each([0, -1])('rejects a limit of %i', (limit) => {
+    it.each([0, -1, NaN])('rejects a limit of %d', (limit) => {
       const error = errorOf(() => candidateCount(limit, 10))
 
       expect(error).toBeInstanceOf(RangeError)
       expect(error.message).toContain('limit')
     })
-  })
-})
-
-describe('checkCandidateCount', () => {
-  it('AT-072a rejects a limit above the candidate count', () => {
-    const error = errorOf(() => checkCandidateCount({ limit: 5, numCandidates: 4 }))
-
-    expect(error).toBeInstanceOf(RangeError)
-    expect(error.message).toContain('greater than numCandidates')
-  })
-
-  it('accepts a limit equal to the candidate count', () => {
-    expect(() => checkCandidateCount({ limit: 5, numCandidates: 5 })).not.toThrow()
   })
 })
 
@@ -339,7 +325,7 @@ describe('vectorStages', () => {
       )
 
       expect(error).toBeInstanceOf(TypeError)
-      expect(error.message).toContain('embeddingModel')
+      expect(error.message).toContain('AutoEmbeddings')
       expect(error.message).toContain("'vector'")
     })
 

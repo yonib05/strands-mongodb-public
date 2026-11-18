@@ -1622,7 +1622,7 @@ describe('MongoDBMemoryStore', () => {
       const error = await rejectionOf(store.search({ text: 'dark mode', vector: QUERY_VECTOR }))
 
       expect(error).toBeInstanceOf(TypeError)
-      expect(error.message).toContain('no interpretation')
+      expect(error.message).toContain("both 'text' and 'vector'")
       expect(collection.calls).toEqual([])
     })
 
@@ -1632,7 +1632,7 @@ describe('MongoDBMemoryStore', () => {
       const error = await rejectionOf(store.search({ text: 'dark mode', vector: QUERY_VECTOR }))
 
       expect(error).toBeInstanceOf(TypeError)
-      expect(error.message).toContain('no interpretation')
+      expect(error.message).toContain("both 'text' and 'vector'")
       expect(collection.calls).toEqual([])
     })
 

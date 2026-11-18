@@ -90,4 +90,10 @@ key                    keyBytes  size   plain  python  withTtl  pythonTtl
 
 ## 7. `listIndexes` on an absent collection: code 26
 
-The Node driver surfaces `NamespaceNotFound` (code 26) from `listIndexes` on a collection that does not exist, where pymongo returns an empty cursor. `readIndexes` in `src/indexes.ts` reads 26 as "no indexes" so verify mode reports the missing indexes rather than the missing collection.
+The Node driver surfaces `NamespaceNotFound` (code 26) from `listIndexes` on a collection that does not exist, where pymongo returns an empty cursor. `readIndexes` in `src/ensure-indexes.ts` reads 26 as "no indexes" so verify mode reports the missing indexes rather than the missing collection.
+
+## Behaviours shared with Python that a user may trip on
+
+Kept for parity on shared collections, and candidates to raise upstream for both languages.
+
+- The text tier filters `scope` and `store_name` in a `$match` after `$search`, because the text index maps only `content`: a query in a small scope pays for every lexical hit in the collection. Pre-filtering inside `$search` needs `token` mappings and a `compound` stage, which changes the index definition and the stage both languages send.
