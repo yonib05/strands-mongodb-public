@@ -3,11 +3,12 @@ import { type Logger, type MemoryEntry, StorageError } from '@strands-agents/sdk
 import type { Embedder } from '@strands-agents/sdk/storage/search'
 import { type Collection, type Db, type Document, MongoClient, type MongoServerError } from 'mongodb'
 import { afterAll, beforeAll, expect, it } from 'vitest'
-import { close } from '../../../src/client.js'
+import { close, resolve } from '../../../src/client.js'
 import { ensure } from '../../../src/ensure-indexes.js'
-import { CONTENT_FIELD, VECTOR_FIELD } from '../../../src/index-specs.js'
+import { CONTENT_FIELD, DEFAULT_VECTOR_INDEX_NAME, memorySearchSpecs, VECTOR_FIELD } from '../../../src/index-specs.js'
 import { MongoDBMemoryStore, UNSCOPED } from '../../../src/memory-store.js'
 import { RANK_FUSION_PENALTY, VECTOR_SCORE_META } from '../../../src/pipeline.js'
+import type { SearchTiers } from '../../../src/search-tiers.js'
 import {
   type MongoDBConfig,
   type MongoDBMemoryStoreConfig,
@@ -173,30 +174,41 @@ async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
   throw new Error('expected a rejection')
 }
 
-// Initializes `store` and waits for every index it can build, so its tier set is final rather than build-order dependent.
-async function settled(store: MongoDBMemoryStore): Promise<void> {
-  await store.initialize()
-  for (const [, spec] of store['_specs']) {
-    try {
-      await ensure(store['_collection'](), {
-        search: [spec],
-        create: store['_ensureIndexes'],
-        timeout: TIMEOUT_SECONDS,
-        logger: store['_logger'],
-      })
-    } catch (error) {
-      if (!(error instanceof StorageError)) throw error
-    }
-  }
-  await store['_retrySearchTiers']()
+// The one private this file reads: which tiers a store resolved is not part of its public surface.
+function tiersOf(store: MongoDBMemoryStore): SearchTiers {
+  return store['_tiers']
 }
 
 describeTier('integration', 'memory store', () => {
   const run = randomUUID().slice(0, 8)
   const created: string[] = []
   const configs: MongoDBConfig[] = []
+  // What each store was built from, for the helpers that need its connection or collection.
+  const builds = new Map<MongoDBMemoryStore, { config: MongoDBConfig; name: string }>()
   let client: MongoClient
   let db: Db
+
+  function register(config: MongoDBConfig, name: string, options: Partial<MongoDBMemoryStoreConfig> = {}) {
+    configs.push(config)
+    const built = new MongoDBMemoryStore({ name: 'facts', config, collection: name, ...options })
+    builds.set(built, { config, name })
+    return built
+  }
+
+  // Initializes an `auto` store and waits for every index it can build, so its tier set is final rather than build-order dependent.
+  async function settled(store: MongoDBMemoryStore): Promise<void> {
+    const { config, name } = builds.get(store)!
+    await store.initialize()
+    const collection = db.collection(name)
+    for (const spec of memorySearchSpecs(config)) {
+      try {
+        await ensure(collection, { search: [spec], create: true, timeout: TIMEOUT_SECONDS, logger: config.logger! })
+      } catch (error) {
+        if (!(error instanceof StorageError)) throw error
+      }
+    }
+    await tiersOf(store).retry(collection)
+  }
 
   function fresh(label: string): string {
     const name = `memory_${label}_${run}`
@@ -216,13 +228,8 @@ describeTier('integration', 'memory store', () => {
       logger,
       ...options.connection,
     }
-    configs.push(config)
     const name = fresh(label)
-    return {
-      store: new MongoDBMemoryStore({ name: 'facts', config, collection: name, ...options.store }),
-      logger,
-      name,
-    }
+    return { store: register(config, name, options.store), logger, name }
   }
 
   async function statuses(name: string): Promise<Record<string, string>> {
@@ -253,31 +260,29 @@ describeTier('integration', 'memory store', () => {
     const { store: facts, logger, name } = store('manual_auto', { connection: MANUAL_VECTOR })
 
     await facts.initialize()
-    const atOnce = [...facts['_tiers']]
+    const atOnce = [...tiersOf(facts).prepared]
     await settled(facts)
 
-    const capabilities = facts['_connection'].capabilities!
+    const capabilities = resolve(builds.get(facts)!.config).capabilities!
     expect(capabilities.search).toBe(true)
-    expect(facts['_tiers']).toEqual(capabilities.rankFusion ? ['hybrid', 'vector', 'text'] : ['vector', 'text'])
+    const tiers = tiersOf(facts).prepared
+    expect(tiers).toEqual(capabilities.rankFusion ? ['hybrid', 'vector', 'text'] : ['vector', 'text'])
     expect(await statuses(name)).toEqual({ vector_index: 'READY', text_index: 'READY' })
-    expect(facts['_tierRetryAt']).toBeUndefined()
     expect(logger.lines('warn')).toEqual([])
     // Whatever `initialize()` found at once was a subset, logged at info: it never waited for a build.
-    expect(facts['_tiers']).toEqual(expect.arrayContaining(atOnce))
+    expect(tiers).toEqual(expect.arrayContaining(atOnce))
     expect(logger.lines('info').filter((line) => line.includes('event=tier_building'))).toHaveLength(
       2 - atOnce.filter((tier) => tier !== 'hybrid').length
     )
   })
 
   it('AT-242: the first wait resolves once a tier is ready, without the connection lock', async () => {
-    const { store: facts } = store('wait', { connection: MANUAL_VECTOR })
+    const { store: facts, name } = store('wait', { connection: MANUAL_VECTOR })
 
     await facts.initialize()
-    await facts['_waitForATier']()
+    await tiersOf(facts).waitForFirst(db.collection(name))
 
-    expect(facts['_tiers'].length).toBeGreaterThan(0)
-    expect(facts['_waitedForATier']).toBe(true)
-    expect(facts['_tierWait']).toBeUndefined()
+    expect(tiersOf(facts).prepared.length).toBeGreaterThan(0)
   })
 
   it('AT-053c, AT-147: an AutoEmbeddings auto store skips the vector tier with the server reason and answers from text', async () => {
@@ -289,16 +294,14 @@ describeTier('integration', 'memory store', () => {
     expect(unavailable[0]).toContain(`the vector search tier is not available on ${DATABASE}.${name}`)
     expect(unavailable[0]).toContain('not registered')
     expect(unavailable[0]).toMatch(/tier=vector$/)
-    expect(facts['_tierRetryAt']).toBeDefined()
 
     await settled(facts)
 
-    expect(facts['_tiers']).toEqual(['text'])
+    expect(tiersOf(facts).prepared).toEqual(['text'])
     expect(await statuses(name)).toEqual({ text_index: 'READY' })
     const below = logger.lines('warn').filter((line) => line.includes('event=below_vector'))
     expect(below).toHaveLength(1)
     expect(below[0]).toContain('queries resolve to the text tier')
-    expect(facts['_tierRetryAt']).toBeDefined()
   })
 
   it('AT-078: a named vector tier on the AutoEmbeddings path fails with the server reason, creating no tier', async () => {
@@ -309,8 +312,7 @@ describeTier('integration', 'memory store', () => {
     expect(error).toBeInstanceOf(StorageError)
     expect(error.message).toContain("'vector_index'")
     expect((error.cause as MongoServerError).code).toBe(8)
-    expect(facts['_initialized']).toBe(false)
-    expect(facts['_tiers']).toEqual([])
+    expect(tiersOf(facts).prepared).toEqual([])
     expect(await statuses(name)).toEqual({})
   })
 
@@ -319,9 +321,8 @@ describeTier('integration', 'memory store', () => {
 
     await facts.initialize()
 
-    expect(facts['_tiers']).toEqual(['text'])
+    expect(tiersOf(facts).prepared).toEqual(['text'])
     expect(await statuses(name)).toEqual({ text_index: 'READY' })
-    expect(facts['_tierRetryAt']).toBeUndefined()
   })
 
   it('AT-147: an explicit hybrid store is fused on the manual path and refused on the AutoEmbeddings one', async () => {
@@ -332,9 +333,9 @@ describeTier('integration', 'memory store', () => {
     expect(refusal).toBeInstanceOf(StorageError)
     expect(refusal.message).toContain("'vector_index'")
 
-    if (manual['_connection'].capabilities?.rankFusion ?? true) {
+    if (resolve(builds.get(manual)!.config).capabilities?.rankFusion ?? true) {
       await manual.initialize()
-      expect(manual['_tiers']).toEqual(['hybrid'])
+      expect(tiersOf(manual).prepared).toEqual(['hybrid'])
     } else {
       const error = await rejectionOf(manual.initialize())
       expect(error.message).toContain('$rankFusion')
@@ -346,8 +347,8 @@ describeTier('integration', 'memory store', () => {
 
     await settled(facts)
 
-    if (!facts['_connection'].capabilities!.rankFusion) return
-    expect(facts['_tiers']).toEqual(['vector', 'text'])
+    if (!resolve(builds.get(facts)!.config).capabilities!.rankFusion) return
+    expect(tiersOf(facts).prepared).toEqual(['vector', 'text'])
     const declined = logger.lines('warn').filter((line) => line.includes('event=bound_declined_fusion'))
     expect(declined.length).toBeGreaterThanOrEqual(1)
     expect(declined[0]).toContain("'minScore' is set to 0.7")
@@ -358,9 +359,7 @@ describeTier('integration', 'memory store', () => {
     name: string,
     options: { connection?: Partial<MongoDBConfig>; store?: Partial<Omit<MongoDBMemoryStoreConfig, 'config'>> } = {}
   ): MongoDBMemoryStore {
-    const config: MongoDBConfig = { ...reference['_connectionConfig'], ...options.connection }
-    configs.push(config)
-    return new MongoDBMemoryStore({ name: 'facts', config, collection: name, ...options.store })
+    return register({ ...builds.get(reference)!.config, ...options.connection }, name, options.store)
   }
 
   it('AT-243, AT-054: with an embedder, a memory added as text is found by a text query on the vector tier', async () => {
@@ -458,7 +457,7 @@ describeTier('integration', 'memory store', () => {
   it('AT-242: concurrent first searches on a fresh store share one wait and all answer', async () => {
     const { store: facts } = store('shared_wait', { store: { writable: true, scope: 'tenant-a' } })
     await facts.add(CONTENT)
-    expect(facts['_tiers']).toEqual([])
+    expect(tiersOf(facts).prepared).toEqual([])
 
     let results = await Promise.all(Array.from({ length: 5 }, () => facts.search(QUERY_TEXT)))
     const deadline = Date.now() + SEARCHABLE_BUDGET_MS
@@ -468,8 +467,6 @@ describeTier('integration', 'memory store', () => {
     }
 
     expect(results.map(contents)).toEqual(Array.from({ length: 5 }, () => [CONTENT]))
-    expect(facts['_waitedForATier']).toBe(true)
-    expect(facts['_tierWait']).toBeUndefined()
   })
 
   it('AT-047a: the text tier never returns the document of another scope', async () => {
@@ -645,7 +642,7 @@ describeTier('integration', 'memory store', () => {
           .aggregate([
             {
               $vectorSearch: {
-                index: facts['_indexNames'].vector,
+                index: DEFAULT_VECTOR_INDEX_NAME,
                 path: VECTOR_FIELD,
                 queryVector: METRIC_QUERY,
                 numCandidates: 100,

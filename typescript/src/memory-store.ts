@@ -11,10 +11,10 @@ import {
 } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
 import { BSON, type Collection, type Document, MongoError, MongoServerError, ObjectId } from 'mongodb'
-import { type Capabilities, close as release, type Connection, resolve } from './client.js'
+import { close as release, type Connection, resolve } from './client.js'
 import { compose, validate } from './filter.js'
 import { embed } from './embedding.js'
-import { ensure, SearchIndexNotReady } from './ensure-indexes.js'
+import { ensure } from './ensure-indexes.js'
 import {
   checkTtl,
   CONTENT_FIELD,
@@ -23,12 +23,12 @@ import {
   memorySearchSpecs,
   memorySpecs,
   READY_TIMEOUT_SECONDS,
-  type SearchIndexSpec,
   VECTOR_FIELD,
   vectorMode,
 } from './index-specs.js'
 import { defaultLogger, logFields } from './logging.js'
 import { checkQueryKeys, hybridStages, SCORE_FIELD, textStages, vectorStages } from './pipeline.js'
+import { type PickedTier, SearchTiers } from './search-tiers.js'
 import { annotate, type SpanBase, traced } from './telemetry.js'
 import {
   DEFAULT_MAX_SEARCH_RESULTS,
@@ -36,7 +36,6 @@ import {
   type MongoDBConfig,
   type MongoDBMemoryStoreConfig,
   type MongoDBSearchQuery,
-  type ResolvedSearchType,
   type SearchType,
   type VectorMode,
 } from './types.js'
@@ -46,12 +45,6 @@ export const DEFAULT_COLLECTION = 'memory'
 
 /** Scope stamped on writes and filtered on by reads when the config names none, so an unconfigured store still filters. */
 export const UNSCOPED = '__unscoped__'
-
-/** Delay in seconds before a search tier skipped under `auto` is tried again, inside the first store call after it. */
-export const TIER_RETRY_SECONDS = 60
-
-/** Ceiling in seconds on that delay, which doubles after each retry that still finds the tier missing. */
-export const TIER_RETRY_MAX_SECONDS = 3600
 
 const MISSING_CONFIG =
   "strands_mongodb: the memory store configuration has no 'config'. Set it to the MongoDBConfig naming the 'database' and a 'connectionString' or 'client'."
@@ -67,19 +60,6 @@ const EMBEDDER_ON_AUTO_EMBED =
 
 // The server's code for a unique index violation, which a concurrent upsert losing the insert race reports.
 const DUPLICATE_KEY = 11000
-
-/** The query keys a search may carry, as the caller set them. */
-interface QueryKeys {
-  queryText?: string | undefined
-  queryVector?: number[] | undefined
-}
-
-/** What one search needs to build its stages once the tier is chosen. */
-interface StageInputs extends QueryKeys {
-  queryFilter: Record<string, unknown>
-  limit: number
-  oversamplingFactor?: number | undefined
-}
 
 function notWritable(name: string, call: string): string {
   return `strands_mongodb: the memory store '${name}' is not writable, so it does not accept ${call}. Set 'writable': true in its configuration to enable writes. It defaults to false so that a store built for retrieval does not start accepting model-distilled extraction writes, or deletions, that nobody asked for.`
@@ -98,14 +78,6 @@ function objectId(memoryId: unknown): ObjectId {
     )
   }
   return new ObjectId(memoryId)
-}
-
-// Drops the absent keys, so the pipeline builders see a key only when the caller set it.
-function present(keys: QueryKeys): { queryText?: string; queryVector?: number[] } {
-  return {
-    ...(keys.queryText !== undefined && { queryText: keys.queryText }),
-    ...(keys.queryVector !== undefined && { queryVector: keys.queryVector }),
-  }
 }
 
 /**
@@ -167,14 +139,6 @@ export function resolveLimit(limits: Limits): number {
   return limits.query ?? limits.options ?? limits.instance ?? DEFAULT_MAX_SEARCH_RESULTS
 }
 
-// `Promise.any` with a boolean outcome: `true` on the first wait that settles ready, `false` once every wait has failed.
-function anyReady(waits: Promise<void>[]): Promise<boolean> {
-  return Promise.any(waits).then(
-    () => true,
-    () => false
-  )
-}
-
 /**
  * A Strands `MemoryStore` backed by MongoDB Atlas Vector Search and Atlas Search.
  *
@@ -209,23 +173,12 @@ export class MongoDBMemoryStore implements MemoryStore {
   private readonly _declaredFields: string[]
   private readonly _mode: VectorMode
   private readonly _embedder: Embedder | undefined
-  // Vector first, the order `auto` falls back through. A named type keeps only its own tier; `hybrid` keeps both.
-  private readonly _specs: Array<[ResolvedSearchType, SearchIndexSpec]>
-  private readonly _indexNames: Partial<Record<ResolvedSearchType, string>>
+  private readonly _indexNames: { vector: string; text: string }
   // Whether a query may set both `text` and `vector`: only on the manual path, where `vector` has a meaning.
   private readonly _fusionPossible: boolean
   private readonly _logger: Logger
+  private readonly _tiers: SearchTiers
   private _initialized = false
-  // The tiers that can answer, in preference order. Empty after `initialize()` means no Atlas Search.
-  private _tiers: ResolvedSearchType[] = []
-  private _warnedBelowVector = false
-  // Epoch milliseconds of the next retry of a skipped tier, or `undefined` when none is skipped.
-  private _tierRetryAt: number | undefined
-  private _tierRetryDelay = TIER_RETRY_SECONDS
-  private _waitedForATier = false
-  // The first search's wait for a build, shared by the searches that arrive during it.
-  private _tierWait: Promise<void> | undefined
-  private _capabilities: Capabilities | undefined
 
   /**
    * @param config - The store's own fields plus the connection config under `config`
@@ -273,20 +226,30 @@ export class MongoDBMemoryStore implements MemoryStore {
     this._mode = vectorMode(connection)
     this._embedder = config.embedder
     if (this._embedder !== undefined && this._mode.autoEmbed) throw new TypeError(EMBEDDER_ON_AUTO_EMBED)
-    const [vectorSpec, textSpec] = memorySearchSpecs(connection)
-    const specs: Array<[ResolvedSearchType, SearchIndexSpec]> = [
-      ['vector', vectorSpec!],
-      ['text', textSpec!],
-    ]
+    const [vector, text] = memorySearchSpecs(connection)
+    this._indexNames = { vector: vector.name, text: text.name }
     const searchType = this._searchType
-    this._specs =
-      searchType === 'auto' || searchType === 'hybrid' ? specs : specs.filter(([tier]) => tier === searchType)
-    this._indexNames = Object.fromEntries(this._specs.map(([tier, spec]) => [tier, spec.name]))
     this._fusionPossible = !this._mode.autoEmbed && (searchType === 'auto' || searchType === 'hybrid')
 
     Object.defineProperty(this, '_config', { value: config, enumerable: false })
     Object.defineProperty(this, '_connectionConfig', { value: connection, enumerable: false })
     this._logger = connection.logger ?? defaultLogger
+    const bound =
+      this.minScore !== undefined
+        ? { name: 'minScore' as const, value: this.minScore }
+        : this.maxScore !== undefined
+          ? { name: 'maxScore' as const, value: this.maxScore }
+          : undefined
+    this._tiers = new SearchTiers({
+      namespace: this._target,
+      searchType,
+      mode: this._mode,
+      specs: { vector, text },
+      create: this._ensureIndexes,
+      timeout: this._indexReadyTimeout,
+      bound,
+      logger: this._logger,
+    })
     // Called only to fail fast on a config with no client or connection string.
     resolve(connection)
   }
@@ -304,7 +267,7 @@ export class MongoDBMemoryStore implements MemoryStore {
    * cannot prepare
    */
   async initialize(): Promise<void> {
-    if (this._initialized && !this._tierRetryDue()) return
+    if (this._initialized && !this._tiers.retryDue) return
     await this._run('initialize', 'initializing', () => this._initialize())
   }
 
@@ -378,28 +341,30 @@ export class MongoDBMemoryStore implements MemoryStore {
         instance: this.maxSearchResults,
       })
       // Only the mode-independent check; `vectorStages` runs the rest once the tier is known.
-      checkQueryKeys({ ...present({ queryText, queryVector }), fusionPossible: this._fusionPossible })
+      checkQueryKeys({ queryText, queryVector, fusionPossible: this._fusionPossible })
       if (callerFilter !== undefined && Object.keys(callerFilter).length > 0) {
         validate(callerFilter, { declaredFields: this._declaredFields })
       }
       const queryFilter = compose([this.filter, callerFilter], { scope: this.scope, storeName: this.name })
 
       await this.initialize()
-      if (this._tiers.length === 0 && this._canSearch() && !this._waitedForATier) await this._waitForATier()
-      if (this._embedsQuery(queryText, queryVector)) {
-        queryVector = await this._embed(queryText!)
+      await this._tiers.waitForFirst(this._collection())
+      const prepared = this._tiers.prepared
+      // Embedded only when the first tier is one that reads a vector and the caller supplied none.
+      if (
+        this._embedder !== undefined &&
+        queryText !== undefined &&
+        queryVector === undefined &&
+        (prepared[0] === 'hybrid' || prepared[0] === 'vector')
+      ) {
+        queryVector = await this._embed(queryText)
         // Kept for hybrid, which feeds `text` to `$search`; anywhere else both keys would be refused.
-        if (!this._tiers.includes('hybrid')) queryText = undefined
+        if (!prepared.includes('hybrid')) queryText = undefined
       }
-      const tier = this._pickTier(queryText, queryVector)
+      const picked = this._tiers.pick(queryText, queryVector)
+      const { tier } = picked
       annotate('strands_mongodb.search.tier', tier)
-      const stages = this._stages(tier, {
-        queryText,
-        queryVector,
-        queryFilter,
-        limit,
-        oversamplingFactor: parts.oversamplingFactor,
-      })
+      const stages = this._stages(picked, { queryFilter, limit, oversamplingFactor: parts.oversamplingFactor })
 
       const documents = await this._collection().aggregate(stages).toArray()
       const scored = documents.map((document): [number, MemoryEntry] => {
@@ -485,89 +450,27 @@ export class MongoDBMemoryStore implements MemoryStore {
     return { ids: document === null ? [] : [String(document._id)], inserted: 0, duplicates: 1 }
   }
 
-  // Whether `search` should embed `text`: an embedder, no caller vector, and a tier to use it.
-  private _embedsQuery(queryText: string | undefined, queryVector: number[] | undefined): boolean {
-    if (this._embedder === undefined || queryText === undefined || queryVector !== undefined) return false
-    const first = this._tiers[0]
-    return first === 'hybrid' || first === 'vector'
-  }
-
   private _embed(text: string): Promise<number[]> {
     // The constructor refuses an embedder on the AutoEmbeddings path, so the mode here is the manual one.
     const mode = this._mode as Extract<VectorMode, { autoEmbed: false }>
     return embed(this._embedder!, text, { dimensions: mode.dimensions, setting: 'embeddingDimensions' })
   }
 
-  // The first prepared tier, in preference order, that fits the query's keys; the result reports the tier that ran.
-  private _pickTier(queryText: string | undefined, queryVector: number[] | undefined): ResolvedSearchType {
-    if (queryText !== undefined && queryVector !== undefined && !this._tiers.includes('hybrid')) {
-      // Thrown rather than answered from one tier, which would silently ignore one of the two keys.
-      throw new TypeError(
-        `strands_mongodb: this query sets both 'text' and 'vector', which only the hybrid tier reads, and the hybrid tier is not available on ${this._target}. The tiers that are: ${this._tiers.join(', ') || 'none'}. Drop one of the two keys to use one of them, or see the initialization log for why the fused tier was not offered.`
-      )
+  private _stages(
+    picked: PickedTier,
+    inputs: { queryFilter: Record<string, unknown>; limit: number; oversamplingFactor: number | undefined }
+  ): Document[] {
+    const { queryFilter, limit } = inputs
+    const { vector: vectorIndexName, text: textIndexName } = this._indexNames
+    if (picked.tier === 'text') {
+      return textStages({ queryText: picked.text, indexName: textIndexName, limit, queryFilter })
     }
-
-    if (this._tiers.length === 0) {
-      const capabilities = this._capabilities
-      if (capabilities === undefined || !capabilities.search) {
-        // A phrase rather than a bare code, because with no cached probe there is no code to name.
-        const code = capabilities?.noSearchCode
-        const evidence = code === undefined ? 'no probe result cached' : `server error code ${code}`
-        throw new StorageError(
-          `strands_mongodb: cannot search ${this._target} because this deployment does not run Atlas Search. Its capability probe came back with ${evidence}, and this package has no tier that answers without a search process, so there is nothing to fall back to. Writes still work, which is why initialize() only warned. Point 'connectionString' at MongoDB Atlas, or at a local Atlas deployment started with 'atlas deployments setup --type local'.`
-        )
-      }
-      throw new StorageError(
-        `strands_mongodb: 'searchType' is 'auto' and no search tier on ${this._target} was ready within 'indexReadyTimeout', so no query can be answered yet. Each tier's status is logged above. The tiers are retried with backoff, and searches raise until one is ready.`
-      )
+    const vector = { mode: this._mode, queryVector: picked.vector, ...inputs }
+    if (picked.tier === 'hybrid') {
+      return hybridStages({ ...vector, vectorIndexName, textIndexName, queryText: picked.text })
     }
-
-    for (const tier of this._tiers) {
-      // Hybrid needs `text` for `$search` and the vector path's own key, which with AutoEmbeddings is `text` again.
-      if (tier === 'hybrid' && queryText !== undefined && this._vectorKey(queryText, queryVector) !== undefined) {
-        return 'hybrid'
-      }
-      if (tier === 'text' && queryText !== undefined) return 'text'
-      if (tier === 'vector' && this._vectorKey(queryText, queryVector) !== undefined) return 'vector'
-    }
-
-    const [needed, because] = this._mode.autoEmbed
-      ? ["'text'", 'the deployment embeds it on the Atlas AutoEmbeddings path']
-      : ["'vector'", "'embeddingDimensions' and 'similarity' select the manual-vector path"]
-    throw new TypeError(
-      `strands_mongodb: this query cannot be answered by any search tier prepared on ${this._target}, which is: ${this._tiers.join(', ')}. The text tier needs 'text' on the query. The vector tier needs ${needed}, because ${because}. Supply that key, or set 'searchType' to a tier this query fits.`
-    )
-  }
-
-  // Whichever query key the vector tier reads on this store's path: AutoEmbeddings embeds `text`, the manual path takes `vector`.
-  private _vectorKey(queryText: string | undefined, queryVector: number[] | undefined): string | number[] | undefined {
-    return this._mode.autoEmbed ? queryText : queryVector
-  }
-
-  private _stages(tier: ResolvedSearchType, inputs: StageInputs): Document[] {
-    const { queryText, queryVector, queryFilter, limit, oversamplingFactor } = inputs
-    const vector = {
-      mode: this._mode,
-      limit,
-      queryFilter,
-      ...(queryVector !== undefined && { queryVector }),
-      ...(oversamplingFactor !== undefined && { oversamplingFactor }),
-    }
-    if (tier === 'hybrid') {
-      // `_pickTier` returns `hybrid` only when `text` and the key its vector branch needs are both present.
-      return hybridStages({
-        ...vector,
-        vectorIndexName: this._indexNames.vector!,
-        textIndexName: this._indexNames.text!,
-        queryText: queryText!,
-      })
-    }
-    if (tier === 'vector') {
-      // Both keys pass through: `vectorStages` checks the mode itself.
-      return vectorStages({ ...vector, indexName: this._indexNames.vector!, ...present({ queryText }) })
-    }
-    // `_pickTier` returns `text` only when `queryText` is set.
-    return textStages({ queryText: queryText!, indexName: this._indexNames.text!, limit, queryFilter })
+    // Both keys pass through: `vectorStages` checks the mode itself.
+    return vectorStages({ ...vector, indexName: vectorIndexName, queryText: picked.text })
   }
 
   // Client-side, because the tiers' scores are on different scales and a server-side bound would differ per tier.
@@ -598,26 +501,17 @@ export class MongoDBMemoryStore implements MemoryStore {
     return kept.map(([, entry]) => entry)
   }
 
-  // Whether the deployment has Atlas Search, from the capability probe `initialize()` ran.
-  private _canSearch(): boolean {
-    return this._capabilities?.search === true
-  }
-
-  private _tierRetryDue(): boolean {
-    return this._tierRetryAt !== undefined && Date.now() >= this._tierRetryAt
-  }
-
   // Split from the unlocked fast path so calls that find the work done record no span.
   private async _initialize(): Promise<void> {
     annotate('strands_mongodb.search.requested', this._searchType)
-    // Bound once, so the lock, the probe and the cache write all use the same connection.
-    const connection = this._connection
+    // Bound once, so the lock, the probe, the cache writes and the collection all use the same connection.
+    const connection = resolve(this._connectionConfig)
     await connection.locked(async () => {
+      const collection = this._collectionOn(connection)
       if (this._initialized) {
-        if (this._tierRetryDue()) await this._retrySearchTiers()
+        if (this._tiers.retryDue) await this._tiers.retry(collection)
         return
       }
-      const collection = this._collection()
 
       // Before any index is created: a case-folding collation would let one scope read another's documents.
       await connection.requireBinaryKeys(collection)
@@ -630,154 +524,14 @@ export class MongoDBMemoryStore implements MemoryStore {
         timeout: this._indexReadyTimeout,
         logger: this._logger,
       })
-
-      this._capabilities = capabilities
-      // `auto` can answer from another tier and retries skipped ones, so it never blocks on a build under the lock.
-      const timeout = this._searchType === 'auto' ? 0 : this._indexReadyTimeout
-      this._tiers = capabilities.search
-        ? await this._ensureSearchTiers(collection, { rankFusion: capabilities.rankFusion, timeout })
-        : []
-      if (capabilities.search && this._missingATier(this._tiers)) {
-        this._tierRetryAt = Date.now() + this._tierRetryDelay * 1000
-      }
+      await this._tiers.prepare(collection, capabilities)
 
       // An absent collection could not be verified above; creating the indexes created it, so check it now.
       await connection.requireBinaryKeys(collection)
 
-      annotate('strands_mongodb.search.tiers', this._tiers.join(','))
+      annotate('strands_mongodb.search.tiers', this._tiers.prepared.join(','))
       this._initialized = true
     })
-  }
-
-  // A retry that fails, or still finds a tier missing, keeps the tiers the store has and doubles the delay.
-  private async _retrySearchTiers(options: { waited?: boolean } = {}): Promise<void> {
-    const rankFusion = this._capabilities?.rankFusion ?? false
-    let tiers: ResolvedSearchType[] | undefined
-    try {
-      tiers = await this._ensureSearchTiers(this._collection(), { rankFusion, timeout: 0, waited: options.waited })
-    } catch (error) {
-      if (!(error instanceof StorageError)) throw error
-    }
-    if (tiers !== undefined) this._tiers = tiers
-    if (tiers === undefined || this._missingATier(tiers)) {
-      this._tierRetryDelay = Math.min(this._tierRetryDelay * 2, TIER_RETRY_MAX_SECONDS)
-      this._tierRetryAt = Date.now() + this._tierRetryDelay * 1000
-    } else {
-      this._tierRetryAt = undefined
-    }
-    annotate('strands_mongodb.search.tiers', this._tiers.join(','))
-  }
-
-  // Waits, outside the connection's lock, until the first tier `initialize()` skipped is ready. Callers share one wait.
-  private _waitForATier(): Promise<void> {
-    let wait = this._tierWait
-    if (wait === undefined) {
-      wait = this._waitForTheFirstReadyTier().finally(() => {
-        if (this._tierWait === wait) this._tierWait = undefined
-      })
-      this._tierWait = wait
-    }
-    return wait
-  }
-
-  // Every tier is waited on together, so a quick text build is not held behind a slow vector one. The losers are
-  // aborted once the first is ready, as Python cancels them, so no poll outlives the caller's interest.
-  private async _waitForTheFirstReadyTier(): Promise<void> {
-    const collection = this._collection()
-    const losers = new AbortController()
-    const waits = this._specs.map(([, spec]) =>
-      ensure(collection, {
-        search: [spec],
-        create: this._ensureIndexes,
-        timeout: this._indexReadyTimeout,
-        logger: this._logger,
-        signal: losers.signal,
-      })
-    )
-    const ready = await anyReady(waits)
-    losers.abort()
-    await this._retrySearchTiers({ waited: !ready })
-    this._waitedForATier = true
-  }
-
-  // Whether `auto` skipped a configured tier, which is the only case a retry is for.
-  private _missingATier(tiers: ResolvedSearchType[]): boolean {
-    return this._searchType === 'auto' && this._specs.some(([tier]) => !tiers.includes(tier))
-  }
-
-  // One `ensure` per tier, so a failing vector index does not stop the text index from being created.
-  private async _ensureSearchTiers(
-    collection: Collection,
-    options: { rankFusion: boolean; timeout: number; waited?: boolean | undefined }
-  ): Promise<ResolvedSearchType[]> {
-    const { rankFusion, timeout, waited = false } = options
-    const available: ResolvedSearchType[] = []
-    let refused: StorageError | undefined
-    let building = false
-    for (const [tier, spec] of this._specs) {
-      try {
-        await ensure(collection, { search: [spec], create: this._ensureIndexes, timeout, logger: this._logger })
-      } catch (error) {
-        // A named `searchType` has nothing to fall through to: answering from another tier would change what matches.
-        if (!(error instanceof StorageError) || this._searchType !== 'auto') throw error
-        this._logSkippedTier(tier, error, timeout === 0 && !waited)
-        refused = error
-        building ||= error instanceof SearchIndexNotReady
-        continue
-      }
-      available.push(tier)
-    }
-
-    if (available.length === 0 && building) return []
-    if (available.length === 0) {
-      // Chained to the last failure so the reason reaches callers who do not log at `warn`.
-      throw new StorageError(
-        `strands_mongodb: 'searchType' is 'auto' and no search tier could be prepared on ${this._target}, so no query can be answered. The last tier's failure is chained to this one and every tier's is logged above, each with the server's own reason.`,
-        { cause: refused }
-      )
-    }
-
-    if (this._hybridIsAvailable(available, rankFusion)) {
-      // Under `auto` the single tiers stay as fallbacks for queries that set only one key.
-      if (this._searchType === 'hybrid') return ['hybrid']
-      available.unshift('hybrid')
-    } else if (this._searchType === 'hybrid') {
-      throw new StorageError(
-        `strands_mongodb: 'searchType' is 'hybrid' but ${this._target} cannot run it. The hybrid tier is a $rankFusion over the vector and text pipelines, and that stage needs MongoDB 8.0 or later. Upgrade the deployment, or set 'searchType' to 'auto' to let this store resolve to the tiers it does have.`
-      )
-    }
-
-    const first = available[0]!
-    if (this._searchType === 'auto' && first !== 'hybrid' && first !== 'vector' && !this._warnedBelowVector) {
-      this._warnedBelowVector = true
-      this._logger.warn(
-        `strands_mongodb: 'searchType' is 'auto' and the vector tier is not available on ${this._target}, so queries resolve to the ${first} tier. Answers are lexical rather than semantic, which is a difference in what matches rather than only in ranking. | ${logFields('below_vector', { namespace: this._target, tier: first })}`
-      )
-    }
-    return available
-  }
-
-  // `info` for an index nobody has waited for yet, which is every fresh store, else `warn`.
-  private _logSkippedTier(tier: ResolvedSearchType, error: StorageError, building: boolean): void {
-    const message = `strands_mongodb: the ${tier} search tier is not available on ${this._target} and 'searchType' is 'auto', so it is skipped rather than fatal and any remaining tier answers queries instead. The '_searchType' key on every returned entry reports which one did. The server's own reason: ${error.message}`
-    if (building && error instanceof SearchIndexNotReady) {
-      this._logger.info(`${message} | ${logFields('tier_building', { namespace: this._target, tier })}`)
-      return
-    }
-    this._logger.warn(`${message} | ${logFields('tier_unavailable', { namespace: this._target, tier })}`)
-  }
-
-  // Hybrid needs `$rankFusion`, both single tiers, and under `auto` no score bound: fused scores top out near
-  // 0.033 while cosine scores land in roughly 0 to 1, so a bound meant for one would empty the other.
-  private _hybridIsAvailable(available: ResolvedSearchType[], rankFusion: boolean): boolean {
-    if (!rankFusion || !available.includes('vector') || !available.includes('text')) return false
-    const bound = this.minScore !== undefined ? 'minScore' : this.maxScore !== undefined ? 'maxScore' : undefined
-    // An explicit `hybrid` applies the bound on the fused scale, as documented, so it needs no warning.
-    if (bound === undefined || this._searchType === 'hybrid') return true
-    this._logger.warn(
-      `strands_mongodb: 'searchType' is 'auto' and ${this._target} can run the hybrid tier, but '${bound}' is set to ${this[bound]} and the two are on different scales, so queries resolve to the vector tier as they did before hybrid existed. Reciprocal rank fusion scores sum to about 0.033 at best, while cosine scores land in roughly 0 to 1. Remove the bound to get fused ranking, or set 'searchType' to 'hybrid' to keep the bound and have it applied on the fusion's scale. | ${logFields('bound_declined_fusion', { namespace: this._target, tier: 'hybrid' })}`
-    )
-    return false
   }
 
   private _run<T>(operation: string, verb: string, fn: () => Promise<T>): Promise<T> {
@@ -806,12 +560,12 @@ export class MongoDBMemoryStore implements MemoryStore {
     return `${this._databaseName}.${this._collectionName}`
   }
 
-  // Resolved on each access, never stored: after `close()` the next operation opens a fresh pool.
-  private get _connection(): Connection {
-    return resolve(this._connectionConfig)
+  // Resolved on each call, never stored: after `close()` the next operation opens a fresh pool.
+  private _collection(): Collection<Document> {
+    return this._collectionOn(resolve(this._connectionConfig))
   }
 
-  private _collection(): Collection<Document> {
-    return this._connection.client.db(this._databaseName).collection<Document>(this._collectionName)
+  private _collectionOn(connection: Connection): Collection<Document> {
+    return connection.client.db(this._databaseName).collection<Document>(this._collectionName)
   }
 }

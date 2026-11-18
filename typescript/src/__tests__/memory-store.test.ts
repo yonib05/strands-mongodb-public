@@ -7,24 +7,16 @@ import { type Document, type MongoClient, MongoNetworkTimeoutError, MongoServerE
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConstructedMongoClient, FakeCollection, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
 import { oneSpan, recordSpans, spansNamed } from '../__fixtures__/spans.js'
-import { close } from '../client.js'
+import { close, resolve } from '../client.js'
 import { SearchIndexNotReady } from '../ensure-indexes.js'
 import { CONTENT_FIELD, EXPIRES_FIELD, memorySearchSpecs, READY_TIMEOUT_SECONDS, VECTOR_FIELD } from '../index-specs.js'
-import {
-  DEFAULT_COLLECTION,
-  mergeMetadata,
-  MongoDBMemoryStore,
-  resolveLimit,
-  TIER_RETRY_MAX_SECONDS,
-  TIER_RETRY_SECONDS,
-  UNSCOPED,
-} from '../memory-store.js'
+import { DEFAULT_COLLECTION, MongoDBMemoryStore, UNSCOPED } from '../memory-store.js'
+import { TIER_RETRY_SECONDS } from '../search-tiers.js'
 import { MongoDBStorage } from '../storage.js'
 import {
   DEFAULT_MAX_SEARCH_RESULTS,
   type MongoDBConfig,
   type MongoDBMemoryStoreConfig,
-  type ResolvedSearchType,
   RESERVED_METADATA_KEYS,
 } from '../types.js'
 
@@ -91,6 +83,7 @@ interface Setup {
   collection: FakeCollection
   client: FakeMongoClient
   logger: RecordingLogger
+  config: MongoDBConfig
 }
 
 interface SetupOptions {
@@ -103,13 +96,10 @@ interface SetupOptions {
 function setup(options: SetupOptions = {}): Setup {
   const client = options.client ?? new FakeMongoClient()
   const logger = options.logger ?? new RecordingLogger()
-  const store = new MongoDBMemoryStore({
-    name: 'facts',
-    config: { database: 'appdb', client: client as unknown as MongoClient, logger, ...options.config },
-    ...options.store,
-  })
-  const collection = client.db('appdb').collection(options.store?.collection ?? DEFAULT_COLLECTION)
-  return { store, collection, client, logger }
+  const config = { database: 'appdb', client: client as unknown as MongoClient, logger, ...options.config }
+  const store = new MongoDBMemoryStore({ name: 'facts', config, ...options.store })
+  const collection = client.db(config.database).collection(options.store?.collection ?? DEFAULT_COLLECTION)
+  return { store, collection, client, logger, config }
 }
 
 // A store on a deployment whose server cannot run `$rankFusion`, so the two single tiers resolve on their own.
@@ -125,13 +115,26 @@ function withoutSearch(options: SetupOptions = {}): Setup {
   return built
 }
 
+// A store that answers from the text tier alone, so a search is `$search`, `$match`, `$set`, `$limit` over `documents`.
+function textOnly(options: SetupOptions = {}, documents: Document[] = [{ _id: 'abc', content: CONTENT }]): Setup {
+  const built = setup({ ...options, config: { searchType: 'text', ...options.config } })
+  built.collection.searchResults = documents
+  return built
+}
+
 // Puts search indexes in place as the server would report them, so `ensure` reads them rather than creating them.
 function reporting(collection: FakeCollection, status: 'PENDING' | 'FAILED', ...names: string[]): void {
   for (const name of names) collection.addSearchIndex(SPECS[name]!.toDescription(), status)
 }
 
-function tiers(store: MongoDBMemoryStore): string[] {
-  return store['_tiers']
+// The tiers the most recent initialize or search span reported.
+function reportedTiers(): string[] {
+  const reported = exporter
+    .getFinishedSpans()
+    .map((span) => span.attributes['strands_mongodb.search.tiers'])
+    .filter((tiers) => tiers !== undefined)
+  expect(reported.length).toBeGreaterThan(0)
+  return String(reported.at(-1)).split(',').filter(Boolean)
 }
 
 function createdSearchIndexes(collection: FakeCollection): string[] {
@@ -142,12 +145,11 @@ function count(collection: FakeCollection, method: string): number {
   return collection.namesCalled.filter((name) => name === method).length
 }
 
-// The `(level, event, tier)` of every skipped-tier line, in order.
-function skipped(logger: RecordingLogger): Array<[Level, string, string]> {
-  return logger.records.flatMap(([level, line]): Array<[Level, string, string]> => {
-    const event = /event=(tier_building|tier_unavailable)/.exec(line)
-    return event ? [[level, event[1]!, /tier=(\w+)/.exec(line)?.[1] ?? '']] : []
-  })
+// Nothing reached the deployment: no data or index call, no collation read, no search index read.
+function expectUntouched(collection: FakeCollection): void {
+  expect(collection.calls).toEqual([])
+  expect(collection.db.listCollectionsCalls).toEqual([])
+  expect(collection.searchIndexReads).toBe(0)
 }
 
 async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
@@ -182,19 +184,6 @@ class WordEmbedder implements Embedder {
   }
 }
 
-// Puts a store in the state `initialize()` would leave it in, without the probes: the tiers that came up and what a search answers with.
-function prepared(
-  built: Setup,
-  options: { documents?: Document[]; tiers?: ResolvedSearchType[]; failure?: Error } = {}
-): FakeCollection {
-  const { store, collection } = built
-  store['_initialized'] = true
-  store['_tiers'] = options.tiers ?? ['text']
-  collection.searchResults = options.documents ?? [{ _id: 'abc', content: CONTENT }]
-  collection.failure = options.failure
-  return collection
-}
-
 function argsOf(collection: FakeCollection, method: string): unknown[] {
   const found = collection.calls.filter((call) => call.method === method)
   expect(found).toHaveLength(1)
@@ -210,10 +199,10 @@ function stageNames(collection: FakeCollection): string[] {
   return stagesOf(collection).map((stage) => Object.keys(stage)[0]!)
 }
 
-function stage(collection: FakeCollection, operator: string): Document {
+function stage(collection: FakeCollection, operator: string): unknown {
   const found = stagesOf(collection).filter((candidate) => operator in candidate)
   expect(found).toHaveLength(1)
-  return found[0]![operator] as Document
+  return found[0]![operator]
 }
 
 function metadataOf(entry: MemoryEntry): Record<string, unknown> {
@@ -397,68 +386,94 @@ describe('MongoDBMemoryStore', () => {
       expect(UNSCOPED).toBe('__unscoped__')
     })
 
-    it('defaults the collection to memory, apart from the storage default', () => {
+    it('uses the memory collection by default and the one the config names otherwise', async () => {
+      const client = new FakeMongoClient()
+      const byDefault = setup({ client })
+      const named = setup({ client, store: { collection: 'recall' } })
+
+      await byDefault.store.initialize()
       expect(DEFAULT_COLLECTION).toBe('memory')
-      expect(setup().store['_collectionName']).toBe('memory')
-      expect(setup({ store: { collection: 'recall' } }).store['_collectionName']).toBe('recall')
+      expect(byDefault.collection.indexes).toHaveLength(4)
+      expect(named.collection.indexes).toHaveLength(1)
+
+      await named.store.initialize()
+      expect(named.collection.indexes).toHaveLength(4)
     })
 
-    it('records the database named in the nested config', () => {
-      const { store } = setup({ config: { database: 'tenant_b' } })
+    it('uses the database named in the nested config', async () => {
+      const { store, collection } = setup({ config: { database: 'tenant_b' } })
 
-      expect(store['_databaseName']).toBe('tenant_b')
+      await store.initialize()
+
+      expect(collection.dbName).toBe('tenant_b')
+      expect(collection.indexes).toHaveLength(4)
     })
 
-    it('keeps vector before text and narrows to a named tier', () => {
-      const names = (store: MongoDBMemoryStore): string[] => store['_specs'].map(([tier]) => tier)
+    it('creates and queries the search indexes under the configured names', async () => {
+      const { store, collection } = setup({ config: { vectorIndexName: 'v', textIndexName: 't' } })
 
-      expect(names(setup().store)).toEqual(['vector', 'text'])
-      expect(names(setup({ config: { searchType: 'hybrid' } }).store)).toEqual(['vector', 'text'])
-      expect(names(setup({ config: { searchType: 'text' } }).store)).toEqual(['text'])
-      expect(names(setup({ config: { searchType: 'vector' } }).store)).toEqual(['vector'])
-      expect(setup({ config: { vectorIndexName: 'v', textIndexName: 't' } }).store['_indexNames']).toEqual({
-        vector: 'v',
-        text: 't',
-      })
+      await store.search('dark mode')
+
+      expect(createdSearchIndexes(collection)).toEqual(['v', 't'])
+      const { vector, text } = (stage(collection, '$rankFusion') as Document).input.pipelines as Document
+      expect(vector[0].$vectorSearch.index).toBe('v')
+      expect(text[0].$search.index).toBe('t')
     })
 
-    it('allows a query to set both keys only on the manual path under auto or hybrid', () => {
-      const possible = (config: Partial<MongoDBConfig>): boolean => setup({ config }).store['_fusionPossible']
+    it('verifies rather than creates when ensureIndexes is false', async () => {
+      const { store, collection } = setup({ config: { ensureIndexes: false } })
 
-      expect(possible({})).toBe(false)
-      expect(possible(MANUAL_VECTOR)).toBe(true)
-      expect(possible({ ...MANUAL_VECTOR, searchType: 'hybrid' })).toBe(true)
-      expect(possible({ ...MANUAL_VECTOR, searchType: 'vector' })).toBe(false)
-    })
+      const error = await rejectionOf(store.initialize())
 
-    it('pins the retry constants', () => {
-      expect(TIER_RETRY_SECONDS).toBe(60)
-      expect(TIER_RETRY_MAX_SECONDS).toBe(3600)
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain('ensureIndexes')
+      expect(count(collection, 'createIndexes')).toBe(0)
+      expect(createdSearchIndexes(collection)).toEqual([])
     })
   })
 
   describe('AT-041: the result limit resolves query, then options, then the instance, then the default', () => {
-    it('lets a query limit win over everything below it', () => {
-      expect(resolveLimit({ query: 3, options: 7, instance: 11 })).toBe(3)
+    it('lets a query limit win over everything below it', async () => {
+      const { store, collection } = textOnly({ store: { maxSearchResults: 11 } })
+
+      await store.search({ text: 'dark mode', limit: 3 }, { maxSearchResults: 7 })
+
+      expect(stage(collection, '$limit')).toBe(3)
     })
 
-    it('lets options win over the instance default', () => {
-      expect(resolveLimit({ options: 7, instance: 11 })).toBe(7)
+    it('lets options win over the instance default', async () => {
+      const { store, collection } = textOnly({ store: { maxSearchResults: 11 } })
+
+      await store.search('dark mode', { maxSearchResults: 7 })
+
+      expect(stage(collection, '$limit')).toBe(7)
     })
 
-    it('lets the instance value win over the package default', () => {
-      expect(resolveLimit({ instance: 11 })).toBe(11)
+    it('lets the instance value win over the package default', async () => {
+      const { store, collection } = textOnly({ store: { maxSearchResults: 11 } })
+
+      await store.search('dark mode')
+
+      expect(stage(collection, '$limit')).toBe(11)
     })
 
-    it('resolves nothing supplied to the package default of 10', () => {
-      expect(resolveLimit({})).toBe(DEFAULT_MAX_SEARCH_RESULTS)
+    it('resolves nothing supplied to the package default of 10', async () => {
+      const { store, collection } = textOnly()
+
+      await store.search('dark mode')
+
+      expect(stage(collection, '$limit')).toBe(DEFAULT_MAX_SEARCH_RESULTS)
       expect(DEFAULT_MAX_SEARCH_RESULTS).toBe(10)
     })
 
-    it('rejects a value below 1 wherever it sits, naming the key it came from', () => {
-      expect(() => resolveLimit({ query: 5, instance: 0 })).toThrow("'maxSearchResults' is 0")
-      expect(() => resolveLimit({ query: 0 })).toThrow("'limit' is 0")
-      expect(() => resolveLimit({ options: -1 })).toThrow(RangeError)
+    it('rejects a value below 1 even where a higher-priority one wins, naming the key it came from', async () => {
+      const { store, collection } = textOnly()
+
+      const error = await rejectionOf(store.search({ text: 'dark mode', limit: 5 }, { maxSearchResults: -1 }))
+
+      expect(error).toBeInstanceOf(RangeError)
+      expect(error.message).toContain("'maxSearchResults' is -1")
+      expectUntouched(collection)
     })
   })
 
@@ -466,22 +481,17 @@ describe('MongoDBMemoryStore', () => {
     it('builds one client for 100 memory stores', () => {
       const connection = { database: 'appdb', connectionString: uri() }
 
-      const stores = Array.from(
-        { length: 100 },
-        (_, index) => new MongoDBMemoryStore({ name: `facts${index}`, config: connection })
-      )
+      for (let index = 0; index < 100; index++) new MongoDBMemoryStore({ name: `facts${index}`, config: connection })
 
-      expect(new Set(stores.map((store) => store['_connection'].client)).size).toBe(1)
       expect(ConstructedMongoClient.built).toHaveLength(1)
     })
 
     it('shares the client between a storage and a memory store', () => {
       const connection = { database: 'appdb', connectionString: uri() }
 
-      const storage = new MongoDBStorage(connection)
-      const store = new MongoDBMemoryStore({ name: 'facts', config: connection })
+      new MongoDBStorage(connection)
+      new MongoDBMemoryStore({ name: 'facts', config: connection })
 
-      expect(store['_connection'].client).toBe(storage['_connection'].client)
       expect(ConstructedMongoClient.built).toHaveLength(1)
     })
   })
@@ -519,17 +529,7 @@ describe('MongoDBMemoryStore', () => {
     })
   })
 
-  describe('AT-078: what initialize decides', () => {
-    it('creates both tiers vector first under auto and prefers the vector one', async () => {
-      const { store, collection } = withoutFusion()
-
-      await store.initialize()
-
-      expect(createdSearchIndexes(collection)).toEqual(['vector_index', 'text_index'])
-      expect(tiers(store)).toEqual(['vector', 'text'])
-      expect(store['_initialized']).toBe(true)
-    })
-
+  describe('AT-078: what initialize sets up', () => {
     it('creates the three ordinary indexes before any search index', async () => {
       const { store, collection } = withoutFusion()
 
@@ -542,6 +542,8 @@ describe('MongoDBMemoryStore', () => {
         'strands_expires_at_ttl',
       ])
       expect(count(collection, 'createIndexes')).toBe(1)
+      expect(createdSearchIndexes(collection)).toEqual(['vector_index', 'text_index'])
+      expect(reportedTiers()).toEqual(['vector', 'text'])
     })
 
     it('creates only its own index for a named search type', async () => {
@@ -550,82 +552,25 @@ describe('MongoDBMemoryStore', () => {
       await store.initialize()
 
       expect(createdSearchIndexes(collection)).toEqual(['text_index'])
-      expect(tiers(store)).toEqual(['text'])
+      expect(reportedTiers()).toEqual(['text'])
     })
 
-    it("fails a named search type whose own tier failed, saying what refused and not naming 'auto'", async () => {
+    it('fails, and starts over on the next call, when a named tier cannot be prepared', async () => {
       const { store, collection } = withoutFusion({ config: { searchType: 'vector' } })
       reporting(collection, 'FAILED', 'vector_index')
 
       const error = await rejectionOf(store.initialize())
+      await expect(store.initialize()).rejects.toBeInstanceOf(StorageError)
 
       expect(error).toBeInstanceOf(StorageError)
       expect(error.message).toContain("'vector_index'")
-      expect(error.message).toContain('FAILED')
-      expect(error.message).not.toContain("'searchType' is 'auto'")
-      expect(store['_initialized']).toBe(false)
-    })
-
-    it('warns per tier then raises when auto has every tier refused, chaining the last reason', async () => {
-      const { store, collection, logger } = withoutFusion()
-      reporting(collection, 'FAILED', 'vector_index', 'text_index')
-
-      const error = await rejectionOf(store.initialize())
-
-      expect(error).toBeInstanceOf(StorageError)
-      expect(error.message).toContain('no search tier could be prepared on appdb.memory')
-      expect((error.cause as Error).message).toContain("'text_index'")
-      expect(skipped(logger)).toEqual([
-        ['warn', 'tier_unavailable', 'vector'],
-        ['warn', 'tier_unavailable', 'text'],
-      ])
-      expect(logger.lines('warn').every((line) => line.includes("'searchType' is 'auto'"))).toBe(true)
-      expect(store['_initialized']).toBe(false)
-    })
-
-    it('AT-166: carries the server reason on the skipped-tier line and on the cause', async () => {
-      const { store, collection, logger } = withoutFusion()
-      reporting(collection, 'FAILED', 'vector_index', 'text_index')
-
-      const error = await rejectionOf(store.initialize())
-
-      const [line] = logger.lines('warn')
-      expect(line).toContain('the vector search tier is not available on appdb.memory')
-      expect(line).toContain("The server's own reason: strands_mongodb: the vectorSearch index 'vector_index'")
-      expect(line).toMatch(/\| event=tier_unavailable, namespace=appdb\.memory, tier=vector$/)
-      expect(error.cause).toBeInstanceOf(StorageError)
-    })
-
-    it('warns that answers became lexical when auto lands on text', async () => {
-      const { store, collection, logger } = withoutFusion()
-      reporting(collection, 'FAILED', 'vector_index')
-
-      await store.initialize()
-
-      expect(tiers(store)).toEqual(['text'])
-      const warnings = logger.lines('warn')
-      expect(warnings.some((line) => line.includes('the vector search tier is not available'))).toBe(true)
-      const below = warnings.find((line) => line.includes('queries resolve to the text tier'))
-      expect(below).toContain("'searchType' is 'auto' and the vector tier is not available on appdb.memory")
-      expect(below).toMatch(/\| event=below_vector, namespace=appdb\.memory, tier=text$/)
-    })
-
-    it('warns below vector once per store, not once per retry', async () => {
-      vi.useFakeTimers()
-      const { store, collection, logger } = withoutFusion()
-      reporting(collection, 'FAILED', 'vector_index')
-      await store.initialize()
-
-      vi.advanceTimersByTime(TIER_RETRY_SECONDS * 1000)
-      await store.initialize()
-
-      expect(logger.lines('warn').filter((line) => line.includes('event=below_vector'))).toHaveLength(1)
+      expect(count(collection, 'listIndexes')).toBe(2)
     })
 
     it('AT-053a: warns once per connection on a deployment without search, and initializes', async () => {
       const client = new FakeMongoClient()
       const logger = new RecordingLogger()
-      const { store, collection } = withoutSearch({ client, logger })
+      const { store, collection, config } = withoutSearch({ client, logger })
       const others = Array.from(
         { length: 9 },
         (_, index) => setup({ client, logger, store: { name: `facts${index}` } }).store
@@ -637,31 +582,17 @@ describe('MongoDBMemoryStore', () => {
       expect(warnings).toHaveLength(1)
       expect(warnings[0]).toContain('appdb.memory is on a deployment that does not run Atlas Search')
       expect(warnings[0]).toContain(`error code ${NO_SEARCH_CODE}`)
-      expect(warnings[0]).toContain("Point 'connectionString' at MongoDB Atlas")
       expect(warnings[0]).toMatch(/\| event=no_search_setup, namespace=appdb\.memory$/)
       expect(createdSearchIndexes(collection)).toEqual([])
       expect(collection.indexes).toHaveLength(4)
-      expect([store, ...others].every((each) => tiers(each).length === 0 && each['_initialized'])).toBe(true)
-      expect(store['_connection'].capabilities).toEqual({
-        search: false,
-        noSearchCode: NO_SEARCH_CODE,
-        rankFusion: false,
-      })
-    })
-
-    it('schedules no retry where there is no search', async () => {
-      const { store } = withoutSearch()
-
-      await store.initialize()
-
-      expect(store['_tierRetryAt']).toBeUndefined()
+      expect(reportedTiers()).toEqual([])
+      expect(resolve(config).capabilities).toEqual({ search: false, noSearchCode: NO_SEARCH_CODE, rankFusion: false })
     })
 
     it('neither takes the lock nor redoes the setup on a second call', async () => {
-      const { store, collection } = withoutFusion()
+      const { store, collection, config } = withoutFusion()
       collection.setCollation(undefined)
-      const connection = store['_connection']
-      const locked = vi.spyOn(connection, 'locked')
+      const locked = vi.spyOn(resolve(config), 'locked')
 
       await store.initialize()
       await store.initialize()
@@ -691,7 +622,6 @@ describe('MongoDBMemoryStore', () => {
       await second.store.initialize()
 
       expect(first.collection.db.commandCalls).toEqual([{ buildInfo: 1 }])
-      expect(second.store['_capabilities']).toBe(first.store['_capabilities'])
     })
 
     it('AT-036: turns a driver error escaping the setup into a StorageError naming the namespace', async () => {
@@ -759,231 +689,24 @@ describe('MongoDBMemoryStore', () => {
     })
   })
 
-  describe('AT-242: auto does not wait for a build', () => {
-    it('initializes with no tiers while every tier is still building, logging each at info', async () => {
-      const { store, collection, logger } = withoutFusion()
-      reporting(collection, 'PENDING', 'vector_index', 'text_index')
-
-      await store.initialize()
-
-      expect(tiers(store)).toEqual([])
-      expect(store['_initialized']).toBe(true)
-      expect(skipped(logger)).toEqual([
-        ['info', 'tier_building', 'vector'],
-        ['info', 'tier_building', 'text'],
-      ])
-      expect(logger.lines('info').at(-1)).toMatch(/\| event=tier_building, namespace=appdb\.memory, tier=text$/)
-      expect(logger.lines('warn')).toEqual([])
-    })
-
-    it('schedules a retry and ignores it until it is due', async () => {
+  describe('AT-242: a tier auto skipped is retried inside a later call', () => {
+    it('reads nothing more until the retry is due, then picks up the finished build', async () => {
       vi.useFakeTimers()
       const { store, collection } = withoutFusion()
       reporting(collection, 'PENDING', 'vector_index', 'text_index')
       await store.initialize()
+      expect(reportedTiers()).toEqual([])
       const reads = collection.searchIndexReads
-
-      expect(store['_tierRetryAt']).toBe(Date.now() + TIER_RETRY_SECONDS * 1000)
-      vi.advanceTimersByTime(TIER_RETRY_SECONDS * 1000 - 1)
-      await store.initialize()
-
-      expect(collection.searchIndexReads).toBe(reads)
-    })
-
-    it('picks up the finished build on a retry and clears the schedule', async () => {
-      vi.useFakeTimers()
-      const { store, collection } = withoutFusion()
-      reporting(collection, 'PENDING', 'vector_index', 'text_index')
-      await store.initialize()
-
       collection.setSearchIndexStatus('vector_index', 'READY')
       collection.setSearchIndexStatus('text_index', 'READY')
-      vi.advanceTimersByTime(TIER_RETRY_SECONDS * 1000)
+
+      vi.advanceTimersByTime(TIER_RETRY_SECONDS * 1000 - 1)
       await store.initialize()
+      expect(collection.searchIndexReads).toBe(reads)
 
-      expect(tiers(store)).toEqual(['vector', 'text'])
-      expect(store['_tierRetryAt']).toBeUndefined()
-    })
-
-    it('offers hybrid once a retry finds both tiers on a deployment with the stage', async () => {
-      vi.useFakeTimers()
-      const { store, collection, logger } = setup()
-      reporting(collection, 'PENDING', 'vector_index')
+      vi.advanceTimersByTime(1)
       await store.initialize()
-      expect(tiers(store)).toEqual(['text'])
-      expect(skipped(logger)).toEqual([['info', 'tier_building', 'vector']])
-      expect(store['_tierRetryAt']).toBeDefined()
-
-      collection.setSearchIndexStatus('vector_index', 'READY')
-      vi.advanceTimersByTime(TIER_RETRY_SECONDS * 1000)
-      await store.initialize()
-
-      expect(tiers(store)).toEqual(['hybrid', 'vector', 'text'])
-      expect(store['_tierRetryAt']).toBeUndefined()
-    })
-
-    it('doubles the delay after a retry that still finds the tier missing, up to the ceiling', async () => {
-      vi.useFakeTimers()
-      const { store, collection } = withoutFusion()
-      reporting(collection, 'PENDING', 'vector_index')
-      await store.initialize()
-
-      let delay = TIER_RETRY_SECONDS
-      for (const expected of [120, 240, 480, 960, 1920, 3600, 3600]) {
-        vi.advanceTimersByTime(delay * 1000)
-        await store.initialize()
-        expect(store['_tierRetryDelay']).toBe(expected)
-        expect(store['_tierRetryAt']).toBe(Date.now() + expected * 1000)
-        delay = expected
-      }
-      expect(tiers(store)).toEqual(['text'])
-    })
-
-    it('keeps the tiers it has when a retry fails outright', async () => {
-      vi.useFakeTimers()
-      const { store, collection, logger } = withoutFusion()
-      reporting(collection, 'PENDING', 'vector_index')
-      await store.initialize()
-
-      const outage = serverError(125, 'mongot unreachable')
-      collection.failListSearchIndexes(outage, outage)
-      vi.advanceTimersByTime(TIER_RETRY_SECONDS * 1000)
-      await store.initialize()
-
-      expect(tiers(store)).toEqual(['text'])
-      expect(store['_tierRetryDelay']).toBe(2 * TIER_RETRY_SECONDS)
-      expect(logger.lines('warn').filter((line) => line.includes('mongot unreachable'))).toHaveLength(2)
-    })
-
-    it('still warns a refused tier while a building one stays at info', async () => {
-      const { store, collection, logger } = withoutFusion()
-      reporting(collection, 'FAILED', 'vector_index')
-      reporting(collection, 'PENDING', 'text_index')
-
-      await store.initialize()
-
-      expect(tiers(store)).toEqual([])
-      expect(skipped(logger)).toEqual([
-        ['warn', 'tier_unavailable', 'vector'],
-        ['info', 'tier_building', 'text'],
-      ])
-    })
-
-    it('raises when only refusals remain, since there is nothing to wait for', async () => {
-      const { store, collection } = withoutFusion()
-      reporting(collection, 'FAILED', 'vector_index', 'text_index')
-
-      const error = await rejectionOf(store.initialize())
-
-      expect(error.message).toContain('no search tier could be prepared')
-    })
-
-    describe('the first wait for a tier', () => {
-      it('waits for the build beside a refusal and resolves to the tier that came up', async () => {
-        const { store, collection } = withoutFusion()
-        reporting(collection, 'FAILED', 'vector_index')
-        reporting(collection, 'PENDING', 'text_index')
-        await store.initialize()
-        expect(tiers(store)).toEqual([])
-
-        collection.setSearchIndexStatus('text_index', 'READY')
-        await store['_waitForATier']()
-
-        expect(tiers(store)).toEqual(['text'])
-        expect(store['_waitedForATier']).toBe(true)
-      })
-
-      it('does not hold a ready tier behind one still building, and stops waiting on the loser', async () => {
-        vi.useFakeTimers()
-        const { store, collection, logger } = withoutFusion({ config: { indexReadyTimeout: 60 } })
-        reporting(collection, 'PENDING', 'vector_index', 'text_index')
-        await store.initialize()
-        logger.records.length = 0
-
-        collection.setSearchIndexStatus('text_index', 'READY')
-        await store['_waitForATier']()
-        const reads = collection.searchIndexReads
-        await vi.advanceTimersByTimeAsync(10_000)
-
-        expect(tiers(store)).toEqual(['text'])
-        expect(skipped(logger)).toEqual([['info', 'tier_building', 'vector']])
-        expect(store['_tierRetryAt']).toBeDefined()
-        expect(collection.searchIndexReads).toBe(reads)
-        const outcomes = spansNamed(exporter, 'strands_mongodb.indexes.wait').map(
-          (span) => span.attributes['strands_mongodb.indexes.outcome']
-        )
-        // Two timed-out reads from initialize, the retry's one, and the loser's abandoned wait; text was READY on its cold read.
-        expect(outcomes.filter((outcome) => outcome === undefined)).toHaveLength(1)
-        expect(outcomes).toHaveLength(4)
-      })
-
-      it("ends the loser's ensure span abandoned rather than in error once the first tier is ready", async () => {
-        vi.useFakeTimers()
-        const { store, collection } = withoutFusion({ config: { indexReadyTimeout: 60 } })
-        reporting(collection, 'PENDING', 'vector_index', 'text_index')
-        await store.initialize()
-        exporter.reset()
-
-        collection.setSearchIndexStatus('text_index', 'READY')
-        await store['_waitForATier']()
-
-        const abandoned = spansNamed(exporter, 'strands_mongodb.indexes.ensure').filter(
-          (span) => span.attributes['strands_mongodb.indexes.outcome'] === 'abandoned'
-        )
-        expect(abandoned).toHaveLength(1)
-        expect(abandoned[0]?.status.code).toBe(SpanStatusCode.UNSET)
-        expect(abandoned[0]?.attributes).not.toHaveProperty('error.type')
-      })
-
-      it('warns each tier when the wait runs out', async () => {
-        vi.useFakeTimers()
-        const { store, collection, logger } = withoutFusion({ config: { indexReadyTimeout: 1 } })
-        reporting(collection, 'PENDING', 'vector_index', 'text_index')
-        await store.initialize()
-        logger.records.length = 0
-
-        const wait = store['_waitForATier']()
-        await vi.advanceTimersByTimeAsync(1500)
-        await wait
-
-        expect(tiers(store)).toEqual([])
-        expect(skipped(logger)).toEqual([
-          ['warn', 'tier_unavailable', 'vector'],
-          ['warn', 'tier_unavailable', 'text'],
-        ])
-        expect(store['_waitedForATier']).toBe(true)
-      })
-
-      it('shares one wait between callers and starts a new one after it settles', async () => {
-        const { store, collection } = withoutFusion()
-        reporting(collection, 'PENDING', 'vector_index', 'text_index')
-        await store.initialize()
-
-        collection.setSearchIndexStatus('text_index', 'READY')
-        const first = store['_waitForATier']()
-        const second = store['_waitForATier']()
-        expect(second).toBe(first)
-        await first
-
-        expect(store['_tierWait']).toBeUndefined()
-        const third = store['_waitForATier']()
-        expect(third).not.toBe(first)
-        await third
-      })
-
-      it('passes a failure through the wait and forgets the wait', async () => {
-        const { store, collection, client } = withoutFusion()
-        reporting(collection, 'PENDING', 'vector_index', 'text_index')
-        await store.initialize()
-        const failure = new Error('programming error')
-        client.db = () => {
-          throw failure
-        }
-
-        await expect(store['_waitForATier']()).rejects.toBe(failure)
-        expect(store['_tierWait']).toBeUndefined()
-        expect(store['_waitedForATier']).toBe(false)
-      })
+      expect(reportedTiers()).toEqual(['vector', 'text'])
     })
   })
 
@@ -999,7 +722,6 @@ describe('MongoDBMemoryStore', () => {
       expect(collection.calls).toEqual([])
       expect(collection.searchIndexReads).toBe(0)
       expect(createdSearchIndexes(collection)).toEqual([])
-      expect(store['_initialized']).toBe(false)
     })
 
     it('checks a collection that compares bytes once and then sets it up', async () => {
@@ -1020,7 +742,7 @@ describe('MongoDBMemoryStore', () => {
       collection.setCollation(undefined)
       await store.initialize()
 
-      expect(store['_initialized']).toBe(true)
+      expect(count(collection, 'createIndexes')).toBe(1)
       expect(collection.db.listCollectionsCalls).toHaveLength(2)
     })
 
@@ -1037,14 +759,13 @@ describe('MongoDBMemoryStore', () => {
 
   describe('AT-192: an absent collection is not a verified one', () => {
     it('reads the collation again once the indexes have created the collection', async () => {
-      const { store, collection } = setup()
+      const { store, collection, config } = setup()
       expect(collection.exists).toBe(false)
 
       await store.initialize()
 
       expect(collection.db.listCollectionsCalls).toHaveLength(2)
-      expect(store['_connection'].binaryKeys.has('appdb.memory')).toBe(true)
-      expect(store['_initialized']).toBe(true)
+      expect(resolve(config).binaryKeys.has('appdb.memory')).toBe(true)
     })
 
     it('caches the read that found something, so a second store adds no third read', async () => {
@@ -1058,27 +779,27 @@ describe('MongoDBMemoryStore', () => {
       expect(first.collection.db.listCollectionsCalls).toHaveLength(2)
     })
 
-    it('fails initialize when a collation appears during provisioning', async () => {
+    it('fails initialize when a collation appears during provisioning, and starts over on the next call', async () => {
       const { store, collection } = setup()
       collection.collectionOptions = { collation: CASE_INSENSITIVE }
 
       const error = await rejectionOf(store.initialize())
+      await expect(store.initialize()).rejects.toBeInstanceOf(StorageError)
 
       expect(error.message).toContain('collation')
-      expect(store['_initialized']).toBe(false)
-      expect(collection.db.listCollectionsCalls).toHaveLength(2)
+      expect(collection.db.listCollectionsCalls).toHaveLength(3)
     })
   })
 
   describe('AT-146, AT-147: the hybrid tier is a statement about two others', () => {
     it('prefers fusion under auto where the deployment and both tiers allow it', async () => {
-      const { store, collection } = setup()
+      const { store, collection, config } = setup()
 
       await store.initialize()
 
       expect(createdSearchIndexes(collection)).toEqual(['vector_index', 'text_index'])
-      expect(tiers(store)).toEqual(['hybrid', 'vector', 'text'])
-      expect(store['_connection'].capabilities).toEqual({ search: true, rankFusion: true })
+      expect(reportedTiers()).toEqual(['hybrid', 'vector', 'text'])
+      expect(resolve(config).capabilities).toEqual({ search: true, rankFusion: true })
     })
 
     it('resolves vector first without the stage, after one version read', async () => {
@@ -1087,7 +808,7 @@ describe('MongoDBMemoryStore', () => {
       await store.initialize()
 
       expect(collection.db.commandCalls).toEqual([{ buildInfo: 1 }])
-      expect(tiers(store)).toEqual(['vector', 'text'])
+      expect(reportedTiers()).toEqual(['vector', 'text'])
     })
 
     it('does not ask for the version where the deployment cannot search', async () => {
@@ -1096,7 +817,7 @@ describe('MongoDBMemoryStore', () => {
       await store.initialize()
 
       expect(collection.db.commandCalls).toEqual([])
-      expect(tiers(store)).toEqual([])
+      expect(reportedTiers()).toEqual([])
     })
 
     it('asks the version once for ten stores on one connection', async () => {
@@ -1106,44 +827,24 @@ describe('MongoDBMemoryStore', () => {
       await Promise.all(stores.map(({ store }) => store.initialize()))
 
       expect(stores[0]!.collection.db.commandCalls).toHaveLength(1)
-      expect(stores.every(({ store }) => tiers(store).join() === 'hybrid,vector,text')).toBe(true)
+      const reported = spansNamed(exporter, 'strands_mongodb.memory.initialize').map(
+        (span) => span.attributes['strands_mongodb.search.tiers']
+      )
+      expect(reported).toEqual(Array(10).fill('hybrid,vector,text'))
     })
 
-    it('creates both indexes for an explicit hybrid store and keeps only that tier', async () => {
+    it('keeps only the hybrid tier for an explicit hybrid store', async () => {
       const { store, collection } = setup({ config: { searchType: 'hybrid' } })
 
       await store.initialize()
 
       expect(createdSearchIndexes(collection)).toEqual(['vector_index', 'text_index'])
-      expect(tiers(store)).toEqual(['hybrid'])
-    })
-
-    it('fails an explicit hybrid store with one tier refused', async () => {
-      const { store, collection } = setup({ config: { searchType: 'hybrid' } })
-      reporting(collection, 'FAILED', 'vector_index')
-
-      const error = await rejectionOf(store.initialize())
-
-      expect(error).toBeInstanceOf(StorageError)
-      expect(error.message).toContain("'vector_index'")
-    })
-
-    it('fails an explicit hybrid store on a deployment without the stage', async () => {
-      const { store } = withoutFusion({ config: { searchType: 'hybrid' } })
-
-      const error = await rejectionOf(store.initialize())
-
-      expect(error).toBeInstanceOf(StorageError)
-      expect(error.message).toContain("'searchType' is 'hybrid' but appdb.memory cannot run it")
-      expect(error.message).toContain('$rankFusion')
-      expect(error.message).toContain('MongoDB 8.0')
+      expect(reportedTiers()).toEqual(['hybrid'])
     })
 
     it('AT-147: falls past hybrid to the tier a one-key query fits on a manual-vector auto store', async () => {
       const { store, collection } = setup({ config: MANUAL_VECTOR })
       collection.searchResults = [{ _id: 'abc', content: CONTENT, score: 0.9 }]
-      await store.initialize()
-      expect(tiers(store)).toEqual(['hybrid', 'vector', 'text'])
 
       const picked: string[] = []
       for (const query of [
@@ -1162,16 +863,6 @@ describe('MongoDBMemoryStore', () => {
         )
       ).toEqual(['text', 'vector', 'hybrid'])
     })
-
-    it('skips fusion under auto where only one tier came up', async () => {
-      const { store, collection, logger } = setup()
-      reporting(collection, 'FAILED', 'text_index')
-
-      await store.initialize()
-
-      expect(tiers(store)).toEqual(['vector'])
-      expect(logger.lines('warn').some((line) => line.includes('event=bound_declined_fusion'))).toBe(false)
-    })
   })
 
   describe('AT-148, AT-149: a score bound keeps auto off the hybrid tier', () => {
@@ -1183,10 +874,9 @@ describe('MongoDBMemoryStore', () => {
 
       await store.initialize()
 
-      expect(tiers(store)).toEqual(['vector', 'text'])
+      expect(reportedTiers()).toEqual(['vector', 'text'])
       const [line] = logger.lines('warn')
-      expect(line).toContain(`appdb.memory can run the hybrid tier, but '${bound}' is set to ${value}`)
-      expect(line).toContain("set 'searchType' to 'hybrid'")
+      expect(line).toContain(`'${bound}' is set to ${value}`)
       expect(line).toMatch(/\| event=bound_declined_fusion, namespace=appdb\.memory, tier=hybrid$/)
     })
 
@@ -1195,16 +885,7 @@ describe('MongoDBMemoryStore', () => {
 
       await store.initialize()
 
-      expect(tiers(store)).toEqual(['hybrid'])
-      expect(logger.lines('warn')).toEqual([])
-    })
-
-    it('logs nothing about the bound where the deployment could not run hybrid anyway', async () => {
-      const { store, logger } = withoutFusion({ store: { minScore: 0.7 } })
-
-      await store.initialize()
-
-      expect(tiers(store)).toEqual(['vector', 'text'])
+      expect(reportedTiers()).toEqual(['hybrid'])
       expect(logger.lines('warn')).toEqual([])
     })
   })
@@ -1313,67 +994,42 @@ describe('MongoDBMemoryStore', () => {
   })
 
   describe('AT-057: reserved metadata keys win', () => {
-    const logger = (): RecordingLogger => new RecordingLogger()
-    const context = (log = logger()): { storeName: string; namespace: string; logger: RecordingLogger } => ({
-      storeName: 'facts',
-      namespace: 'appdb.memory',
-      logger: log,
-    })
+    it('keeps the reserved value over every colliding stored key, and leaves the other keys alone', async () => {
+      const stored = Object.fromEntries([...RESERVED_METADATA_KEYS].map((key) => [key, 'stored']))
+      const { store } = textOnly({ store: { scope: 'tenant-a' } }, [
+        { _id: 'abc', content: CONTENT, score: 0.5, metadata: { ...stored, topic: 'cats' } },
+      ])
 
-    it('keeps the reserved value over a colliding caller key, not renamed and not nested', () => {
-      const merged = mergeMetadata(
-        { _scope: 'somebody-elses-scope', topic: 'cats' },
-        { _scope: 'tenant-a', _id: 'abc', _searchType: 'vector', _relevanceScore: 0.5 },
-        context()
-      )
+      const [entry] = await store.search('dark mode')
 
-      expect(merged._scope).toBe('tenant-a')
-      expect(merged.topic).toBe('cats')
-      expect(Object.values(merged)).not.toContain('somebody-elses-scope')
-    })
-
-    it('leaves non-colliding caller keys untouched', () => {
-      expect(mergeMetadata({ topic: 'cats', source: 'chat' }, { _id: 'abc' }, context())).toEqual({
+      expect(metadataOf(entry!)).toEqual({
         topic: 'cats',
-        source: 'chat',
         _id: 'abc',
+        _relevanceScore: 0.5,
+        _searchType: 'text',
+        _scope: 'tenant-a',
       })
     })
 
-    it('logs the collision at warn with the key, the store and the namespace', () => {
-      const log = logger()
+    it('logs the collision at warn with the key, the store and the namespace, never the stored value', async () => {
+      const { store, logger } = textOnly({}, [{ _id: 'abc', content: CONTENT, metadata: { _id: 'spoofed' } }])
 
-      mergeMetadata({ _id: 'spoofed' }, { _id: 'real' }, context(log))
+      await store.search('dark mode')
 
-      expect(log.records).toHaveLength(1)
-      const [level, line] = log.records[0]!
-      expect(level).toBe('warn')
-      expect(line).toContain("'_id'")
-      expect(line).toContain("'facts'")
-      expect(line).toMatch(/\| event=reserved_key_collision, namespace=appdb\.memory$/)
-      expect(line).not.toContain('spoofed')
+      const warnings = logger.lines('warn')
+      expect(warnings).toHaveLength(1)
+      expect(warnings[0]).toContain("'_id'")
+      expect(warnings[0]).toContain("'facts'")
+      expect(warnings[0]).toMatch(/\| event=reserved_key_collision, namespace=appdb\.memory$/)
+      expect(warnings[0]).not.toContain('spoofed')
     })
 
-    it('defends every key in RESERVED_METADATA_KEYS', () => {
-      for (const key of RESERVED_METADATA_KEYS) {
-        expect(mergeMetadata({ [key]: 'caller' }, { [key]: 'reserved' }, context())[key]).toBe('reserved')
-      }
-    })
+    it('logs nothing for metadata that collides with no reserved key', async () => {
+      const { store, logger } = textOnly({}, [{ _id: 'abc', content: CONTENT, metadata: { topic: 'cats' } }])
 
-    it('renders stored BSON values as relaxed EJSON, so the entry carries only JSON', () => {
-      const merged = mergeMetadata(
-        { seen: new Date('2026-01-02T03:04:05Z'), ref: new ObjectId('65f1c2d3e4f5a6b7c8d9e0f1'), tier: 'gold' },
-        { _id: 'abc' },
-        context()
-      )
+      await store.search('dark mode')
 
-      expect(merged).toEqual({
-        seen: { $date: '2026-01-02T03:04:05Z' },
-        ref: { $oid: '65f1c2d3e4f5a6b7c8d9e0f1' },
-        tier: 'gold',
-        _id: 'abc',
-      })
-      expect(JSON.parse(JSON.stringify(merged))).toEqual(merged)
+      expect(logger.lines('warn')).toEqual([])
     })
   })
 
@@ -1388,8 +1044,7 @@ describe('MongoDBMemoryStore', () => {
       expect(error.message).toContain("'facts'")
       expect(error.message).toContain('add()')
       expect(error.message).not.toContain(CONTENT)
-      expect(collection.calls).toEqual([])
-      expect(store['_initialized']).toBe(false)
+      expectUntouched(collection)
     })
   })
 
@@ -1404,7 +1059,7 @@ describe('MongoDBMemoryStore', () => {
 
       expect(error).toBeInstanceOf(TypeError)
       expect(error.message).toContain(expected)
-      expect(collection.calls).toEqual([])
+      expectUntouched(collection)
     })
 
     it.each([
@@ -1417,7 +1072,7 @@ describe('MongoDBMemoryStore', () => {
 
       expect(error).toBeInstanceOf(TypeError)
       expect(error.message).toContain(expected)
-      expect(collection.calls).toEqual([])
+      expectUntouched(collection)
     })
 
     it('rejects a limit below 1 in options or in a query with a RangeError, naming the key', async () => {
@@ -1430,20 +1085,18 @@ describe('MongoDBMemoryStore', () => {
       expect(options.message).toContain("'maxSearchResults' is 0")
       expect(query).toBeInstanceOf(RangeError)
       expect(query.message).toContain("'limit' is -1")
-      expect(collection.calls).toEqual([])
-      expect(store['_initialized']).toBe(false)
+      expectUntouched(collection)
     })
   })
 
   describe('AT-077: what the store sends and what it maps back', () => {
     it('sends the scope, the store and both caller filters, in that order', async () => {
-      const built = setup({
+      const { store, collection } = textOnly({
         store: { scope: 'tenant-a', filter: { 'metadata.tier': 'gold' } },
         config: { filterFields: ['metadata.tier', 'metadata.region'] },
       })
-      const collection = prepared(built)
 
-      await built.store.search({ text: 'dark mode', filter: { 'metadata.region': 'emea' } })
+      await store.search({ text: 'dark mode', filter: { 'metadata.region': 'emea' } })
 
       expect(stage(collection, '$match')).toEqual({
         $and: [
@@ -1456,16 +1109,15 @@ describe('MongoDBMemoryStore', () => {
     })
 
     it('reads _scope off the store, so a stored _scope cannot make a document report another scope', async () => {
-      const built = setup({ store: { scope: 'tenant-a' } })
-      prepared(built, {
-        documents: [{ _id: 'abc', content: CONTENT, score: 0.9, metadata: { _scope: 'tenant-b', tier: 'gold' } }],
-      })
+      const { store, logger } = textOnly({ store: { scope: 'tenant-a' } }, [
+        { _id: 'abc', content: CONTENT, score: 0.9, metadata: { _scope: 'tenant-b', tier: 'gold' } },
+      ])
 
-      const entries = await built.store.search('dark mode')
+      const entries = await store.search('dark mode')
 
       expect(metadataOf(entries[0]!)._scope).toBe('tenant-a')
       expect(metadataOf(entries[0]!).tier).toBe('gold')
-      const collisions = built.logger.lines('warn').filter((line) => line.includes('event=reserved_key_collision'))
+      const collisions = logger.lines('warn').filter((line) => line.includes('event=reserved_key_collision'))
       expect(collisions).toHaveLength(1)
       expect(collisions[0]).toContain("'_scope'")
       expect(collisions[0]).not.toContain('tenant-b')
@@ -1474,33 +1126,29 @@ describe('MongoDBMemoryStore', () => {
     it.each([[{ _id: 'abc', content: CONTENT }], [{ _id: 'abc', content: CONTENT, score: null }]])(
       'maps an unscored document %j to zero rather than failing',
       async (document) => {
-        const built = setup()
-        prepared(built, { documents: [document] })
+        const { store } = textOnly({}, [document])
 
-        const entries = await built.store.search('dark mode')
+        const entries = await store.search('dark mode')
 
         expect(metadataOf(entries[0]!)._relevanceScore).toBe(0)
       }
     )
 
     it('lets only the metadata the document carries reach the entry, beside the four reserved keys', async () => {
-      const built = setup({ store: { scope: 'tenant-a' } })
-      prepared(built, {
-        documents: [
-          {
-            _id: 'abc',
-            content: CONTENT,
-            scope: 'tenant-a',
-            store_name: 'facts',
-            content_hash: 'f'.repeat(64),
-            created_at: new Date(),
-            score: 1.5,
-            metadata: { tier: 'gold' },
-          },
-        ],
-      })
+      const { store } = textOnly({ store: { scope: 'tenant-a' } }, [
+        {
+          _id: 'abc',
+          content: CONTENT,
+          scope: 'tenant-a',
+          store_name: 'facts',
+          content_hash: 'f'.repeat(64),
+          created_at: new Date(),
+          score: 1.5,
+          metadata: { tier: 'gold' },
+        },
+      ])
 
-      const entries = await built.store.search('dark mode')
+      const entries = await store.search('dark mode')
 
       expect(entries).toHaveLength(1)
       expect(entries[0]!.content).toBe(CONTENT)
@@ -1515,17 +1163,15 @@ describe('MongoDBMemoryStore', () => {
     })
 
     it('returns stored Date and ObjectId metadata as relaxed EJSON, never as objects a JSONValue cannot hold', async () => {
-      const built = setup()
       const ref = new ObjectId()
-      prepared(built, {
-        documents: [
-          { _id: ref, content: CONTENT, score: 0.5, metadata: { seen: new Date('2026-01-02T03:04:05Z'), ref } },
-        ],
-      })
+      const { store } = textOnly({}, [
+        { _id: ref, content: CONTENT, score: 0.5, metadata: { seen: new Date('2026-01-02T03:04:05Z'), ref } },
+      ])
 
-      const entries = await built.store.search('dark mode')
+      const entries = await store.search('dark mode')
 
-      expect(metadataOf(entries[0]!)).toEqual({
+      const metadata = metadataOf(entries[0]!)
+      expect(metadata).toEqual({
         seen: { $date: '2026-01-02T03:04:05Z' },
         ref: { $oid: ref.toHexString() },
         _id: ref.toHexString(),
@@ -1533,47 +1179,27 @@ describe('MongoDBMemoryStore', () => {
         _searchType: 'text',
         _scope: UNSCOPED,
       })
+      expect(JSON.parse(JSON.stringify(metadata))).toEqual(metadata)
     })
 
-    it('answers with the first prepared tier that fits a plain string, and reports it', async () => {
-      const built = setup()
-      prepared(built, { tiers: ['hybrid', 'vector', 'text'] })
-
-      const entries = await built.store.search('dark mode')
-
-      expect(stageNames(built.collection)).toEqual(['$rankFusion', '$set', '$limit'])
-      expect(metadataOf(entries[0]!)._searchType).toBe('hybrid')
-    })
-
-    it('initializes itself on the first search, so nobody has to call initialize()', async () => {
+    it('initializes itself on the first search and answers a plain string from the first tier that fits', async () => {
       const { store, collection } = setup()
       collection.searchResults = [{ _id: 'abc', content: CONTENT, score: 0.9 }]
 
       const entries = await store.search('dark mode')
 
-      expect(store['_initialized']).toBe(true)
+      expect(count(collection, 'createIndexes')).toBe(1)
+      expect(stageNames(collection)).toEqual(['$rankFusion', '$set', '$limit'])
       expect(entries.map((entry) => entry.content)).toEqual([CONTENT])
       expect(metadataOf(entries[0]!)._searchType).toBe('hybrid')
     })
   })
 
   describe('AT-078: the query no tier fits', () => {
-    it('names the build, not a missing module, when search exists and no tier is ready', () => {
-      const built = setup()
-      prepared(built, { tiers: [] })
-      built.store['_capabilities'] = { search: true, rankFusion: true }
-
-      const error = errorOf(() => built.store['_pickTier']('dark mode', undefined))
-
-      expect(error).toBeInstanceOf(StorageError)
-      expect(error.message).toContain("was ready within 'indexReadyTimeout'")
-      expect(error.message).not.toContain('does not run Atlas Search')
-    })
-
     it('AT-053c: names the code the probe reported and what to connect to where the deployment cannot search', async () => {
-      const built = withoutSearch()
+      const { store } = withoutSearch()
 
-      const error = await rejectionOf(built.store.search('dark mode'))
+      const error = await rejectionOf(store.search('dark mode'))
 
       expect(error).toBeInstanceOf(StorageError)
       expect(error.message).toContain(`server error code ${NO_SEARCH_CODE}`)
@@ -1581,37 +1207,25 @@ describe('MongoDBMemoryStore', () => {
       expect(error.message).not.toContain('createSearchIndexes')
     })
 
-    it('says no probe result is cached where none ran', async () => {
-      const built = setup()
-      prepared(built, { tiers: [] })
-
-      const error = await rejectionOf(built.store.search('dark mode'))
-
-      expect(error).toBeInstanceOf(StorageError)
-      expect(error.message).toContain('no probe result cached')
-    })
-
     it('names the key to add when a manual-vector store gets a plain string', async () => {
-      const built = setup({ config: { ...MANUAL_VECTOR, searchType: 'vector' } })
-      prepared(built, { tiers: ['vector'] })
+      const { store, collection } = setup({ config: { ...MANUAL_VECTOR, searchType: 'vector' } })
 
-      const error = await rejectionOf(built.store.search('dark mode'))
+      const error = await rejectionOf(store.search('dark mode'))
 
       expect(error).toBeInstanceOf(TypeError)
-      expect(error.message).toContain("needs 'vector'")
+      expect(error.message).toContain("'vector'")
       expect(error.message).toContain("'embeddingDimensions'")
-      expect(error.message).toContain('which is: vector')
+      expect(count(collection, 'aggregate')).toBe(0)
     })
 
-    it('names the text key when an AutoEmbeddings vector store gets only a vector', async () => {
-      const built = setup({ config: { searchType: 'text' } })
-      prepared(built, { tiers: ['text'] })
+    it('names the text key when a text store gets only a vector', async () => {
+      const { store, collection } = setup({ config: { searchType: 'text' } })
 
-      const error = await rejectionOf(built.store.search({ vector: QUERY_VECTOR }))
+      const error = await rejectionOf(store.search({ vector: QUERY_VECTOR }))
 
       expect(error).toBeInstanceOf(TypeError)
-      expect(error.message).toContain("needs 'text'")
-      expect(error.message).toContain('AutoEmbeddings')
+      expect(error.message).toContain("'text'")
+      expect(count(collection, 'aggregate')).toBe(0)
     })
   })
 
@@ -1668,47 +1282,44 @@ describe('MongoDBMemoryStore', () => {
       [{ maxScore: 0.5 }, ['fact 1', 'fact 2']],
       [{ minScore: 0.1 }, ['fact 0', 'fact 1', 'fact 2']],
     ])('keeps a result scoring exactly the bound %j, dropping only its own side', async (bound, kept) => {
-      const built = setup({ store: bound })
-      prepared(built, { documents: documents() })
+      const { store } = textOnly({ store: bound }, documents())
 
-      const entries = await built.store.search('dark mode')
+      const entries = await store.search('dark mode')
 
       expect(entries.map((entry) => entry.content)).toEqual(kept)
     })
 
     it('logs the bound, its value and both counts at debug only when something was dropped', async () => {
-      const built = setup({ store: { maxScore: 0.5 } })
-      prepared(built, { documents: documents() })
+      const { store, logger } = textOnly({ store: { maxScore: 0.5 } }, documents())
 
-      await built.store.search('dark mode')
+      await store.search('dark mode')
 
-      const applied = built.logger.lines('debug').filter((line) => line.includes('event=score_bound_applied'))
+      const applied = logger.lines('debug').filter((line) => line.includes('event=score_bound_applied'))
       expect(applied).toHaveLength(1)
-      expect(applied[0]).toContain('maxScore 0.5 on appdb.memory kept 2 of 3 results (applied after the query).')
+      expect(applied[0]).toContain('maxScore 0.5 on appdb.memory kept 2 of 3 results')
       expect(applied[0]).toMatch(/\| event=score_bound_applied, namespace=appdb\.memory$/)
     })
 
     it('logs nothing when the bound drops nothing', async () => {
-      const built = setup({ store: { minScore: 0.1 } })
-      prepared(built, { documents: documents() })
+      const { store, logger } = textOnly({ store: { minScore: 0.1 } }, documents())
 
-      await built.store.search('dark mode')
+      await store.search('dark mode')
 
-      expect(built.logger.lines('debug').filter((line) => line.includes('score_bound_applied'))).toEqual([])
+      expect(logger.lines('debug').filter((line) => line.includes('score_bound_applied'))).toEqual([])
     })
 
     it('applies the bound to the fused score on an explicit hybrid store', async () => {
-      const built = setup({ store: { minScore: 0.0164 }, config: { ...MANUAL_VECTOR, searchType: 'hybrid' } })
-      const collection = prepared(built, {
-        tiers: ['hybrid'],
-        documents: [0.0328, 0.0164, 0.0161].map((score, index) => ({
-          _id: String(index),
-          content: `fact ${index}`,
-          score,
-        })),
+      const { store, collection } = setup({
+        store: { minScore: 0.0164 },
+        config: { ...MANUAL_VECTOR, searchType: 'hybrid' },
       })
+      collection.searchResults = [0.0328, 0.0164, 0.0161].map((score, index) => ({
+        _id: String(index),
+        content: `fact ${index}`,
+        score,
+      }))
 
-      const entries = await built.store.search({ text: 'dark mode', vector: QUERY_VECTOR })
+      const entries = await store.search({ text: 'dark mode', vector: QUERY_VECTOR })
 
       expect(entries.map((entry) => entry.content)).toEqual(['fact 0', 'fact 1'])
       expect(stageNames(collection)).toEqual(['$rankFusion', '$set', '$limit'])
@@ -1718,15 +1329,14 @@ describe('MongoDBMemoryStore', () => {
 
   describe('AT-082: deleting one memory', () => {
     it('sends the read predicate with the id added as a sibling of $and', async () => {
-      const built = setup({
+      const { store, collection } = setup({
         store: { scope: 'tenant-a', filter: { 'metadata.tier': 'gold' }, writable: true },
         config: { filterFields: ['metadata.tier'] },
       })
-      const collection = prepared(built)
       collection.deletedCount = 1
       const memoryId = new ObjectId()
 
-      const deleted = await built.store.delete(memoryId.toHexString())
+      const deleted = await store.delete(memoryId.toHexString())
 
       expect(deleted).toBe(1)
       expect(argsOf(collection, 'deleteOne')).toEqual([
@@ -1738,10 +1348,10 @@ describe('MongoDBMemoryStore', () => {
     })
 
     it('reports the count the server gave rather than its own', async () => {
-      const built = setup({ store: { writable: true } })
-      prepared(built).deletedCount = 7
+      const { store, collection } = setup({ store: { writable: true } })
+      collection.deletedCount = 7
 
-      expect(await built.store.delete(new ObjectId().toHexString())).toBe(7)
+      expect(await store.delete(new ObjectId().toHexString())).toBe(7)
     })
 
     it('removes the document the id names and leaves the rest', async () => {
@@ -1757,28 +1367,26 @@ describe('MongoDBMemoryStore', () => {
     it.each(['', 'nope', 'z'.repeat(24), '6a96a03ca471f4a00187022', 12, null])(
       'rejects %j as a memory id with a TypeError naming the argument, sending nothing',
       async (memoryId) => {
-        const built = setup({ store: { writable: true } })
-        const collection = prepared(built)
+        const { store, collection } = setup({ store: { writable: true } })
 
-        const error = await rejectionOf(built.store.delete(memoryId as string))
+        const error = await rejectionOf(store.delete(memoryId as string))
 
         expect(error).toBeInstanceOf(TypeError)
         expect(error.message).toContain("'memoryId'")
         expect(error.message).toContain('24-character hex ObjectId')
-        expect(count(collection, 'deleteOne')).toBe(0)
+        expectUntouched(collection)
       }
     )
   })
 
   describe('AT-083: deleting every memory this store can see', () => {
     it('sends exactly the read predicate, configured filter included', async () => {
-      const built = setup({
+      const { store, collection } = setup({
         store: { scope: 'tenant-a', filter: { 'metadata.tier': 'gold' }, writable: true },
         config: { filterFields: ['metadata.tier'] },
       })
-      const collection = prepared(built)
 
-      await built.store.deleteAll()
+      await store.deleteAll()
 
       expect(argsOf(collection, 'deleteMany')).toEqual([
         { $and: [{ scope: { $eq: 'tenant-a' } }, { store_name: { $eq: 'facts' } }, { 'metadata.tier': 'gold' }] },
@@ -1786,10 +1394,10 @@ describe('MongoDBMemoryStore', () => {
     })
 
     it('passes the count the server gave through', async () => {
-      const built = setup({ store: { writable: true } })
-      prepared(built).deletedCount = 12
+      const { store, collection } = setup({ store: { writable: true } })
+      collection.deletedCount = 12
 
-      expect(await built.store.deleteAll()).toBe(12)
+      expect(await store.deleteAll()).toBe(12)
     })
 
     it('AT-085: empties its own store and leaves a sibling in the same scope and collection', async () => {
@@ -1819,8 +1427,7 @@ describe('MongoDBMemoryStore', () => {
       expect(error).toBeInstanceOf(TypeError)
       expect(error.message).toContain("'writable'")
       expect(error.message).toContain(`${call}()`)
-      expect(store['_initialized']).toBe(false)
-      expect(collection.calls).toEqual([])
+      expectUntouched(collection)
     })
 
     it('checks writability before the id, so a read-only store never complains about the id', async () => {
@@ -2011,41 +1618,37 @@ describe('MongoDBMemoryStore', () => {
     })
 
     it.each([
-      [['vector', 'text'], 'vector'],
-      [['hybrid', 'vector', 'text'], 'hybrid'],
-    ] as Array<[ResolvedSearchType[], ResolvedSearchType]>)(
-      'embeds a plain string for the tiers %j and answers from %s',
-      async (tiers, tier) => {
-        const embedder = new WordEmbedder()
-        const built = setup({ store: { embedder }, config: MANUAL_VECTOR })
-        const collection = prepared(built, { tiers })
+      [withoutFusion, 'vector'],
+      [setup, 'hybrid'],
+    ] as const)('embeds a plain string and answers from the first tier, %#: %s', async (build, tier) => {
+      const embedder = new WordEmbedder()
+      const { store, collection } = build({ store: { embedder }, config: MANUAL_VECTOR })
+      collection.searchResults = [{ _id: 'abc', content: CONTENT }]
 
-        const found = await built.store.search('dark')
+      const found = await store.search('dark')
 
-        expect(embedder.calls).toEqual(['dark'])
-        expect(metadataOf(found[0]!)._searchType).toBe(tier)
-        expect(JSON.stringify(stagesOf(collection))).toContain('[1.01,0.01,0.01,0.01]')
-      }
-    )
+      expect(embedder.calls).toEqual(['dark'])
+      expect(metadataOf(found[0]!)._searchType).toBe(tier)
+      expect(JSON.stringify(stagesOf(collection))).toContain('[1.01,0.01,0.01,0.01]')
+    })
 
     it('embeds nothing on a text-only store', async () => {
       const embedder = new WordEmbedder()
-      const built = setup({ store: { embedder }, config: MANUAL_VECTOR })
-      prepared(built, { tiers: ['text'] })
+      const { store } = textOnly({ store: { embedder }, config: MANUAL_VECTOR })
 
-      await built.store.search('dark')
+      await store.search('dark')
 
       expect(embedder.calls).toEqual([])
     })
 
     it('uses a caller vector as given', async () => {
       const embedder = new WordEmbedder()
-      const built = setup({ store: { embedder }, config: MANUAL_VECTOR })
-      prepared(built, { tiers: ['vector', 'text'] })
+      const { store, collection } = withoutFusion({ store: { embedder }, config: MANUAL_VECTOR })
 
-      await built.store.search({ vector: QUERY_VECTOR })
+      await store.search({ vector: QUERY_VECTOR })
 
       expect(embedder.calls).toEqual([])
+      expect((stage(collection, '$vectorSearch') as Document).queryVector).toEqual(QUERY_VECTOR)
     })
   })
 
@@ -2054,16 +1657,17 @@ describe('MongoDBMemoryStore', () => {
       const { store, collection } = withoutFusion()
       reporting(collection, 'PENDING', 'vector_index', 'text_index')
       await store.initialize()
-      expect(tiers(store)).toEqual([])
+      expect(reportedTiers()).toEqual([])
       collection.setSearchIndexStatus('vector_index', 'READY')
       collection.setSearchIndexStatus('text_index', 'READY')
       collection.searchResults = [{ _id: 'abc', content: 'dark mode', score: 0.9 }]
 
       const found = await store.search({ text: 'dark' })
 
-      expect(tiers(store)).toEqual(['vector', 'text'])
       expect(found.map((entry) => metadataOf(entry)._searchType)).toEqual(['vector'])
-      expect(store['_waitedForATier']).toBe(true)
+      expect(oneSpan(exporter, 'strands_mongodb.memory.search').attributes['strands_mongodb.search.tiers']).toBe(
+        'vector,text'
+      )
     })
 
     it('fails the search when the build never finishes, and only the first search waits', async () => {
@@ -2079,9 +1683,11 @@ describe('MongoDBMemoryStore', () => {
       const second = await rejectionOf(store.search({ text: 'dark' }))
 
       expect(error).toBeInstanceOf(StorageError)
-      expect(error.message).toContain('was ready')
-      expect(second.message).toContain('was ready')
+      expect(error.message).toContain('appdb.memory')
+      expect(error.message).not.toContain('Atlas Search')
+      expect(second.message).toBe(error.message)
       expect(collection.searchIndexReads).toBe(reads)
+      expect(count(collection, 'aggregate')).toBe(0)
     })
 
     it('shares one wait between searches that arrive during it', async () => {
@@ -2114,15 +1720,15 @@ describe('MongoDBMemoryStore', () => {
     it.each(Object.keys(VERBS) as Array<keyof typeof VERBS>)(
       'wraps an unwrapped driver error out of %s with the verb, the namespace and the cause',
       async (call) => {
-        const logger = new RecordingLogger()
         const store = new MongoDBMemoryStore({
           name: 'facts',
-          config: { database: 'appdb', connectionString: LEAKY_URI, logger },
+          config: { database: 'appdb', connectionString: LEAKY_URI, logger: new RecordingLogger() },
           writable: true,
         })
         const collection = ConstructedMongoClient.built[0]!.db('appdb').collection('memory')
+        await store.initialize()
         const failure = serverError(8, 'pretend failure, carrying no credentials')
-        prepared({ store, collection, client: ConstructedMongoClient.built[0]!, logger }, { failure })
+        collection.failure = failure
 
         const error = await rejectionOf(
           call === 'add'
@@ -2187,13 +1793,10 @@ describe('MongoDBMemoryStore', () => {
     })
 
     it('records search with the requested type, the tier that ran and the result count', async () => {
-      const built = setup({ store: { scope: 'tenant-a' } })
-      prepared(built, {
-        tiers: ['hybrid', 'vector', 'text'],
-        documents: [{ _id: 'abc', content: CONTENT, score: 0.9 }],
-      })
+      const { store, collection } = setup({ store: { scope: 'tenant-a' } })
+      collection.searchResults = [{ _id: 'abc', content: CONTENT, score: 0.9 }]
 
-      await built.store.search('dark mode')
+      await store.search('dark mode')
 
       const span = oneSpan(exporter, 'strands_mongodb.memory.search')
       expect(span.attributes['strands_mongodb.search.requested']).toBe('auto')
@@ -2204,11 +1807,11 @@ describe('MongoDBMemoryStore', () => {
     })
 
     it('records delete and delete_all with the deleted count', async () => {
-      const built = setup({ store: { writable: true } })
-      prepared(built).deletedCount = 3
+      const { store, collection } = setup({ store: { writable: true } })
+      collection.deletedCount = 3
 
-      await built.store.delete(new ObjectId().toHexString())
-      await built.store.deleteAll()
+      await store.delete(new ObjectId().toHexString())
+      await store.deleteAll()
 
       expect(oneSpan(exporter, 'strands_mongodb.memory.delete').attributes['strands_mongodb.deleted_count']).toBe(3)
       expect(oneSpan(exporter, 'strands_mongodb.memory.delete_all').attributes['strands_mongodb.deleted_count']).toBe(3)

@@ -291,7 +291,7 @@ export function memorySpecs(): IndexSpec[] {
  * @returns The vector index first, then the full-text index
  * @throws Whatever {@link vectorMode} throws, unchanged
  */
-export function memorySearchSpecs(config: MongoDBConfig): SearchIndexSpec[] {
+export function memorySearchSpecs(config: MongoDBConfig): [vector: SearchIndexSpec, text: SearchIndexSpec] {
   const mode = vectorMode(config)
   return [
     new SearchIndexSpec({

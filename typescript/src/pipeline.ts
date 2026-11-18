@@ -53,10 +53,10 @@ export function vectorStages(options: {
   mode: VectorMode
   indexName: string
   limit: number
-  queryText?: string
-  queryVector?: number[]
-  queryFilter?: Record<string, unknown>
-  oversamplingFactor?: number
+  queryText?: string | undefined
+  queryVector?: number[] | undefined
+  queryFilter?: Record<string, unknown> | undefined
+  oversamplingFactor?: number | undefined
   score?: boolean
 }): Document[] {
   const { mode, indexName, limit, queryText, queryVector, queryFilter, score = true } = options
@@ -85,7 +85,7 @@ export function textStages(options: {
   queryText: string
   indexName: string
   limit: number
-  queryFilter?: Record<string, unknown>
+  queryFilter?: Record<string, unknown> | undefined
   score?: boolean
 }): Document[] {
   const { queryText, indexName, limit, queryFilter, score = true } = options
@@ -114,9 +114,9 @@ export function hybridStages(options: {
   textIndexName: string
   queryText: string
   limit: number
-  queryVector?: number[]
-  queryFilter?: Record<string, unknown>
-  oversamplingFactor?: number
+  queryVector?: number[] | undefined
+  queryFilter?: Record<string, unknown> | undefined
+  oversamplingFactor?: number | undefined
 }): Document[] {
   const { mode, vectorIndexName, textIndexName, queryText, limit, queryVector, queryFilter, oversamplingFactor } =
     options
@@ -125,19 +125,13 @@ export function hybridStages(options: {
     mode,
     indexName: vectorIndexName,
     limit,
-    ...(mode.autoEmbed && { queryText }),
-    ...(queryVector !== undefined && { queryVector }),
-    ...(queryFilter !== undefined && { queryFilter }),
-    ...(oversamplingFactor !== undefined && { oversamplingFactor }),
+    queryText: mode.autoEmbed ? queryText : undefined,
+    queryVector,
+    queryFilter,
+    oversamplingFactor,
     score: false,
   })
-  const text = textStages({
-    queryText,
-    indexName: textIndexName,
-    limit,
-    ...(queryFilter !== undefined && { queryFilter }),
-    score: false,
-  })
+  const text = textStages({ queryText, indexName: textIndexName, limit, queryFilter, score: false })
   // The fused list is the union of both branches, up to twice `limit`.
   return [{ $rankFusion: { input: { pipelines: { vector, text } } } }, scoreStage(FUSION_SCORE_META), { $limit: limit }]
 }
@@ -149,8 +143,8 @@ export function hybridStages(options: {
  * @throws TypeError if both keys are set where nothing can fuse them, or if neither is set
  */
 export function checkQueryKeys(options: {
-  queryText?: string
-  queryVector?: number[]
+  queryText?: string | undefined
+  queryVector?: number[] | undefined
   fusionPossible?: boolean
 }): void {
   const { queryText, queryVector, fusionPossible = false } = options
@@ -165,7 +159,7 @@ export function checkQueryKeys(options: {
 }
 
 function checkQueryShape(mode: VectorMode, queryText: string | undefined, queryVector: number[] | undefined): void {
-  checkQueryKeys({ ...(queryText !== undefined && { queryText }), ...(queryVector !== undefined && { queryVector }) })
+  checkQueryKeys({ queryText, queryVector })
   if (mode.autoEmbed && queryVector !== undefined) {
     throw new TypeError(
       "strands_mongodb: the query sets 'vector', but this store uses Atlas AutoEmbeddings, whose index holds no caller-supplied embeddings. Query with 'text', or set 'embeddingDimensions' and 'similarity' and recreate the vector index."

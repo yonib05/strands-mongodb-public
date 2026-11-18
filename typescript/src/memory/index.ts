@@ -4,13 +4,8 @@
  * @packageDocumentation
  */
 
-export {
-  DEFAULT_COLLECTION,
-  MongoDBMemoryStore,
-  TIER_RETRY_MAX_SECONDS,
-  TIER_RETRY_SECONDS,
-  UNSCOPED,
-} from '../memory-store.js'
+export { DEFAULT_COLLECTION, MongoDBMemoryStore, UNSCOPED } from '../memory-store.js'
+export { TIER_RETRY_MAX_SECONDS, TIER_RETRY_SECONDS } from '../search-tiers.js'
 export {
   DEFAULT_MAX_SEARCH_RESULTS,
   DEFAULT_OVERSAMPLING_FACTOR,
