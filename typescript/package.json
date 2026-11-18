@@ -24,8 +24,9 @@
     "LICENSE",
     "NOTICE"
   ],
+  "sideEffects": false,
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "build": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "type-check": "tsc --noEmit",
     "lint": "eslint src test scripts examples",
     "lint:fix": "eslint src test scripts examples --fix",
@@ -64,9 +65,13 @@
   "bugs": {
     "url": "https://github.com/mongodb/strands-mongodb/issues"
   },
-  "homepage": "https://github.com/mongodb/strands-mongodb#readme",
+  "homepage": "https://github.com/mongodb/strands-mongodb/tree/main/typescript#readme",
   "engines": {
     "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "peerDependencies": {
     "@opentelemetry/api": "^1.9.0",

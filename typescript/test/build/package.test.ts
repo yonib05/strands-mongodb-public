@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,7 +29,8 @@ describeTier('build', 'package', () => {
 
   beforeAll(() => {
     workDir = mkdtempSync(join(tmpdir(), 'strands-mongodb-build-'))
-    tarball = join(workDir, pack(['--pack-destination', workDir]).filename)
+    // The release workflow passes the tarball it will publish; otherwise one is packed here, which builds `dist`.
+    tarball = process.env.STRANDS_MONGODB_TARBALL ?? join(workDir, pack(['--pack-destination', workDir]).filename)
   })
 
   afterAll(() => {
@@ -39,15 +40,13 @@ describeTier('build', 'package', () => {
   function install(fixture: string): string {
     const dir = join(workDir, fixture)
     cpSync(join(FIXTURES, fixture), dir, { recursive: true })
-    // The package's own .npmrc does not apply outside typescript/.
-    writeFileSync(join(dir, '.npmrc'), 'registry=https://registry.npmjs.org/\n')
     npm(['install', '--no-audit', '--no-fund', tarball, '@strands-agents/sdk', 'mongodb'], dir)
     return dir
   }
 
   describe('contents', () => {
     it('ships only the build output and the legal files', () => {
-      const paths = pack(['--dry-run']).files.map((file) => file.path)
+      const paths = pack(['--dry-run', '--ignore-scripts']).files.map((file) => file.path)
       const extra = paths.filter(
         (path) => !path.startsWith('dist/') && !['README.md', 'LICENSE', 'NOTICE', 'package.json'].includes(path)
       )
