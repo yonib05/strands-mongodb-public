@@ -62,8 +62,22 @@ npm ci
 npm run check
 ```
 
-Every `npm` command runs from `typescript/`. `npm run check` is the whole gate; `npm test` alone is the
-unit project.
+Every `npm` command runs from `typescript/`. `npm run check` is everything a pull request is checked for
+without a deployment. `npm test` alone is the unit project.
+
+### Installing the TypeScript package before its first release
+
+The package is not on npm yet. To use it in another project, build a clone and install the folder:
+
+```bash
+git clone git@github.com:mongodb/strands-mongodb.git
+cd strands-mongodb/typescript && npm ci && npm run build
+cd /path/to/your/app && npm install /path/to/strands-mongodb/typescript
+```
+
+`npm install <folder>` links the folder, so the clone has to stay built. For a copy, run `npm pack` in
+`typescript/` and install the `.tgz` it writes. Either way the version is `0.0.1-development`: the real
+version is written at publish time, as [`typescript/RELEASING.md`](typescript/RELEASING.md) describes.
 
 ## Running the tests
 
@@ -117,14 +131,14 @@ starts the workflow by hand from the Actions tab:
 The TypeScript package has its own workflow, `.github/workflows/ci-typescript.yml`, which runs on a change
 under `typescript/` or to a file its tests read. Four jobs gate a change, two of them twice over a matrix,
 and two more run on the weekly cron or on demand. `npm run check` from `typescript/` is the local form of
-the first two:
+the first two, without the build tier:
 
 | Job | Runs |
 |---|---|
-| `Lint` | `npm run format:check`, `npm run lint`, `npm run type-check`, `npm run build` |
-| `Test - Node <version>` | `npm run test:coverage` on Node 22 and 24, which enforces both coverage floors (90% aggregate, 70% per file), then `npm run test:gate`. No deployment, so no secrets |
+| `Lint` | `npm run format:check`, `npm run lint`, `npm run type-check` |
+| `Test - Node <version>` | On Node 22 and 24: `npm run test:coverage`, which enforces both coverage floors (90% aggregate, 70% per file), then `npm run test:docs`, then `npm run test:gate`. On Node 24 also the build tier, `npm run test:build`, which packs the tarball and installs it into empty ESM and CommonJS projects. No deployment, so no secrets |
 | `Dependency floors` | `node scripts/pin-floors.mjs --install` puts the lowest version of every peer range in place, on Node 22, then `npm test` and `npm run type-check` run against them |
-| `Contract tier (<deployment>)` | `npm run test:contract` against a `mongo:8` service container and against a `mongodb/mongodb-atlas-local:8` one. The second leg also runs `npm run test:integration`, then installs hatch and runs `npm run test:interop`. `npm run test:gate` follows each tier. No secret either time |
+| `Contract tier (<deployment>)` | `npm run test:contract` against a `mongo:8` service container and against a `mongodb/mongodb-atlas-local:8` one. The second leg also runs `npm run test:integration`, then `npm run test:gate:release` once over both tiers, then installs hatch and runs `npm run test:interop`. No secret either time |
 | `Latest SDK compatibility` | Weekly or on demand, against the newest published `@strands-agents/sdk`. Type-checks, then runs `npm run test:compat`, then `npm run test:contract` against the Atlas local image |
 | `Atlas tiers` | Weekly, or on demand. Creates an Atlas cluster with `python/scripts/atlas_ci_cluster.py`, runs `npm run test:integration` and `npm run test:autoembed` against it, and deletes it |
 

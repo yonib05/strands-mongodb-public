@@ -15,7 +15,7 @@ npm from `typescript/`. They write the same documents and indexes, so one deploy
 | Path | Holds |
 |---|---|
 | `python/` | The PyPI package. `src/`, `tests/`, `examples/`, `pyproject.toml`, and the reference `README.md` and `MIGRATION.md` |
-| `typescript/` | The npm package. `typescript/src/` with co-located `__tests__` directories, `typescript/test/` for the tiers and the gate, `package.json`, the reference `typescript/README.md`, and `examples/` |
+| `typescript/` | The npm package. `typescript/src/` with co-located `__tests__` directories, `typescript/test/` for the tiers, the docs project and the gate, `package.json`, the reference `typescript/README.md`, `typescript/docs/PARITY.md` and `examples/` |
 | `.github/workflows/ci-python.yml`, `.github/workflows/ci-typescript.yml` | Every gate a pull request meets, one workflow per package, each filtered to its own paths |
 | `README.md` | The landing page. Short on purpose: `python/README.md` and `typescript/README.md` are the references |
 | `docs/images/` | The diagrams the READMEs and `CONTRIBUTING.md` show, as PNG |
@@ -24,6 +24,30 @@ npm from `typescript/`. They write the same documents and indexes, so one deploy
 Each package versions independently under its own directory and releases on its own tag prefix,
 `python-v` or `typescript-v`. This file has a TypeScript subsection under each heading rather than a
 second copy, because a split is how two files that describe one repository start disagreeing.
+
+### TypeScript
+
+The modules under `typescript/src/`:
+
+| Module | Holds |
+|---|---|
+| `storage.ts`, `memory-store.ts`, `vector-search.ts` | The three public classes |
+| `search-tiers.ts` | Which memory search tiers are ready, the first-search wait and the retry backoff |
+| `index-specs.ts` | The index definitions and the `db.runCommand` lines rendered from them |
+| `ensure-indexes.ts` | Creating or verifying indexes, and waiting for a search index |
+| `probes.ts` | What the deployment supports: Atlas Search, `$rankFusion`, and the collection's collation |
+| `pipeline.ts` | The aggregation stages of each search tier |
+| `filter.ts` | Validating a caller's filter and composing it with the scope |
+| `embedding.ts` | Calling an `Embedder` and checking the vector's length |
+| `keys.ts` | Key normalization and the tokenizer, copied from the SDK |
+| `client.ts` | The shared connections, keyed by connection identity |
+| `driver-errors.ts` | Turning a driver error into a `StorageError` |
+| `telemetry.ts`, `logging.ts` | Spans and attributes, and the log line's fields |
+| `types.ts`, `version.ts` | The public types and constants, and the package version |
+| `index.ts`, `typescript/src/storage/index.ts`, `typescript/src/memory/index.ts` | The three entry points |
+
+`typescript/docs/PARITY.md` records what the port measured, the behaviours it shares with Python on purpose, and
+where it differs.
 
 ## Where the reasoning lives, and how tests are tagged
 
@@ -44,9 +68,8 @@ counted as evidence that X is covered. Use the tag nowhere else: comments, later
 documentation describe the behaviour in words.
 
 In TypeScript the tag leads the test title, `it('AT-045a: initialize is idempotent', ...)`, or the title
-of an enclosing `describe`. The gate in `typescript/test/gate/` reads the ids a title starts with, from the
-source for the static half and from the last run's results for the dynamic half, and ignores comments and
-strings, so a tag anywhere else is not evidence.
+of an enclosing `describe`. The gate in `typescript/test/gate/` reads the ids a string literal starts
+with, on any line that is not a `//` comment, so a tag anywhere else is not evidence.
 
 A `TODO(...)` in a file names the thing that has to be settled before the placeholder can go, and the test
 suite asserts that every placeholder in this file and in `CONTRIBUTING.md` names something. Do not write a
@@ -83,15 +106,17 @@ Every command runs from `typescript/`, on Node.js 22 or newer, after `npm ci`.
 
 | Command | Does |
 |---|---|
-| `npm test` | The unit project: the `__tests__` directories under `typescript/src/`, and `typescript/test/__tests__/`. Arguments pass through, so `npm test -- src/__tests__/storage.test.ts` works |
+| `npm test` | The unit project: the `__tests__` directories under `typescript/src/`, and `typescript/test/__tests__/`. About two seconds. Arguments pass through, so `npm test -- src/__tests__/storage.test.ts` works |
 | `npm run test:contract`, `npm run test:integration`, `npm run test:autoembed`, `npm run test:build`, `npm run test:compat`, `npm run test:interop` | One tier each. A tier whose variable is unset skips with a reason |
 | `npm run test:coverage` | The unit project with both coverage floors: 90% aggregate and 70% per file |
-| `npm run test:gate` | The release-gate assertion, over `.vitest-results.json` from the last run. Run it after the suite it measures |
+| `npm run test:docs` | The docs project: runs the examples and the README's unit snippets, each in a subprocess. No deployment |
+| `npm run test:gate` | The static gate: every checklist id resolves to a test title, and every release-gate id to a contract or integration test. Reads no results, so it runs at any time |
+| `npm run test:gate:release` | The strict gate: fails unless every release-gate item passed against a real deployment. Run it after `npm run test:contract` and `npm run test:integration` on a deployment with a search process |
 | `npm run lint` | ESLint, over `typescript/src/`, `typescript/test/`, `typescript/scripts/` and `typescript/examples/` |
 | `npm run format` | Prettier, in place. `npm run format:check` is the read-only form CI runs |
 | `npm run type-check` | `tsc --noEmit` over `typescript/src/`, `typescript/test/`, `typescript/examples/` and `typescript/vitest.config.ts` |
-| `npm run build` | `tsc` into `dist`, which is what the package ships |
-| `npm run check` | `format:check`, `lint`, `type-check`, `test:coverage`, `test:gate`, in that order. Run this before pushing |
+| `npm run build` | Empties `dist`, then `tsc` into it. `dist` is what the package ships |
+| `npm run check` | `format:check`, `lint`, `type-check`, `test:coverage`, `test:docs`, `test:gate`, in that order. Run this before pushing |
 
 The coverage floors are not part of `test`, for the same reason `cov` is not part of `hatch run test`.
 
@@ -136,19 +161,20 @@ helpers poll to a 180-second ceiling rather than sleeping, so a fast cluster is 
 ### TypeScript
 
 The same variables gate the same tiers, as vitest projects selected by `npm run test:<tier>`. A tier
-lives under `typescript/test/integ/<tier>/`, except `build`, `compat` and `gate`, which live under
+lives under `typescript/test/integ/<tier>/`, except `build`, `compat`, `docs` and `gate`, which live under
 `typescript/test/` by name.
 
 | Project | Gate | Needs |
 |---|---|---|
 | `unit` | none | Nothing. A fake `MongoClient` |
+| `docs` | none | Nothing. Runs each example and each README snippet marked `run: unit` in a subprocess |
 | `contract` | `MONGODB_URI` | Any MongoDB deployment, including a local one |
 | `integration` | `MONGODB_ATLAS_URI` | Atlas, or an Atlas CLI local deployment with `mongot` |
 | `autoembed` | `MONGODB_AUTOEMBED_URI` | An Atlas cluster that runs automated embedding. `python/scripts/atlas_ci_cluster.py up` creates one |
 | `build` | `STRANDS_MONGODB_BUILD_TIER` | Network. Packs the tarball and installs it into empty ESM and CommonJS projects. No deployment and no secret |
 | `compat` | none | Nothing beyond the installed SDK. Checks it meets the floor, exports what the package imports, and accepts both stores at the type level. CI runs it weekly against the latest published `@strands-agents/sdk` |
 | `interop` | `MONGODB_URI`, and `hatch` on `PATH` | Writes through each package and reads through the other against one deployment, the Python halves in `typescript/scripts/interop/`. The memory suite also needs `MONGODB_ATLAS_URI`, for the text tier |
-| `gate` | none | The release-gate assertion. Reads `.vitest-results.json`, so it runs after the suite it measures; `npm run check` orders them |
+| `gate` | none | Nothing. Checks that every checklist id has a test, without running one |
 
 The variables are read from the process environment and from a `.env` file, the one in the `typescript/`
 directory first and then the one beside this file, with the same rule as Python: only the three
@@ -159,9 +185,20 @@ same gotcha follows, and the same opt-out:
 MONGODB_URI= MONGODB_ATLAS_URI= MONGODB_AUTOEMBED_URI= npm test
 ```
 
-`test:gate` judges the last recorded run, whatever it was. A filtered run of an enabled tier leaves the
-gate items whose files were filtered out without evidence, and the gate reports that as a failure rather
-than as unverified.
+`test:gate:release` is a script, not a vitest project. Every run records its results per project in
+`.vitest-results.json`, and the script fails unless each release-gate item has a passing test in the
+`contract` or `integration` project. A filtered run of either replaces that project's results with the
+subset, so the strict gate then fails until the tier runs in full. `npm run check` deletes the file first.
+
+Each tier writes to a database named `strands_mongodb_<tier>` and drops what it created. One Atlas
+cluster in all three variables runs every tier but skips the tests of a missing capability. Three
+deployments cover the most:
+
+| Variable | Deployment | Covers only there |
+|---|---|---|
+| `MONGODB_URI` | A plain `mongod` | A search against a server with no search process |
+| `MONGODB_ATLAS_URI` | Atlas CLI local, which has no embedding model | An `autoEmbed` index rejected at creation, and the fallback to the text tier |
+| `MONGODB_AUTOEMBED_URI` | An Atlas cluster with a registered model | The default embedding mode |
 
 ## House conventions
 
@@ -239,19 +276,25 @@ logger.warn(
 ```
 
 `logFields` in `typescript/src/logging.ts` renders `event=<name>, namespace=<db.coll>, tier=<tier>`, and
-`LogEvent` there is the closed list of event names, identical to the Python package's.
-`typescript/src/__tests__/conventions.test.ts` fails on a `logger` call with no `logFields` literal and on
-an event the list does not declare, and reports a declared event nothing logs. Two differ from the SDK on
-purpose and are written down here: the logger is injected through `logger` on `MongoDBConfig` rather than
-taken from the SDK's global `configureLogging`, because a store is configured by the application that
-built it, and the three barrels export nothing marked `@internal`, so the public surface is what
-`typescript/src/__tests__/exports.test.ts` lists and nothing else.
+`LogEvent` there is the closed list of event names: the Python package's, plus `rank_fusion_probe_failed`.
+`typescript/src/__tests__/conventions.test.ts` fails on a `logger` call with no `logFields` literal, and
+the `LogEvent` type rejects an event the list does not declare. Two things differ from the SDK on purpose:
+the logger is injected through `logger` on `MongoDBConfig` rather than taken from the SDK's global
+`configureLogging`, because a store is configured by the application that built it, and the three barrels
+export only what `typescript/src/__tests__/exports.test.ts` lists. A member marked `@internal` is stripped
+from the published types, and the build tier checks that.
 
-Spans go through `traced`, `span` or `open` in `typescript/src/telemetry.ts`, and an attribute is recorded
-only if it is in `ATTRIBUTES`, the same allow-list as Python's. The README's observability section lists
-every span, attribute and event, and `typescript/src/__tests__/readme.test.ts` fails until a new one is
-named there. No em dash anywhere under `typescript/`, nor in this file or `CONTRIBUTING.md`; the
-conventions test checks.
+Spans go through `traced`, `span` or `open` in `typescript/src/telemetry.ts`. An attribute name must be
+in `ATTRIBUTES`, the same list as Python's, and the `Attribute` type built from it is what enforces that.
+The README's observability section lists every span, attribute and event, and
+`typescript/src/__tests__/readme.test.ts` fails until a new one is named there. The same test pins the
+README's configuration tables to the types, its defaults and limits to the constants, and its index
+commands to `typescript/src/index-specs.ts`. No em dash anywhere under `typescript/`, nor in this file or
+`CONTRIBUTING.md`; the conventions test checks.
+
+An error or log message is at most two sentences: what is wrong, naming the key and the value, then what
+to do. Tests assert the error class and the facts in a message, never a whole sentence. A comment states
+a constraint or a non-obvious reason in one or two lines, and TSDoc is one summary line plus tags.
 
 ## What not to do
 
