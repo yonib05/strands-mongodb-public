@@ -5,8 +5,7 @@ import { DEFAULT_OVERSAMPLING_FACTOR, type VectorMode } from './types.js'
 /** Rank constant the server applies inside `$rankFusion`, never sent. A fused score is a sum of `1 / (rank + 60)`. */
 export const RANK_FUSION_PENALTY = 60
 
-// The three `$meta` names are not interchangeable: a crossed name can error or silently project no score.
-/** `$meta` name for a `$vectorSearch` score. */
+/** `$meta` name for a `$vectorSearch` score. A crossed name can error or silently project no score. */
 export const VECTOR_SCORE_META = 'vectorSearchScore'
 
 /** `$meta` name for a `$rankFusion` score, which `$rankFusion` does not project on its own. */

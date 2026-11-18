@@ -1,6 +1,6 @@
 import type { Logger } from '@strands-agents/sdk'
 
-/** Every event name this package logs. All but `rank_fusion_probe_failed` are also the Python package's. */
+/** Every event name logged. All but `rank_fusion_probe_failed` are also the Python package's. */
 export type LogEvent =
   | 'retry_writes_disabled'
   | 'reserved_key_collision'

@@ -2,9 +2,9 @@ import { Buffer } from 'node:buffer'
 import { inspect } from 'node:util'
 import { trace } from '@opentelemetry/api'
 import type { Logger } from '@strands-agents/sdk'
-import type { MongoClient, MongoClientOptions } from 'mongodb'
+import type { Collection, MongoClient, MongoClientOptions } from 'mongodb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ConstructedMongoClient, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
+import { ConstructedMongoClient, FakeCollection, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
 import { recordSpans } from '../__fixtures__/spans.js'
 import { close, type Connection, DRIVER_NAME, resolve } from '../client.js'
 import type { MongoDBConfig } from '../types.js'
@@ -237,6 +237,36 @@ describe('resolve', () => {
 
       expect(connection.capabilities).toBeUndefined()
       expect(connection.binaryKeys).toEqual(new Set())
+    })
+
+    it('probes the deployment once and hands every later caller the same answer', async () => {
+      const connection = track({ database: 'appdb', connectionString: uri() })
+      const collection = new FakeCollection('appdb', 'memory')
+
+      const first = await connection.probe(collection as unknown as Collection, silentLogger())
+      const second = await connection.probe(collection as unknown as Collection, silentLogger())
+
+      expect(first).toEqual({ search: true, rankFusion: true })
+      expect(second).toBe(first)
+      expect(connection.capabilities).toBe(first)
+      expect(collection.db.commandCalls).toHaveLength(1)
+      expect(collection.searchIndexReads).toBe(1)
+    })
+
+    it('caches a binary collation only once the collection exists to be read', async () => {
+      const connection = track({ database: 'appdb', connectionString: uri() })
+      const collection = new FakeCollection('appdb', 'memory')
+      const driver = collection as unknown as Collection
+
+      await connection.requireBinaryKeys(driver)
+      expect(connection.binaryKeys).toEqual(new Set())
+
+      collection.setCollation(undefined)
+      await connection.requireBinaryKeys(driver)
+      await connection.requireBinaryKeys(driver)
+
+      expect(connection.binaryKeys).toEqual(new Set(['appdb.memory']))
+      expect(collection.db.listCollectionsCalls).toHaveLength(2)
     })
   })
 
