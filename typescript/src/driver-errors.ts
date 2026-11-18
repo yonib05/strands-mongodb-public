@@ -1,5 +1,5 @@
 import { StorageError } from '@strands-agents/sdk'
-import { type Collection, MongoServerError, MongoTopologyClosedError } from 'mongodb'
+import { type Collection, MongoError, MongoServerError, MongoTopologyClosedError } from 'mongodb'
 
 /** Server code for a namespace that does not exist. Not an error when reading indexes. */
 export const COLLECTION_ABSENT = 26
@@ -53,12 +53,13 @@ export function failure(what: string, error: unknown): StorageError {
  * @param work - The pending driver call
  * @param what - What is being done, for the message
  * @returns Whatever `work` resolves to
- * @throws StorageError if `work` rejects
+ * @throws StorageError if `work` rejects with a driver error; anything else is rethrown as it is
  */
 export async function guard<T>(work: Promise<T>, what: string): Promise<T> {
   try {
     return await work
   } catch (error) {
+    if (!(error instanceof MongoError)) throw error
     throw failure(what, error)
   }
 }
