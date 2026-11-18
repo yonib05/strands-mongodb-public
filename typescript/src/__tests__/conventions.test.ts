@@ -12,6 +12,7 @@ const UNWALKED_DIRECTORIES: ReadonlySet<string> = new Set([
   'node_modules',
   'dist',
   'coverage',
+  '.vitest-results',
   '.venv',
   '.pytest_cache',
   '.mypy_cache',
@@ -20,7 +21,7 @@ const UNWALKED_DIRECTORIES: ReadonlySet<string> = new Set([
 ])
 
 // Generated or local files nobody writes by hand.
-const UNREAD_FILES: ReadonlySet<string> = new Set(['package-lock.json', '.env', '.vitest-results.json'])
+const UNREAD_FILES: ReadonlySet<string> = new Set(['package-lock.json', '.env'])
 
 const ROOT_DOCUMENTS = ['AGENTS.md', 'CONTRIBUTING.md'].map((name) => join(REPO_ROOT, name))
 

@@ -2,7 +2,7 @@ node_modules/
 dist/
 coverage/
 .env
-.vitest-results.json
+.vitest-results/
 *.tgz
 # The root .gitignore drops every build/ directory for Python.
 !test/build/

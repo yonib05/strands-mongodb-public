@@ -185,10 +185,12 @@ same gotcha follows, and the same opt-out:
 MONGODB_URI= MONGODB_ATLAS_URI= MONGODB_AUTOEMBED_URI= npm test
 ```
 
-`test:gate:release` is a script, not a vitest project. Every run records its results per project in
-`.vitest-results.json`, and the script fails unless each release-gate item has a passing test in the
-`contract` or `integration` project. A filtered run of either replaces that project's results with the
-subset, so the strict gate then fails until the tier runs in full. `npm run check` deletes the file first.
+`test:gate:release` is a script, not a vitest project. A run of the `contract` or `integration` project
+records its results, with the commit it tested, in `.vitest-results/<project>.json`. The script fails
+unless each release-gate item has a passing test there, and refuses results from another commit or from
+a modified tree, naming the tier to rerun. A filtered run replaces that project's results with the
+subset, so the strict gate then fails until the tier runs in full. `npm run check` deletes the directory
+first.
 
 Each tier writes to a database named `strands_mongodb_<tier>` and drops what it created. One Atlas
 cluster in all three variables runs every tier but skips the tests of a missing capability. Three

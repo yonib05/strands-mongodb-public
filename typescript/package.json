@@ -44,7 +44,7 @@
     "test:docs": "vitest run --project docs",
     "test:gate": "vitest run --project gate",
     "test:gate:release": "tsx test/gate/release.ts",
-    "check": "node -e \"fs.rmSync('.vitest-results.json',{force:true})\" && npm run format:check && npm run lint && npm run type-check && npm run test:coverage && npm run test:docs && npm run test:gate",
+    "check": "node -e \"fs.rmSync('.vitest-results',{recursive:true,force:true})\" && npm run format:check && npm run lint && npm run type-check && npm run test:coverage && npm run test:docs && npm run test:gate",
     "prepack": "npm run build"
   },
   "keywords": [

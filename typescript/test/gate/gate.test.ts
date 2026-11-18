@@ -3,8 +3,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { CHECKLIST, RELEASE_GATE, type Item } from './checklist.js'
-import type { RecordedTest } from './reporter.js'
-import { leadingIds, REAL_DEPLOYMENT_PROJECTS, unproven } from './verdict.js'
+import { REAL_DEPLOYMENT_PROJECTS, type RecordedRun, type RecordedTest } from './reporter.js'
+import { leadingIds, stale, unproven } from './verdict.js'
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const TEST_ROOTS = ['src/__tests__', 'test/integ', 'test/docs']
@@ -79,28 +79,36 @@ describe('the release gate verdict', () => {
     titles,
     state,
   })
+  const run = (...tests: RecordedTest[]): RecordedRun => ({ commit: 'a'.repeat(40), dirty: false, tests })
 
   it('is clean when a contract or integration test for the item passed, skipped siblings or not', () => {
-    expect(unproven({ contract: [recorded('passed'), recorded('skipped')] }, [ITEM])).toEqual([])
-    expect(unproven({ integration: [recorded('passed', ['AT-999: a group', 'a member'])] }, [ITEM])).toEqual([])
-  })
-
-  it('does not count a test that passed anywhere else', () => {
-    expect(unproven({ unit: [recorded('passed')], interop: [recorded('passed')] }, [ITEM])).toEqual([
-      'item 1 (AT-999) is unverified on a real deployment: no test for it ran',
-    ])
+    expect(unproven({ contract: run(recorded('passed'), recorded('skipped')) }, [ITEM])).toEqual([])
+    expect(unproven({ integration: run(recorded('passed', ['AT-999: a group', 'a member'])) }, [ITEM])).toEqual([])
   })
 
   it('fails an item whose every test was skipped, or that has no results at all', () => {
-    expect(unproven({ contract: [recorded('skipped')] }, [ITEM])).toEqual([
+    expect(unproven({ contract: run(recorded('skipped')) }, [ITEM])).toEqual([
       'item 1 (AT-999) is unverified on a real deployment: every test for it was skipped: t.test.ts > AT-999: one',
     ])
     expect(unproven({}, [ITEM])).toHaveLength(1)
   })
 
+  it('refuses a run from another commit or from a modified tree, naming the project to rerun', () => {
+    const head = 'b'.repeat(40)
+    const current = { ...run(), commit: head }
+
+    expect(stale({ contract: current, integration: current }, head)).toEqual([])
+    expect(stale({ contract: run(), integration: current }, head)).toEqual([
+      'the contract results are from commit aaaaaaa, not commit bbbbbbb: rerun npm run test:contract',
+    ])
+    expect(stale({ integration: { ...current, dirty: true } }, head)).toEqual([
+      'the integration results are from a modified tree at bbbbbbb, not commit bbbbbbb: rerun npm run test:integration',
+    ])
+  })
+
   it('fails an item with a failed or unfinished test, even beside a passing one', () => {
     for (const state of ['failed', 'pending'] as const) {
-      expect(unproven({ contract: [recorded('passed'), recorded(state, ['AT-999: two'])] }, [ITEM])).toEqual([
+      expect(unproven({ contract: run(recorded('passed'), recorded(state, ['AT-999: two'])) }, [ITEM])).toEqual([
         'item 1 (AT-999) did not pass: t.test.ts > AT-999: two',
       ])
     }

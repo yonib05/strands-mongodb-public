@@ -1,8 +1,5 @@
 import type { Item } from './checklist.js'
-import type { RecordedTest, Results } from './reporter.js'
-
-/** The projects whose tests run against a real deployment; only these prove a release-gate item. */
-export const REAL_DEPLOYMENT_PROJECTS = ['contract', 'integration'] as const
+import { REAL_DEPLOYMENT_PROJECTS, type RecordedTest, type Results } from './reporter.js'
 
 const LEADING_IDS = /^(?:AT|CH|MP)-\d{1,3}[a-z]*(?:,\s*(?:AT|CH|MP)-\d{1,3}[a-z]*)*/
 
@@ -14,14 +11,30 @@ export function leadingIds(title: string): string[] {
 const label = (test: RecordedTest) => `${test.file} > ${test.titles.join(' > ')}`
 
 /**
+ * Refuses recorded runs that did not test the commit being released.
+ *
+ * @param results - The recorded runs
+ * @param head - The commit checked out now
+ * @returns One line per run from another commit or from a modified tree, naming the project to rerun
+ */
+export function stale(results: Results, head: string): string[] {
+  return REAL_DEPLOYMENT_PROJECTS.flatMap((project) => {
+    const run = results[project]
+    if (run === undefined || (run.commit === head && !run.dirty)) return []
+    const tested = `${run.dirty ? 'a modified tree at' : 'commit'} ${run.commit.slice(0, 7)}`
+    return [`the ${project} results are from ${tested}, not commit ${head.slice(0, 7)}: rerun npm run test:${project}`]
+  })
+}
+
+/**
  * Judges the release gate over the recorded real-deployment runs.
  *
- * @param results - The merged results file
+ * @param results - The recorded runs
  * @param items - The gate items
  * @returns One line per item that is not proven: a carrier failed, or no carrier of one of its ids passed
  */
 export function unproven(results: Results, items: readonly Item[]): string[] {
-  const tests = REAL_DEPLOYMENT_PROJECTS.flatMap((project) => results[project] ?? [])
+  const tests = REAL_DEPLOYMENT_PROJECTS.flatMap((project) => results[project]?.tests ?? [])
   return items.flatMap((item) =>
     item.ids.flatMap((id) => {
       const carriers = tests.filter((test) => test.titles.some((title) => leadingIds(title).includes(id)))
