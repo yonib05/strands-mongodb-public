@@ -188,7 +188,14 @@ describeTier('contract', 'memory store', () => {
 
   it('AT-053a: initialize twice warns once where there is no search, and prepares no tier', async (context) => {
     if (capabilities.search) context.skip(HAS_SEARCH)
-    const { store: facts, logger, name } = store('no_search_warning')
+    // Its own connection identity: the warning comes from the probe, which runs once per connection.
+    const {
+      store: facts,
+      logger,
+      name,
+    } = store('no_search_warning', {
+      connection: { clientOptions: { appName: 'no-search-warning' } },
+    })
 
     await facts.initialize()
     await facts.initialize()
