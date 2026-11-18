@@ -27,6 +27,16 @@ export function recordSpans(): InMemorySpanExporter {
   return exporter
 }
 
+/** The tiers on the most recent span that reported `strands_mongodb.search.tiers`. */
+export function reportedTiers(exporter: InMemorySpanExporter): string[] {
+  const reported = exporter
+    .getFinishedSpans()
+    .map((finished) => finished.attributes['strands_mongodb.search.tiers'])
+    .filter((tiers) => tiers !== undefined)
+  expect(reported.length).toBeGreaterThan(0)
+  return String(reported.at(-1)).split(',').filter(Boolean)
+}
+
 /** Every finished span called `name`. */
 export function spansNamed(exporter: InMemorySpanExporter, name: string): ReadableSpan[] {
   return exporter.getFinishedSpans().filter((finished) => finished.name === name)

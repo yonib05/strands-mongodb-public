@@ -11,6 +11,7 @@ import {
   MongoDBVectorSearchStrategy,
   type MongoDBVectorSearchStrategyOptions,
 } from '../vector-search.js'
+import { errorOf } from '../__fixtures__/errors.js'
 
 vi.mock('mongodb', async (importOriginal) => ({
   ...(await importOriginal<typeof import('mongodb')>()),
@@ -65,15 +66,6 @@ function stored(collection: FakeCollection, _id: string): Document {
   const found = collection.docs.find((doc) => doc._id === _id)
   expect(found).toBeDefined()
   return found!
-}
-
-function errorOf(run: () => unknown): Error {
-  try {
-    run()
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a throw')
 }
 
 describe('MongoDBVectorSearchStrategy', () => {

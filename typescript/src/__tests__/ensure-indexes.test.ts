@@ -1,6 +1,6 @@
 import { SpanStatusCode } from '@opentelemetry/api'
 import { type Logger, StorageError } from '@strands-agents/sdk'
-import { type Collection, type Document, type IndexDescription, MongoServerError } from 'mongodb'
+import { type Collection, type Document, type IndexDescription } from 'mongodb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FakeCollection } from '../__fixtures__/fake-mongo.js'
 import { oneSpan, recordSpans, spansNamed } from '../__fixtures__/spans.js'
@@ -14,6 +14,7 @@ import {
   storageSpecs,
 } from '../index-specs.js'
 import type { MongoDBConfig } from '../types.js'
+import { rejectionOf, serverError } from '../__fixtures__/errors.js'
 
 const MEMORY_ROWS = ['3', '4', '7']
 const FOLDING = { locale: 'en', strength: 2 }
@@ -27,9 +28,6 @@ function silentLogger(): Logger {
 }
 
 /** A server error carrying a code, as the driver raises one. */
-function serverError(code: number, message = 'probed'): MongoServerError {
-  return new MongoServerError({ message, code })
-}
 
 function fakeCollection(name = 'memory'): FakeCollection {
   return new FakeCollection('testdb', name)
@@ -37,15 +35,6 @@ function fakeCollection(name = 'memory'): FakeCollection {
 
 function driver(fake: FakeCollection): Collection {
   return fake as unknown as Collection
-}
-
-async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
-  try {
-    await pending
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a rejection')
 }
 
 /** One entry as `listIndexes` reports it, including the `v` nobody asked for. */
@@ -403,6 +392,7 @@ describe('ensure', () => {
 
     it('tolerates a collection that already exists (code 48)', async () => {
       const collection = fakeCollection()
+      collection.exists = true
       collection.db.createCollectionError = serverError(48, 'NamespaceExists')
 
       await ensureSearch(collection, [vectorSpec()])

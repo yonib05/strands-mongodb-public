@@ -4,11 +4,12 @@ import { trace } from '@opentelemetry/api'
 import type { Logger } from '@strands-agents/sdk'
 import type { Collection, MongoClient, MongoClientOptions } from 'mongodb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ConstructedMongoClient, FakeCollection, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
+import { ConstructedMongoClient, FakeCollection, FakeMongoClient, freshUri } from '../__fixtures__/fake-mongo.js'
 import { recordSpans } from '../__fixtures__/spans.js'
 import { close, type Connection, DRIVER_NAME, resolve } from '../client.js'
 import type { MongoDBConfig } from '../types.js'
 import { PACKAGE_VERSION } from '../version.js'
+import { errorOf } from '../__fixtures__/errors.js'
 
 vi.mock('mongodb', async () => ({
   MongoClient: (await import('../__fixtures__/fake-mongo.js')).ConstructedMongoClient,
@@ -26,14 +27,6 @@ afterEach(async () => {
   await Promise.all(resolved.splice(0).map((config) => close(config)))
 })
 
-let port = 0
-
-// A fresh address per call, so registry entries never leak between tests.
-function uri(query = ''): string {
-  port += 1
-  return `mongodb://127.0.0.1:${port}/${query}`
-}
-
 function silentLogger(): Logger {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 }
@@ -50,15 +43,6 @@ function injected(options: { retryWrites?: boolean } = {}): FakeMongoClient & Mo
 function built(connection: Connection): ConstructedMongoClient {
   expect(connection.client).toBeInstanceOf(ConstructedMongoClient)
   return connection.client as unknown as ConstructedMongoClient
-}
-
-function errorOf(run: () => unknown): Error {
-  try {
-    run()
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a throw')
 }
 
 function warnings(logger: Logger): string[] {
@@ -101,11 +85,11 @@ describe('resolve', () => {
 
     it('treats closing a config that never resolved as a no-op', async () => {
       await expect(close({ database: 'appdb' })).resolves.toBeUndefined()
-      await expect(close({ database: 'appdb', connectionString: uri() })).resolves.toBeUndefined()
+      await expect(close({ database: 'appdb', connectionString: freshUri() })).resolves.toBeUndefined()
     })
 
     it('closes a client it constructed exactly once', async () => {
-      const config = { database: 'appdb', connectionString: uri() }
+      const config = { database: 'appdb', connectionString: freshUri() }
       const client = built(resolve(config))
 
       await Promise.all([close(config), close(config)])
@@ -133,7 +117,7 @@ describe('resolve', () => {
 
   describe('AT-012: one client per connection identity', () => {
     it('returns one connection for a hundred resolutions of one config', () => {
-      const config = { database: 'appdb', connectionString: uri() }
+      const config = { database: 'appdb', connectionString: freshUri() }
 
       const connections = new Set(Array.from({ length: 100 }, () => track(config)))
 
@@ -142,7 +126,7 @@ describe('resolve', () => {
     })
 
     it('shares across separate configs with the same string, whatever their database', () => {
-      const connectionString = uri()
+      const connectionString = freshUri()
 
       const first = track({ database: 'appdb', connectionString })
       const second = track({ database: 'otherdb', connectionString })
@@ -151,14 +135,14 @@ describe('resolve', () => {
     })
 
     it('does not share across different connection strings', () => {
-      const first = track({ database: 'appdb', connectionString: uri() })
-      const second = track({ database: 'appdb', connectionString: uri() })
+      const first = track({ database: 'appdb', connectionString: freshUri() })
+      const second = track({ database: 'appdb', connectionString: freshUri() })
 
       expect(second.client).not.toBe(first.client)
     })
 
     it('does not share across different client options, and each client gets its own', () => {
-      const connectionString = uri()
+      const connectionString = freshUri()
 
       const patient = built(track({ database: 'appdb', connectionString, clientOptions: { connectTimeoutMS: 20000 } }))
       const impatient = built(track({ database: 'appdb', connectionString, clientOptions: { connectTimeoutMS: 500 } }))
@@ -169,7 +153,7 @@ describe('resolve', () => {
     })
 
     it('keys empty and absent client options the same', () => {
-      const connectionString = uri()
+      const connectionString = freshUri()
 
       const absent = track({ database: 'appdb', connectionString })
       const empty = track({ database: 'appdb', connectionString, clientOptions: {} })
@@ -178,7 +162,7 @@ describe('resolve', () => {
     })
 
     it('ignores the key order of client options', () => {
-      const connectionString = uri()
+      const connectionString = freshUri()
 
       const first = track({
         database: 'appdb',
@@ -195,7 +179,7 @@ describe('resolve', () => {
     })
 
     it('keys distinct non-JSON option values distinctly and one value the same', () => {
-      const connectionString = uri()
+      const connectionString = freshUri()
       const options = (): MongoClientOptions => ({ ca: Buffer.from('pem') })
       const sharedOptions = options()
 
@@ -223,7 +207,7 @@ describe('resolve', () => {
     })
 
     it('opens a fresh client after close', async () => {
-      const config = { database: 'appdb', connectionString: uri() }
+      const config = { database: 'appdb', connectionString: freshUri() }
       const first = resolve(config)
 
       await close(config)
@@ -233,14 +217,14 @@ describe('resolve', () => {
     })
 
     it('starts a connection with no capabilities and an empty binary-key cache', () => {
-      const connection = track({ database: 'appdb', connectionString: uri() })
+      const connection = track({ database: 'appdb', connectionString: freshUri() })
 
       expect(connection.capabilities).toBeUndefined()
       expect(connection.binaryKeys).toEqual(new Set())
     })
 
     it('probes the deployment once and hands every later caller the same answer', async () => {
-      const connection = track({ database: 'appdb', connectionString: uri() })
+      const connection = track({ database: 'appdb', connectionString: freshUri() })
       const collection = new FakeCollection('appdb', 'memory')
 
       const first = await connection.probe(collection as unknown as Collection, silentLogger())
@@ -254,7 +238,7 @@ describe('resolve', () => {
     })
 
     it('caches a binary collation only once the collection exists to be read', async () => {
-      const connection = track({ database: 'appdb', connectionString: uri() })
+      const connection = track({ database: 'appdb', connectionString: freshUri() })
       const collection = new FakeCollection('appdb', 'memory')
       const driver = collection as unknown as Collection
 
@@ -276,7 +260,7 @@ describe('resolve', () => {
     })
 
     it('builds a client with the caller options unchanged and attributes it through appendMetadata', () => {
-      const connectionString = uri()
+      const connectionString = freshUri()
 
       const client = built(track({ database: 'appdb', connectionString, clientOptions: { appName: 'mine' } }))
 
@@ -288,7 +272,7 @@ describe('resolve', () => {
     it("keeps a caller's own driverInfo beside this package's", () => {
       const driverInfo = { name: 'my-framework', version: '2.0.0' }
 
-      const client = built(track({ database: 'appdb', connectionString: uri(), clientOptions: { driverInfo } }))
+      const client = built(track({ database: 'appdb', connectionString: freshUri(), clientOptions: { driverInfo } }))
 
       expect(client.clientOptions).toEqual({ driverInfo })
       expect(client.options.metadata.driver.name).toBe('nodejs|my-framework|Strands-MongoDB')
@@ -322,7 +306,7 @@ describe('resolve', () => {
     it('warns for a connection string disabling retries', () => {
       const logger = silentLogger()
 
-      track({ database: 'appdb', connectionString: uri('?retryWrites=false'), logger })
+      track({ database: 'appdb', connectionString: freshUri('?retryWrites=false'), logger })
 
       const [line, ...rest] = warnings(logger)
       expect(rest).toEqual([])
@@ -333,7 +317,7 @@ describe('resolve', () => {
     it('warns for client options disabling retries', () => {
       const logger = silentLogger()
 
-      track({ database: 'appdb', connectionString: uri(), clientOptions: { retryWrites: false }, logger })
+      track({ database: 'appdb', connectionString: freshUri(), clientOptions: { retryWrites: false }, logger })
 
       expect(warnings(logger)).toHaveLength(1)
     })
@@ -349,7 +333,7 @@ describe('resolve', () => {
     it('warns once per connection however many stores resolve it', () => {
       const logger = silentLogger()
       const client = injected({ retryWrites: false })
-      const constructed = { database: 'appdb', connectionString: uri('?retryWrites=false'), logger }
+      const constructed = { database: 'appdb', connectionString: freshUri('?retryWrites=false'), logger }
 
       for (let store = 0; store < 100; store += 1) {
         track(constructed)
@@ -362,7 +346,7 @@ describe('resolve', () => {
     it('warns about nothing on the default configuration', () => {
       const logger = silentLogger()
 
-      track({ database: 'appdb', connectionString: uri(), logger })
+      track({ database: 'appdb', connectionString: freshUri(), logger })
       track({ database: 'appdb', client: injected(), logger })
 
       expect(logger.warn).not.toHaveBeenCalled()
@@ -371,7 +355,7 @@ describe('resolve', () => {
     it('falls back to console.warn without a logger', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-      track({ database: 'appdb', connectionString: uri('?retryWrites=false') })
+      track({ database: 'appdb', connectionString: freshUri('?retryWrites=false') })
 
       expect(warn).toHaveBeenCalledTimes(1)
       expect(String(warn.mock.calls[0]?.[0])).toContain('event=retry_writes_disabled')
@@ -433,7 +417,7 @@ describe('resolve', () => {
 
 describe('Connection.locked', () => {
   it('runs one call at a time, in call order', async () => {
-    const connection = track({ database: 'appdb', connectionString: uri() })
+    const connection = track({ database: 'appdb', connectionString: freshUri() })
     const order: string[] = []
     let release: () => void = () => {}
     const gate = new Promise<void>((resolveGate) => {
@@ -461,7 +445,7 @@ describe('Connection.locked', () => {
   })
 
   it('keeps serving callers after one rejects', async () => {
-    const connection = track({ database: 'appdb', connectionString: uri() })
+    const connection = track({ database: 'appdb', connectionString: freshUri() })
     const failure = new Error('boom')
 
     const first = connection.locked(async () => {

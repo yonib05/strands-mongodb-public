@@ -19,17 +19,9 @@ import {
   vectorMode,
 } from '../index-specs.js'
 import type { MongoDBConfig, VectorMode, VectorSimilarity } from '../types.js'
+import { errorOf } from '../__fixtures__/errors.js'
 
 const MEMORY_ROWS = ['3', '4', '7']
-
-function errorOf(run: () => unknown): Error {
-  try {
-    run()
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected an error')
-}
 
 function filterPaths(definition: Document): string[] {
   return (definition.fields as Document[]).filter((field) => field.type === 'filter').map((field) => field.path)

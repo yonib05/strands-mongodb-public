@@ -10,7 +10,7 @@ import {
 } from '@strands-agents/sdk/storage/search'
 import { Binary, BSON, type Document, type MongoClient, MongoNetworkTimeoutError } from 'mongodb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConstructedMongoClient, FakeCollection, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
+import { ConstructedMongoClient, FakeCollection, FakeMongoClient, freshUri } from '../__fixtures__/fake-mongo.js'
 import { oneSpan, recordSpans, spansNamed } from '../__fixtures__/spans.js'
 import { close } from '../client.js'
 import { SearchIndexNotReady } from '../ensure-indexes.js'
@@ -18,6 +18,7 @@ import { EXPIRES_FIELD, READY_TIMEOUT_SECONDS, SearchIndexSpec } from '../index-
 import { NAMESPACED, successor } from '../keys.js'
 import { MAX_DOCUMENT_BYTES, MAX_KEY_BYTES, MongoDBStorage, type MongoDBStorageOptions } from '../storage.js'
 import type { MongoDBConfig } from '../types.js'
+import { errorOf, rejectionOf } from '../__fixtures__/errors.js'
 
 vi.mock('mongodb', async (importOriginal) => ({
   ...(await importOriginal<typeof import('mongodb')>()),
@@ -49,14 +50,6 @@ const WORD = '[\\p{L}\\p{N}_]+'
 const DOCUMENT_OVERHEAD_BYTES = 46
 
 const PAYLOAD = new Uint8Array(Buffer.from('payload'))
-
-let port = 0
-
-// A fresh address per call, so registry entries never leak between tests.
-function uri(): string {
-  port += 1
-  return `mongodb://127.0.0.1:${port}/`
-}
 
 interface Setup {
   storage: MongoDBStorage
@@ -108,24 +101,6 @@ function document(collection: FakeCollection, _id: string): Document {
 
 function filterOf(collection: FakeCollection, index = 0): Document {
   return collection.calls[index]!.args[0] as Document
-}
-
-async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
-  try {
-    await pending
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a rejection')
-}
-
-function errorOf(run: () => unknown): Error {
-  try {
-    run()
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a throw')
 }
 
 function strings(value: unknown): string[] {
@@ -291,7 +266,7 @@ describe('MongoDBStorage', () => {
     })
 
     it('shares the connection, building no second client', async () => {
-      const config = { database: 'appdb', connectionString: uri() }
+      const config = { database: 'appdb', connectionString: freshUri() }
       const storage = new MongoDBStorage(config)
 
       storage.namespace('tenant-a')
@@ -1375,7 +1350,7 @@ describe('MongoDBStorage', () => {
 
   describe('close', () => {
     it('releases a constructed client once and leaves an injected one open', async () => {
-      const constructed = new MongoDBStorage({ database: 'appdb', connectionString: uri() })
+      const constructed = new MongoDBStorage({ database: 'appdb', connectionString: freshUri() })
       const { storage, client } = setup()
 
       await constructed.close()

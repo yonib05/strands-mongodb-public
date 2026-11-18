@@ -15,6 +15,7 @@ import {
   vectorStages,
 } from '../pipeline.js'
 import { DEFAULT_OVERSAMPLING_FACTOR, type VectorMode, type VectorSimilarity } from '../types.js'
+import { errorOf } from '../__fixtures__/errors.js'
 
 const AUTO_EMBED_MODE: VectorMode = { autoEmbed: true, model: DEFAULT_EMBEDDING_MODEL }
 const MANUAL_MODE: VectorMode = { autoEmbed: false, dimensions: 4, similarity: 'cosine' }
@@ -22,15 +23,6 @@ const VECTOR = [1.0, 0.0, 0.0, 0.0]
 
 function names(stages: Document[]): string[] {
   return stages.map((stage) => Object.keys(stage)[0] ?? '')
-}
-
-function errorOf(run: () => unknown): Error {
-  try {
-    run()
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected an error')
 }
 
 interface FixtureMode {

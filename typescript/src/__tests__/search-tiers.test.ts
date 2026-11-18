@@ -1,5 +1,5 @@
 import { SpanStatusCode } from '@opentelemetry/api'
-import { type Logger, StorageError } from '@strands-agents/sdk'
+import { StorageError } from '@strands-agents/sdk'
 import { type Collection, MongoServerError } from 'mongodb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FakeCollection } from '../__fixtures__/fake-mongo.js'
@@ -8,6 +8,8 @@ import type { Capabilities } from '../client.js'
 import { memorySearchSpecs } from '../index-specs.js'
 import { SearchTiers, type SearchTiersOptions, TIER_RETRY_MAX_SECONDS, TIER_RETRY_SECONDS } from '../search-tiers.js'
 import type { VectorMode } from '../types.js'
+import { errorOf, rejectionOf } from '../__fixtures__/errors.js'
+import { type Level, RecordingLogger } from '../__fixtures__/logger.js'
 
 const exporter = recordSpans()
 
@@ -21,25 +23,6 @@ const QUERY_VECTOR = [1, 0, 0, 0]
 
 const [VECTOR_SPEC, TEXT_SPEC] = memorySearchSpecs({ database: 'appdb' })
 const SPECS = { vector_index: VECTOR_SPEC, text_index: TEXT_SPEC }
-
-type Level = 'debug' | 'info' | 'warn' | 'error'
-
-// Keeps every line in call order, so the interleaving of info and warn lines can be asserted.
-class RecordingLogger implements Logger {
-  readonly records: Array<[Level, string]> = []
-  debug = (...args: unknown[]): void => this.record('debug', args)
-  info = (...args: unknown[]): void => this.record('info', args)
-  warn = (...args: unknown[]): void => this.record('warn', args)
-  error = (...args: unknown[]): void => this.record('error', args)
-
-  lines(level: Level): string[] {
-    return this.records.filter(([at]) => at === level).map(([, line]) => line)
-  }
-
-  private record(level: Level, args: unknown[]): void {
-    this.records.push([level, args.map(String).join(' ')])
-  }
-}
 
 interface Setup {
   tiers: SearchTiers
@@ -80,24 +63,6 @@ function skipped(logger: RecordingLogger): Array<[Level, string, string]> {
     const event = /event=(tier_building|tier_unavailable)/.exec(line)
     return event ? [[level, event[1]!, /tier=(\w+)/.exec(line)?.[1] ?? '']] : []
   })
-}
-
-async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
-  try {
-    await pending
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a rejection')
-}
-
-function errorOf(run: () => unknown): Error {
-  try {
-    run()
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a throw')
 }
 
 afterEach(() => {

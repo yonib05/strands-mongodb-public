@@ -182,6 +182,14 @@ function runPipeline(docs: Document[], pipeline: Document[]): Document[] {
   }, docs)
 }
 
+let port = 0
+
+/** A fresh address per call, so registry entries never leak between tests. */
+export function freshUri(query = ''): string {
+  port += 1
+  return `mongodb://127.0.0.1:${port}/${query}`
+}
+
 /** One recorded driver call: the method name and the positional arguments it received. */
 export interface FakeCall {
   method: string
@@ -244,7 +252,6 @@ export class FakeCursor {
     return this
   }
 
-  // The failure comes after the documents, as a connection dying mid-scan would surface.
   async toArray(): Promise<Document[]> {
     if (this.drainFailure !== undefined) throw this.drainFailure
     const sorted = sortBy(this.docs.map(clone), this.sortSpec)
@@ -300,6 +307,12 @@ export class FakeCollection {
     if (this.failure !== undefined) throw this.failure
   }
 
+  // `find` and `aggregate` never throw in the driver: a dead connection surfaces when the cursor drains.
+  private recordCursor(method: string, ...args: unknown[]): Error | undefined {
+    this.calls.push({ method, args })
+    return this.failure
+  }
+
   /** Marks the collection present with the given default collation, as `createCollection` would. */
   setCollation(collation: Document | undefined): void {
     this.exists = true
@@ -350,6 +363,8 @@ export class FakeCollection {
   }
 
   async createSearchIndex(description: SearchIndexDescription): Promise<string> {
+    // The server answers code 26 here; the package must create the collection first.
+    if (!this.exists) throw new Error(`FakeCollection: createSearchIndex on absent ${this.collectionName}`)
     this.createdSearchIndexes.push(description)
     this.addSearchIndex(description)
     return description.name ?? 'default'
@@ -432,23 +447,30 @@ export class FakeCollection {
   }
 
   find(filter: Filter = {}, options: { projection?: Document } = {}): FakeCursor {
-    this.record('find', filter, options)
+    const failure = this.recordCursor('find', filter, options)
     const found = this.docs.filter((candidate) => matches(candidate, filter))
-    return new FakeCursor(found, options.projection, this.drainFailure)
+    return new FakeCursor(found, options.projection, failure ?? this.drainFailure)
   }
 
   /** Answers a search pipeline with `searchResults`; runs any other over the stored documents. */
   aggregate(pipeline: Document[], options?: Document): { toArray(): Promise<Document[]> } {
-    this.record('aggregate', pipeline, ...(options === undefined ? [] : [options]))
+    const failure = this.recordCursor('aggregate', pipeline, ...(options === undefined ? [] : [options]))
     return {
-      toArray: async () =>
-        isSearchPipeline(pipeline) ? this.searchResults.map(clone) : runPipeline(this.docs.map(clone), pipeline),
+      toArray: async () => {
+        if (failure !== undefined) throw failure
+        return isSearchPipeline(pipeline) ? this.searchResults.map(clone) : runPipeline(this.docs.map(clone), pipeline)
+      },
     }
   }
 
   listIndexes(): { toArray(): Promise<IndexDescription[]> } {
-    this.record('listIndexes')
-    return { toArray: async () => structuredClone(this.indexes) }
+    const failure = this.recordCursor('listIndexes')
+    return {
+      toArray: async () => {
+        if (failure !== undefined) throw failure
+        return structuredClone(this.indexes)
+      },
+    }
   }
 
   async createIndexes(specs: IndexDescription[]): Promise<string[]> {

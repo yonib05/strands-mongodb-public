@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto'
 import { inspect } from 'node:util'
 import { SpanStatusCode } from '@opentelemetry/api'
-import { type Logger, type MemoryEntry, MemoryManager, type MemoryStore, StorageError } from '@strands-agents/sdk'
+import { type MemoryEntry, MemoryManager, type MemoryStore, StorageError } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
-import { type Document, type MongoClient, MongoNetworkTimeoutError, MongoServerError, ObjectId } from 'mongodb'
+import { type Document, type MongoClient, MongoNetworkTimeoutError, ObjectId } from 'mongodb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ConstructedMongoClient, FakeCollection, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
-import { oneSpan, recordSpans, spansNamed } from '../__fixtures__/spans.js'
+import { ConstructedMongoClient, FakeCollection, FakeMongoClient, freshUri } from '../__fixtures__/fake-mongo.js'
+import { oneSpan, recordSpans, reportedTiers, spansNamed } from '../__fixtures__/spans.js'
 import { close, resolve } from '../client.js'
 import { SearchIndexNotReady } from '../ensure-indexes.js'
 import { CONTENT_FIELD, EXPIRES_FIELD, memorySearchSpecs, READY_TIMEOUT_SECONDS, VECTOR_FIELD } from '../index-specs.js'
@@ -19,6 +19,8 @@ import {
   type MongoDBMemoryStoreConfig,
   RESERVED_METADATA_KEYS,
 } from '../types.js'
+import { errorOf, rejectionOf, serverError } from '../__fixtures__/errors.js'
+import { RecordingLogger } from '../__fixtures__/logger.js'
 
 vi.mock('mongodb', async (importOriginal) => ({
   ...(await importOriginal<typeof import('mongodb')>()),
@@ -46,37 +48,6 @@ const SPECS = Object.fromEntries(memorySearchSpecs({ database: 'appdb' }).map((s
 const QUERY_VECTOR = [1, 0, 0, 0]
 
 const CONTENT = 'the user prefers dark mode'
-
-let port = 0
-
-// A fresh address per call, so registry entries never leak between tests.
-function uri(): string {
-  port += 1
-  return `mongodb://127.0.0.1:${port}/`
-}
-
-type Level = 'debug' | 'info' | 'warn' | 'error'
-
-// Keeps every line in call order, so the interleaving of info and warn lines can be asserted.
-class RecordingLogger implements Logger {
-  readonly records: Array<[Level, string]> = []
-  debug = (...args: unknown[]): void => this.record('debug', args)
-  info = (...args: unknown[]): void => this.record('info', args)
-  warn = (...args: unknown[]): void => this.record('warn', args)
-  error = (...args: unknown[]): void => this.record('error', args)
-
-  lines(level: Level): string[] {
-    return this.records.filter(([at]) => at === level).map(([, line]) => line)
-  }
-
-  private record(level: Level, args: unknown[]): void {
-    this.records.push([level, args.map(String).join(' ')])
-  }
-}
-
-function serverError(code: number, message = 'probed'): MongoServerError {
-  return new MongoServerError({ message, code })
-}
 
 interface Setup {
   store: MongoDBMemoryStore
@@ -127,16 +98,6 @@ function reporting(collection: FakeCollection, status: 'PENDING' | 'FAILED', ...
   for (const name of names) collection.addSearchIndex(SPECS[name]!.toDescription(), status)
 }
 
-// The tiers the most recent initialize or search span reported.
-function reportedTiers(): string[] {
-  const reported = exporter
-    .getFinishedSpans()
-    .map((span) => span.attributes['strands_mongodb.search.tiers'])
-    .filter((tiers) => tiers !== undefined)
-  expect(reported.length).toBeGreaterThan(0)
-  return String(reported.at(-1)).split(',').filter(Boolean)
-}
-
 function createdSearchIndexes(collection: FakeCollection): string[] {
   return collection.createdSearchIndexes.map((index) => String(index.name))
 }
@@ -150,24 +111,6 @@ function expectUntouched(collection: FakeCollection): void {
   expect(collection.calls).toEqual([])
   expect(collection.db.listCollectionsCalls).toEqual([])
   expect(collection.searchIndexReads).toBe(0)
-}
-
-async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
-  try {
-    await pending
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a rejection')
-}
-
-function errorOf(run: () => unknown): Error {
-  try {
-    run()
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a throw')
 }
 
 // A four-dimension embedder over `dark`, `mode`, `coffee` and `tea`, recording what it embeds.
@@ -249,7 +192,7 @@ describe('MongoDBMemoryStore', () => {
       const error = errorOf(
         () =>
           new MongoDBMemoryStore({
-            config: { database: 'appdb', connectionString: uri() },
+            config: { database: 'appdb', connectionString: freshUri() },
           } as unknown as MongoDBMemoryStoreConfig)
       )
 
@@ -270,7 +213,7 @@ describe('MongoDBMemoryStore', () => {
         () =>
           new MongoDBMemoryStore({
             name: 'facts',
-            config: { database: 'appdb', connectionString: uri() },
+            config: { database: 'appdb', connectionString: freshUri() },
             ...fields,
           } as unknown as MongoDBMemoryStoreConfig)
       )
@@ -286,7 +229,7 @@ describe('MongoDBMemoryStore', () => {
         () =>
           new MongoDBMemoryStore({
             name: 'facts',
-            config: { connectionString: uri() } as unknown as MongoDBConfig,
+            config: { connectionString: freshUri() } as unknown as MongoDBConfig,
           })
       )
 
@@ -303,7 +246,7 @@ describe('MongoDBMemoryStore', () => {
     })
 
     it('AT-226: throws a RangeError for a negative ttlSeconds and registers no connection', () => {
-      const connection = { database: 'appdb', connectionString: uri() }
+      const connection = { database: 'appdb', connectionString: freshUri() }
 
       const error = errorOf(() => new MongoDBMemoryStore({ name: 'facts', config: connection, ttlSeconds: -1 }))
 
@@ -376,7 +319,7 @@ describe('MongoDBMemoryStore', () => {
         () =>
           new MongoDBMemoryStore({
             name: 'facts',
-            config: { database: 'appdb', connectionString: uri(), embeddingModel: 'm', ...MANUAL_VECTOR },
+            config: { database: 'appdb', connectionString: freshUri(), embeddingModel: 'm', ...MANUAL_VECTOR },
           })
       )
 
@@ -502,7 +445,7 @@ describe('MongoDBMemoryStore', () => {
 
   describe('AT-012: stores built from one config share one client', () => {
     it('builds one client for 100 memory stores', () => {
-      const connection = { database: 'appdb', connectionString: uri() }
+      const connection = { database: 'appdb', connectionString: freshUri() }
 
       for (let index = 0; index < 100; index++) new MongoDBMemoryStore({ name: `facts${index}`, config: connection })
 
@@ -510,7 +453,7 @@ describe('MongoDBMemoryStore', () => {
     })
 
     it('shares the client between a storage and a memory store', () => {
-      const connection = { database: 'appdb', connectionString: uri() }
+      const connection = { database: 'appdb', connectionString: freshUri() }
 
       new MongoDBStorage(connection)
       new MongoDBMemoryStore({ name: 'facts', config: connection })
@@ -566,7 +509,7 @@ describe('MongoDBMemoryStore', () => {
       ])
       expect(count(collection, 'createIndexes')).toBe(1)
       expect(createdSearchIndexes(collection)).toEqual(['vector_index', 'text_index'])
-      expect(reportedTiers()).toEqual(['vector', 'text'])
+      expect(reportedTiers(exporter)).toEqual(['vector', 'text'])
     })
 
     it('creates only its own index for a named search type', async () => {
@@ -575,7 +518,7 @@ describe('MongoDBMemoryStore', () => {
       await store.initialize()
 
       expect(createdSearchIndexes(collection)).toEqual(['text_index'])
-      expect(reportedTiers()).toEqual(['text'])
+      expect(reportedTiers(exporter)).toEqual(['text'])
     })
 
     it('fails, and starts over on the next call, when a named tier cannot be prepared', async () => {
@@ -608,7 +551,7 @@ describe('MongoDBMemoryStore', () => {
       expect(warnings[0]).toMatch(/\| event=no_search_setup, namespace=appdb\.memory$/)
       expect(createdSearchIndexes(collection)).toEqual([])
       expect(collection.indexes).toHaveLength(4)
-      expect(reportedTiers()).toEqual([])
+      expect(reportedTiers(exporter)).toEqual([])
       expect(resolve(config).capabilities).toEqual({ search: false, noSearchCode: NO_SEARCH_CODE, rankFusion: false })
     })
 
@@ -718,7 +661,7 @@ describe('MongoDBMemoryStore', () => {
       const { store, collection } = withoutFusion()
       reporting(collection, 'PENDING', 'vector_index', 'text_index')
       await store.initialize()
-      expect(reportedTiers()).toEqual([])
+      expect(reportedTiers(exporter)).toEqual([])
       const reads = collection.searchIndexReads
       collection.setSearchIndexStatus('vector_index', 'READY')
       collection.setSearchIndexStatus('text_index', 'READY')
@@ -729,7 +672,7 @@ describe('MongoDBMemoryStore', () => {
 
       vi.advanceTimersByTime(1)
       await store.initialize()
-      expect(reportedTiers()).toEqual(['vector', 'text'])
+      expect(reportedTiers(exporter)).toEqual(['vector', 'text'])
     })
   })
 
@@ -821,7 +764,7 @@ describe('MongoDBMemoryStore', () => {
       await store.initialize()
 
       expect(createdSearchIndexes(collection)).toEqual(['vector_index', 'text_index'])
-      expect(reportedTiers()).toEqual(['hybrid', 'vector', 'text'])
+      expect(reportedTiers(exporter)).toEqual(['hybrid', 'vector', 'text'])
       expect(resolve(config).capabilities).toEqual({ search: true, rankFusion: true })
     })
 
@@ -831,7 +774,7 @@ describe('MongoDBMemoryStore', () => {
       await store.initialize()
 
       expect(collection.db.commandCalls).toEqual([{ buildInfo: 1 }])
-      expect(reportedTiers()).toEqual(['vector', 'text'])
+      expect(reportedTiers(exporter)).toEqual(['vector', 'text'])
     })
 
     it('does not ask for the version where the deployment cannot search', async () => {
@@ -840,7 +783,7 @@ describe('MongoDBMemoryStore', () => {
       await store.initialize()
 
       expect(collection.db.commandCalls).toEqual([])
-      expect(reportedTiers()).toEqual([])
+      expect(reportedTiers(exporter)).toEqual([])
     })
 
     it('asks the version once for ten stores on one connection', async () => {
@@ -862,7 +805,7 @@ describe('MongoDBMemoryStore', () => {
       await store.initialize()
 
       expect(createdSearchIndexes(collection)).toEqual(['vector_index', 'text_index'])
-      expect(reportedTiers()).toEqual(['hybrid'])
+      expect(reportedTiers(exporter)).toEqual(['hybrid'])
     })
 
     it('AT-147: falls past hybrid to the tier a one-key query fits on a manual-vector auto store', async () => {
@@ -897,7 +840,7 @@ describe('MongoDBMemoryStore', () => {
 
       await store.initialize()
 
-      expect(reportedTiers()).toEqual(['vector', 'text'])
+      expect(reportedTiers(exporter)).toEqual(['vector', 'text'])
       const [line] = logger.lines('warn')
       expect(line).toContain(`'${bound}' is set to ${value}`)
       expect(line).toMatch(/\| event=bound_declined_fusion, namespace=appdb\.memory, tier=hybrid$/)
@@ -908,7 +851,7 @@ describe('MongoDBMemoryStore', () => {
 
       await store.initialize()
 
-      expect(reportedTiers()).toEqual(['hybrid'])
+      expect(reportedTiers(exporter)).toEqual(['hybrid'])
       expect(logger.lines('warn')).toEqual([])
     })
   })
@@ -1695,7 +1638,7 @@ describe('MongoDBMemoryStore', () => {
       const { store, collection } = withoutFusion()
       reporting(collection, 'PENDING', 'vector_index', 'text_index')
       await store.initialize()
-      expect(reportedTiers()).toEqual([])
+      expect(reportedTiers(exporter)).toEqual([])
       collection.setSearchIndexStatus('vector_index', 'READY')
       collection.setSearchIndexStatus('text_index', 'READY')
       collection.searchResults = [{ _id: 'abc', content: 'dark mode', score: 0.9 }]
@@ -1791,7 +1734,7 @@ describe('MongoDBMemoryStore', () => {
 
   describe('AT-010, AT-011: close releases the pool this package built and never an injected client', () => {
     it('closes the client it built, once, and a later operation opens a fresh pool', async () => {
-      const connection = { database: 'appdb', connectionString: uri() }
+      const connection = { database: 'appdb', connectionString: freshUri() }
       const store = new MongoDBMemoryStore({ name: 'facts', config: connection })
       const built = ConstructedMongoClient.built[0]!
 

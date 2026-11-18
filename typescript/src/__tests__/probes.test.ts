@@ -1,9 +1,10 @@
 import { type Logger, StorageError } from '@strands-agents/sdk'
-import { type Collection, MongoServerError } from 'mongodb'
+import type { Collection } from 'mongodb'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeCollection } from '../__fixtures__/fake-mongo.js'
 import { recordSpans, spansNamed } from '../__fixtures__/spans.js'
 import { rankFusionSupport, requireBinaryComparison, searchSupport } from '../probes.js'
+import { rejectionOf, serverError } from '../__fixtures__/errors.js'
 
 const FOLDING = { locale: 'en', strength: 2 }
 const exporter = recordSpans()
@@ -13,9 +14,6 @@ function silentLogger(): Logger {
 }
 
 /** A server error carrying a code, as the driver raises one. */
-function serverError(code: number, message = 'probed'): MongoServerError {
-  return new MongoServerError({ message, code })
-}
 
 function fakeCollection(name = 'memory'): FakeCollection {
   return new FakeCollection('testdb', name)
@@ -23,15 +21,6 @@ function fakeCollection(name = 'memory'): FakeCollection {
 
 function driver(fake: FakeCollection): Collection {
   return fake as unknown as Collection
-}
-
-async function rejectionOf(pending: Promise<unknown>): Promise<Error> {
-  try {
-    await pending
-  } catch (error) {
-    return error as Error
-  }
-  throw new Error('expected a rejection')
 }
 
 describe('AT-053d: searchSupport', () => {
