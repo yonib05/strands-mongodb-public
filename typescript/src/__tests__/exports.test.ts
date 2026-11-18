@@ -8,21 +8,14 @@ import type * as VectorSearch from '../vector-search.js'
 
 const ROOT_VALUES = [
   'DEFAULT_COLLECTION',
-  'DEFAULT_EMBEDDING_MODEL',
   'DEFAULT_MAX_SEARCH_RESULTS',
   'DEFAULT_OVERSAMPLING_FACTOR',
   'DEFAULT_STORAGE_VECTOR_INDEX_NAME',
-  'DEFAULT_TEXT_INDEX_NAME',
-  'DEFAULT_VECTOR_INDEX_NAME',
-  'MAX_DIMENSIONS',
   'MAX_DOCUMENT_BYTES',
   'MAX_KEY_BYTES',
-  'MAX_NUM_CANDIDATES',
   'MongoDBMemoryStore',
   'MongoDBStorage',
   'MongoDBVectorSearchStrategy',
-  'RANK_FUSION_PENALTY',
-  'READY_TIMEOUT_SECONDS',
   'RESERVED_METADATA_KEYS',
   'TIER_RETRY_MAX_SECONDS',
   'TIER_RETRY_SECONDS',
@@ -66,9 +59,12 @@ describe('public surface', () => {
       expectTypeOf<Root.MongoDBVectorSearchStrategyOptions>().toEqualTypeOf<VectorSearch.MongoDBVectorSearchStrategyOptions>()
     })
 
-    it('keeps the internal types private', () => {
+    it('keeps the internal types and tuning constants private', async () => {
       // @ts-expect-error VectorMode is internal
       expectTypeOf<Root.VectorMode>().toBeUnknown()
+      // @ts-expect-error SearchIndexSpec is internal
+      expectTypeOf<Root.SearchIndexSpec>().toBeUnknown()
+      expect(Object.keys(await import('../index.js'))).not.toContain('READY_TIMEOUT_SECONDS')
     })
   })
 

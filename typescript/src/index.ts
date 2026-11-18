@@ -4,16 +4,7 @@
  * @packageDocumentation
  */
 
-export {
-  DEFAULT_EMBEDDING_MODEL,
-  DEFAULT_TEXT_INDEX_NAME,
-  DEFAULT_VECTOR_INDEX_NAME,
-  MAX_DIMENSIONS,
-  MAX_NUM_CANDIDATES,
-  READY_TIMEOUT_SECONDS,
-} from './index-specs.js'
 export { DEFAULT_COLLECTION, MongoDBMemoryStore, UNSCOPED } from './memory-store.js'
-export { RANK_FUSION_PENALTY } from './pipeline.js'
 export { TIER_RETRY_MAX_SECONDS, TIER_RETRY_SECONDS } from './search-tiers.js'
 export { MAX_DOCUMENT_BYTES, MAX_KEY_BYTES, MongoDBStorage, type MongoDBStorageOptions } from './storage.js'
 export {
