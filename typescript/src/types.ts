@@ -66,7 +66,7 @@ export interface MongoDBMemoryStoreConfig extends MemoryStoreConfig {
   readonly collection?: string
   /** Namespace stamped on every write and filtered on every read. Absent or `''` means the shared `__unscoped__` scope, never unfiltered. */
   readonly scope?: string
-  /** Extra predicate ANDed with the scope on search and delete, so it can only narrow. */
+  /** Declared field paths mapped to the exact values they must equal, ANDed with the scope on search and delete. Operators are rejected. */
   readonly filter?: Record<string, unknown>
   /** Floor a result must meet. Fused hybrid scores use a different scale, so `auto` avoids hybrid when set. */
   readonly minScore?: number
@@ -84,7 +84,7 @@ export interface MongoDBSearchQuery {
   readonly text?: string
   /** A pre-computed embedding, used directly. */
   readonly vector?: number[]
-  /** MQL predicate over declared filterable fields, validated before it reaches the server. */
+  /** Declared field paths mapped to the exact values they must equal, such as `{ 'metadata.tier': 'gold' }`. Operators are rejected. */
   readonly filter?: Record<string, unknown>
   /** Result ceiling for this call, overriding the store's own. */
   readonly limit?: number
