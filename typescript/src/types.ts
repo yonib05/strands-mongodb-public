@@ -1,4 +1,4 @@
-import type { Logger, MemoryStoreConfig } from '@strands-agents/sdk'
+import type { JSONValue, Logger, MemoryStoreConfig } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
 import type { MongoClient, MongoClientOptions } from 'mongodb'
 
@@ -17,8 +17,13 @@ export const DEFAULT_MAX_SEARCH_RESULTS = 10
 /** Multiplier turning a result limit into a `$vectorSearch` candidate count (`numCandidates`). */
 export const DEFAULT_OVERSAMPLING_FACTOR = 10
 
+const RESERVED = ['_relevanceScore', '_id', '_searchType', '_scope'] as const
+
 /** Metadata keys set on every returned `MemoryEntry`. A colliding caller key loses, and the collision is logged. */
-export const RESERVED_METADATA_KEYS: ReadonlySet<string> = new Set(['_relevanceScore', '_id', '_searchType', '_scope'])
+export const RESERVED_METADATA_KEYS: ReadonlySet<string> = new Set(RESERVED)
+
+/** What `search` sets under the reserved keys: exactly one value for each. */
+export type ReservedMetadata = Record<(typeof RESERVED)[number], JSONValue>
 
 /**
  * Connection and deployment settings.

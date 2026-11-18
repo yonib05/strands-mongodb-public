@@ -36,6 +36,7 @@ import {
   type MongoDBConfig,
   type MongoDBMemoryStoreConfig,
   type MongoDBSearchQuery,
+  type ReservedMetadata,
   type SearchType,
   type VectorMode,
 } from './types.js'
@@ -446,7 +447,7 @@ export class MongoDBMemoryStore implements MemoryStore {
   }
 
   // The reserved keys win over a stored key of the same name, and stored BSON values become relaxed EJSON.
-  private _metadata(stored: Document | undefined, reserved: Record<string, JSONValue>): Record<string, JSONValue> {
+  private _metadata(stored: Document | undefined, reserved: ReservedMetadata): Record<string, JSONValue> {
     const merged = BSON.EJSON.serialize(stored ?? {}, { relaxed: true }) as Record<string, JSONValue>
     const collisions = Object.keys(reserved)
       .filter((key) => Object.hasOwn(merged, key))
