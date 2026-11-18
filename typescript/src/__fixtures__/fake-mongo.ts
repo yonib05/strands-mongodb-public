@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { randomBytes } from 'node:crypto'
 import type { Document, DriverInfo, IndexDescription, MongoClientOptions, SearchIndexDescription } from 'mongodb'
 
@@ -13,9 +14,11 @@ function isOperatorObject(value: unknown): value is Record<string, unknown> {
   )
 }
 
+// Strings order by their UTF-8 bytes, as the server's binary comparison does: code point order, not UTF-16.
 function compare(a: unknown, b: unknown): number {
   if (a === b) return 0
-  return (a as string | number) < (b as string | number) ? -1 : 1
+  if (typeof a === 'string' && typeof b === 'string') return Buffer.compare(Buffer.from(a), Buffer.from(b))
+  return (a as number) < (b as number) ? -1 : 1
 }
 
 // Only a type import of `mongodb` here: a runtime one would cycle through the tests that mock `MongoClient` with this file.
@@ -116,8 +119,9 @@ function evaluate(expression: unknown, doc: Document, vars: Document): unknown {
   const [op, operand] = Object.entries(expression)[0]!
   const text = (value: unknown): string => String(evaluate(value, doc, vars))
   switch (op) {
+    // The server lowercases ASCII only: `ÉCOLE` becomes `École`.
     case '$toLower':
-      return text(operand).toLowerCase()
+      return text(operand).replace(/[A-Z]+/g, (upper) => upper.toLowerCase())
     case '$strLenCP':
       return Array.from(text(operand)).length
     case '$substrCP': {

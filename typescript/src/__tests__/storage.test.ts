@@ -463,6 +463,13 @@ describe('MongoDBStorage', () => {
       })
       expect(await storage.list('a/')).toEqual(['a/z', 'a/😀', 'a/😀/nested', 'a/😁'])
     })
+
+    it('lists in code point order, a high BMP character before an astral one', async () => {
+      const { storage, collection } = setup()
+      seed(collection, 'a/😀', 'a/\uff5e')
+
+      expect(await storage.list('a/')).toEqual(['a/\uff5e', 'a/😀'])
+    })
   })
 
   describe('AT-020, AT-035: the calls and the document match', () => {
@@ -985,6 +992,14 @@ describe('MongoDBStorage', () => {
       seed(collection, 'Sessions/Agent-1/State.json')
 
       expect(await storage.search('sessions agent')).toEqual([{ key: 'Sessions/Agent-1/State.json', score: 2 }])
+    })
+
+    it('matches a non-ASCII capital case-sensitively, since the server lowercases ASCII only', async () => {
+      const { storage, collection } = setup()
+      seed(collection, 'notes/ÉCOLE.md')
+
+      expect(await storage.search('école')).toEqual([])
+      expect(await storage.search('NOTES')).toEqual([{ key: 'notes/ÉCOLE.md', score: 1 }])
     })
 
     it('turns a failing aggregation into a StorageError naming the query', async () => {
