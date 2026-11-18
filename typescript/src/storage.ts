@@ -3,9 +3,10 @@ import { type Logger, StorageError } from '@strands-agents/sdk'
 import type { Storage } from '@strands-agents/sdk/storage'
 import type { SearchStrategy, StorageSearchResult } from '@strands-agents/sdk/storage/search'
 import { Binary, BSON, type Collection, type Document, type Filter, MongoError } from 'mongodb'
+import { requireNumber, requireString } from './checks.js'
 import { close as release, type Connection, onLiveClient, resolve } from './client.js'
 import { ensure } from './ensure-indexes.js'
-import { checkTtl, EXPIRES_FIELD, READY_TIMEOUT_SECONDS, type SearchIndexSpec, storageSpecs } from './index-specs.js'
+import { EXPIRES_FIELD, readyTimeout, type SearchIndexSpec, storageSpecs } from './index-specs.js'
 import { abbreviate, NAMESPACED, normalizeKey, normalizePrefix, successor, tokenize } from './keys.js'
 import { defaultLogger } from './logging.js'
 import { annotate, type SpanBase, traced } from './telemetry.js'
@@ -69,26 +70,33 @@ export class MongoDBStorage implements Storage {
   private readonly _collectionName: string
   private readonly _prefix: string
   private readonly _ttlSeconds: number | undefined
+  private readonly _indexReadyTimeout: number
   private readonly _searchStrategy: IndexedStrategy | undefined
   private readonly _logger: Logger
 
   /**
    * @param config - Connection and deployment settings; instances with the same connection identity share one pool
    * @param options - Collection, prefix, TTL and search strategy
-   * @throws TypeError if `config` has no `database`, or neither `client` nor `connectionString`
-   * @throws RangeError if `ttlSeconds` is negative
+   * @throws TypeError if `config` has no `database` or neither `client` nor `connectionString`, or `database`,
+   * `collection` or `prefix` is not a string
+   * @throws RangeError if `ttlSeconds` or `indexReadyTimeout` is not a finite number of at least `0`
    * @throws StorageError if `prefix` contains a backslash or a `..` segment
    */
   constructor(config: MongoDBConfig, options: MongoDBStorageOptions = {}) {
     // Validated before `resolve`, which registers a pool nothing could close if this threw afterwards.
     const { database } = config
     if (database === undefined) throw new TypeError(MISSING_DATABASE)
-    checkTtl(options.ttlSeconds)
+    requireString('database', database)
+    const { collection = 'storage', prefix = '', ttlSeconds } = options
+    requireString('collection', collection)
+    requireString('prefix', prefix)
+    if (ttlSeconds !== undefined) requireNumber('ttlSeconds', ttlSeconds, { min: 0 })
     this._databaseName = database
-    this._collectionName = options.collection ?? 'storage'
-    const normalized = normalizePrefix(options.prefix ?? '').replace(/\/+$/, '')
+    this._collectionName = collection
+    const normalized = normalizePrefix(prefix).replace(/\/+$/, '')
     this._prefix = normalized ? `${normalized}/` : ''
-    this._ttlSeconds = options.ttlSeconds
+    this._ttlSeconds = ttlSeconds
+    this._indexReadyTimeout = readyTimeout(config)
     this._searchStrategy = options.searchStrategy
     Object.defineProperty(this, '_config', { value: config, enumerable: false })
     this._logger = config.logger ?? defaultLogger
@@ -287,7 +295,7 @@ export class MongoDBStorage implements Storage {
           ordinary: storageSpecs(),
           search: spec === undefined ? [] : [spec],
           create: this._config.ensureIndexes ?? true,
-          timeout: this._config.indexReadyTimeout ?? READY_TIMEOUT_SECONDS,
+          timeout: this._indexReadyTimeout,
           logger: this._logger,
         })
       })

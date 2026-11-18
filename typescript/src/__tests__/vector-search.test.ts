@@ -79,6 +79,8 @@ describe('MongoDBVectorSearchStrategy', () => {
       [{ maxResults: NaN }, RangeError, "'maxResults' is NaN"],
       [{ oversamplingFactor: 0 }, RangeError, "'oversamplingFactor' is 0"],
       [{ oversamplingFactor: NaN }, RangeError, "'oversamplingFactor' is NaN"],
+      [{ oversamplingFactor: Infinity }, RangeError, "'oversamplingFactor' is Infinity"],
+      [{ maxResults: 3, oversamplingFactor: 1.5 }, RangeError, 'numCandidates would be 4.5'],
       [{ maxResults: 101, oversamplingFactor: 100 }, RangeError, 'numCandidates would be 10100'],
     ])('rejects %o', (overrides, type, message) => {
       const error = errorOf(() => strategy(undefined, overrides as Partial<MongoDBVectorSearchStrategyOptions>))

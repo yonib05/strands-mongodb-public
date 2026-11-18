@@ -248,6 +248,30 @@ describe('MongoDBMemoryStore', () => {
       expect(ConstructedMongoClient.built).toEqual([])
     })
 
+    it.each([
+      ['ttlSeconds', { store: { ttlSeconds: NaN } }],
+      ['ttlSeconds', { store: { ttlSeconds: Infinity } }],
+      ['indexReadyTimeout', { config: { indexReadyTimeout: NaN } }],
+      ['indexReadyTimeout', { config: { indexReadyTimeout: -1 } }],
+      ['embeddingDimensions', { config: { embeddingDimensions: 1.5, similarity: 'cosine' as const } }],
+      ['maxSearchResults', { store: { maxSearchResults: Infinity } }],
+    ])('throws a RangeError naming %s when it is not a usable number', (key, options) => {
+      const error = errorOf(() => setup(options))
+
+      expect(error).toBeInstanceOf(RangeError)
+      expect(error.message).toContain(`'${key}'`)
+    })
+
+    it.each([
+      ['database', { config: { database: 5 as unknown as string } }],
+      ['collection', { store: { collection: { $ne: '' } as unknown as string } }],
+    ])('throws a TypeError naming %s when it is not a string', (key, options) => {
+      const error = errorOf(() => setup(options))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain(`'${key}'`)
+    })
+
     it('AT-226: accepts 0 as a lifetime, and an explicit undefined as no lifetime', () => {
       expect(setup({ store: { ttlSeconds: 0 } }).store.ttlSeconds).toBe(0)
       const unset = setup({ store: { ttlSeconds: undefined } }).store
@@ -1031,6 +1055,19 @@ describe('MongoDBMemoryStore', () => {
       expect(error.message).toContain(expected)
       expectUntouched(collection)
     })
+
+    it.each([null, undefined, 5, ['dark mode']])(
+      'rejects a query of %j with a TypeError naming query',
+      async (query) => {
+        const { store, collection } = setup()
+
+        const error = await rejectionOf(store.search(query as unknown as string))
+
+        expect(error).toBeInstanceOf(TypeError)
+        expect(error.message).toContain("'query'")
+        expectUntouched(collection)
+      }
+    )
 
     it.each([-1, 1.5, NaN, Infinity])(
       'rejects a query limit of %d with a RangeError, naming the key',

@@ -11,18 +11,18 @@ import {
 } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
 import { BSON, type Collection, type Document, MongoError, MongoServerError, ObjectId } from 'mongodb'
+import { requireNumber, requireString } from './checks.js'
 import { close as release, type Connection, onLiveClient, resolve } from './client.js'
 import { compose, validate } from './filter.js'
 import { embed } from './embedding.js'
 import { ensure } from './ensure-indexes.js'
 import {
-  checkTtl,
   CONTENT_FIELD,
   declaredFilterFields,
   EXPIRES_FIELD,
   memorySearchSpecs,
   memorySpecs,
-  READY_TIMEOUT_SECONDS,
+  readyTimeout,
   VECTOR_FIELD,
   vectorMode,
 } from './index-specs.js'
@@ -62,15 +62,6 @@ function notWritable(name: string, call: string): string {
   return `strands_mongodb: the memory store '${name}' is not writable, so it does not accept ${call}. Set 'writable': true in its configuration to enable writes.`
 }
 
-// TypeScript's types do not reach a JavaScript caller, and an operator object here would become part of a query.
-function requireString(key: string, value: unknown): void {
-  if (typeof value !== 'string') {
-    throw new TypeError(
-      `strands_mongodb: '${key}' must be a string, but it is ${value === null ? 'null' : typeof value}.`
-    )
-  }
-}
-
 function contentHash(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex')
 }
@@ -86,12 +77,20 @@ function objectId(memoryId: unknown): ObjectId {
   return new ObjectId(memoryId)
 }
 
+function queryParts(query: unknown): MongoDBSearchQuery {
+  if (typeof query === 'string') return { text: query }
+  if (typeof query !== 'object' || query === null || Array.isArray(query)) {
+    throw new TypeError(
+      `strands_mongodb: 'query' must be a string or a MongoDBSearchQuery object, but it is ${query === null ? 'null' : Array.isArray(query) ? 'an array' : typeof query}.`
+    )
+  }
+  return query
+}
+
 // Every supplied limit is checked, not only the one that wins. The key names are the caller's, in priority order.
 function resolveLimit(limits: Array<[key: string, value: number | undefined]>): number {
   for (const [key, value] of limits) {
-    if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
-      throw new RangeError(`strands_mongodb: '${key}' is ${value} and must be an integer of at least 1.`)
-    }
+    if (value !== undefined) requireNumber(key, value, { min: 1, integer: true })
   }
   return limits.find(([, value]) => value !== undefined)?.[1] ?? DEFAULT_MAX_SEARCH_RESULTS
 }
@@ -137,10 +136,11 @@ export class MongoDBMemoryStore implements MemoryStore {
 
   /**
    * @param config - The store's own fields plus the connection config under `config`
-   * @throws TypeError if `config` or `config.database` is missing, `name`, `scope` or `collection` is not a string,
-   * both score bounds are set, `filter` is invalid, the vector keys contradict each other, or `embedder` is set on
-   * the AutoEmbeddings path
-   * @throws RangeError if `ttlSeconds` is negative or `maxSearchResults` is not an integer of at least 1
+   * @throws TypeError if `config` or `config.database` is missing, `name`, `scope`, `collection` or `database` is
+   * not a string, both score bounds are set, `filter` is invalid, the vector keys contradict each other, or
+   * `embedder` is set on the AutoEmbeddings path
+   * @throws RangeError if `ttlSeconds` or `indexReadyTimeout` is not a finite number of at least `0`, or
+   * `maxSearchResults` or `embeddingDimensions` is not an integer within its bounds
    */
   constructor(config: MongoDBMemoryStoreConfig) {
     // Every check runs before `resolve`, so a config that fails leaves no connection pool behind.
@@ -150,6 +150,7 @@ export class MongoDBMemoryStore implements MemoryStore {
     if (config.scope !== undefined) requireString('scope', config.scope)
     if (config.collection !== undefined) requireString('collection', config.collection)
     if (connection.database === undefined) throw new TypeError(MISSING_DATABASE)
+    requireString('database', connection.database)
     this.name = config.name
     if (config.description !== undefined) this.description = config.description
     if (config.maxSearchResults !== undefined) this.maxSearchResults = config.maxSearchResults
@@ -160,8 +161,10 @@ export class MongoDBMemoryStore implements MemoryStore {
     if (config.filter !== undefined) this.filter = config.filter
     if (config.minScore !== undefined) this.minScore = config.minScore
     if (config.maxScore !== undefined) this.maxScore = config.maxScore
-    if (config.ttlSeconds !== undefined) this.ttlSeconds = config.ttlSeconds
-    checkTtl(this.ttlSeconds)
+    if (config.ttlSeconds !== undefined) {
+      requireNumber('ttlSeconds', config.ttlSeconds, { min: 0 })
+      this.ttlSeconds = config.ttlSeconds
+    }
     resolveLimit([['maxSearchResults', this.maxSearchResults]])
     if (this.minScore !== undefined && this.maxScore !== undefined) {
       throw new TypeError(
@@ -174,7 +177,7 @@ export class MongoDBMemoryStore implements MemoryStore {
     this._databaseName = connection.database
     this._collectionName = config.collection ?? DEFAULT_COLLECTION
     this._ensureIndexes = connection.ensureIndexes ?? true
-    this._indexReadyTimeout = connection.indexReadyTimeout ?? READY_TIMEOUT_SECONDS
+    this._indexReadyTimeout = readyTimeout(connection)
     this._searchType = connection.searchType || 'auto'
     // The index definition decides what is filterable, so configured and per-query filters share one list.
     this._declaredFields = declaredFilterFields(connection.filterFields ?? [])
@@ -291,7 +294,7 @@ export class MongoDBMemoryStore implements MemoryStore {
     return this._run('search', 'searching', async () => {
       // First, so a search that fails early still records what was requested.
       annotate('strands_mongodb.search.requested', this._searchType)
-      const parts: MongoDBSearchQuery = typeof query === 'string' ? { text: query } : query
+      const parts = queryParts(query)
       let queryText = parts.text
       let queryVector = parts.vector
 
@@ -481,7 +484,6 @@ export class MongoDBMemoryStore implements MemoryStore {
       await ensure(collection, {
         ordinary: memorySpecs(),
         create: this._ensureIndexes,
-        timeout: this._indexReadyTimeout,
         logger: this._logger,
       })
       await this._tiers.prepare(collection, capabilities)

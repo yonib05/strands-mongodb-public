@@ -24,8 +24,8 @@ export interface EnsureOptions {
   search?: SearchIndexSpec[]
   /** Whether missing indexes may be created. `false` verifies, and still waits for a build someone else started. */
   create: boolean
-  /** Seconds to wait for search builds, in total across all of them. `0` reads each status once. */
-  timeout: number
+  /** Seconds to wait for search builds, in total across all of them. The default, `0`, reads each status once. */
+  timeout?: number
   /** Receives the `creating_indexes`, `creating_search_index` and `search_index_status` events. */
   logger: Logger
   /** Ends the search index work early, within one poll round, when the caller no longer needs its outcome. */
@@ -42,7 +42,7 @@ export interface EnsureOptions {
  * @throws SearchIndexNotReady if a build outlives `timeout`
  */
 export async function ensure(collection: Collection, options: EnsureOptions): Promise<void> {
-  const { ordinary = [], search = [], create, timeout, logger, signal } = options
+  const { ordinary = [], search = [], create, timeout = 0, logger, signal } = options
   const attributes = {
     ...namespaceAttributes(collection),
     'strands_mongodb.indexes.mode': create ? 'ensure' : 'verify',

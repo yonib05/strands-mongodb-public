@@ -1,4 +1,5 @@
 import type { Document, IndexDescription, SearchIndexDescription } from 'mongodb'
+import { requireNumber } from './checks.js'
 import type { MongoDBConfig, VectorMode } from './types.js'
 
 /** Document field holding the text a memory is about, indexed for vector and full-text search. */
@@ -38,17 +39,16 @@ export const READY_TIMEOUT_SECONDS = 300
 export const SIMPLE_LOCALE = 'simple'
 
 /**
- * Rejects a negative lifetime, which would stamp an expiry in the past.
+ * Reads the search index wait budget, since a `NaN` one would wait without end.
  *
- * @param ttlSeconds - The configured lifetime, or `undefined` for no expiry
- * @throws RangeError if `ttlSeconds` is below `0`
+ * @param config - The connection configuration
+ * @returns `indexReadyTimeout` in seconds, or {@link READY_TIMEOUT_SECONDS}
+ * @throws RangeError if it is not a finite number of at least `0`
  */
-export function checkTtl(ttlSeconds: number | undefined): void {
-  if (ttlSeconds !== undefined && ttlSeconds < 0) {
-    throw new RangeError(
-      `strands_mongodb: 'ttlSeconds' is ${ttlSeconds} and cannot be negative. Use 0 to expire at the next sweep, or leave it unset for no expiry.`
-    )
-  }
+export function readyTimeout(config: MongoDBConfig): number {
+  const { indexReadyTimeout = READY_TIMEOUT_SECONDS } = config
+  requireNumber('indexReadyTimeout', indexReadyTimeout, { min: 0 })
+  return indexReadyTimeout
 }
 
 /**
@@ -57,7 +57,7 @@ export function checkTtl(ttlSeconds: number | undefined): void {
  * @param config - The connection configuration. Only the vector keys are read
  * @returns AutoEmbeddings with `DEFAULT_EMBEDDING_MODEL` when no vector key is set
  * @throws TypeError if both paths or only one manual key is set, or the similarity is unknown
- * @throws RangeError if the dimensions are out of bounds
+ * @throws RangeError if the dimensions are not an integer within `1..MAX_DIMENSIONS`
  */
 export function vectorMode(config: MongoDBConfig): VectorMode {
   const { embeddingModel: model, embeddingDimensions: dimensions, similarity } = config
@@ -84,11 +84,7 @@ export function vectorMode(config: MongoDBConfig): VectorMode {
       `strands_mongodb: 'embeddingDimensions' is set but 'similarity' is not, and it has no default. Set one of ${similarities}.`
     )
   }
-  if (!(dimensions >= 1 && dimensions <= MAX_DIMENSIONS)) {
-    throw new RangeError(
-      `strands_mongodb: 'embeddingDimensions' is ${dimensions}, outside the Atlas bounds [1..${MAX_DIMENSIONS}]. Set it to the length your embedding model produces.`
-    )
-  }
+  requireNumber('embeddingDimensions', dimensions, { min: 1, max: MAX_DIMENSIONS, integer: true })
   if (!(SIMILARITIES as readonly string[]).includes(similarity)) {
     throw new TypeError(
       `strands_mongodb: 'similarity' is '${similarity}', which Atlas does not accept. Choose one of ${similarities}.`

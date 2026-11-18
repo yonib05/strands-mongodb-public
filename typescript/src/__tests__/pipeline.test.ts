@@ -141,10 +141,6 @@ describe('candidateCount', () => {
       expect(candidateCount(20, 10)).toBe(2 * candidateCount(10, 10))
     })
 
-    it('defaults the factor to DEFAULT_OVERSAMPLING_FACTOR', () => {
-      expect(candidateCount(7)).toBe(7 * DEFAULT_OVERSAMPLING_FACTOR)
-    })
-
     it('accepts the ceiling itself', () => {
       expect(candidateCount(1000, 10)).toBe(MAX_NUM_CANDIDATES)
     })
@@ -166,14 +162,22 @@ describe('candidateCount', () => {
       expect(error.message).toContain('oversamplingFactor')
     })
 
-    it.each([0, -1, NaN])('rejects a factor of %d', (factor) => {
+    it('rejects a product that is not an integer, which the server refuses', () => {
+      const error = errorOf(() => candidateCount(3, 1.5))
+
+      expect(error).toBeInstanceOf(RangeError)
+      expect(error.message).toContain('4.5')
+      expect(candidateCount(4, 2.5)).toBe(10)
+    })
+
+    it.each([0, -1, NaN, Infinity])('rejects a factor of %d', (factor) => {
       const error = errorOf(() => candidateCount(5, factor))
 
       expect(error).toBeInstanceOf(RangeError)
       expect(error.message).toContain('oversamplingFactor')
     })
 
-    it.each([0, -1, NaN])('rejects a limit of %d', (limit) => {
+    it.each([0, -1, NaN, 2.5])('rejects a limit of %d', (limit) => {
       const error = errorOf(() => candidateCount(limit, 10))
 
       expect(error).toBeInstanceOf(RangeError)

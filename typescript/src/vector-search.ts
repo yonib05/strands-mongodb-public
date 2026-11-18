@@ -1,9 +1,10 @@
 import { TextDecoder } from 'node:util'
 import type { Embedder, SearchStrategy, StorageSearchResult } from '@strands-agents/sdk/storage/search'
 import { Binary, type Document } from 'mongodb'
+import { requireNumber } from './checks.js'
 import { embed } from './embedding.js'
-import { MAX_DIMENSIONS, MAX_NUM_CANDIDATES, SearchIndexSpec, SIMILARITIES, VECTOR_FIELD } from './index-specs.js'
-import { SCORE_FIELD, VECTOR_SCORE_META } from './pipeline.js'
+import { MAX_DIMENSIONS, SearchIndexSpec, SIMILARITIES, VECTOR_FIELD } from './index-specs.js'
+import { candidateCount, SCORE_FIELD, VECTOR_SCORE_META } from './pipeline.js'
 import type { MongoDBStorage } from './storage.js'
 import { DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_OVERSAMPLING_FACTOR, type VectorSimilarity } from './types.js'
 
@@ -75,26 +76,10 @@ export class MongoDBVectorSearchStrategy implements SearchStrategy<MongoDBStorag
   constructor(options: MongoDBVectorSearchStrategyOptions) {
     const { embedder, dimensions, similarity, indexName = DEFAULT_STORAGE_VECTOR_INDEX_NAME } = options
     const { maxResults = DEFAULT_MAX_SEARCH_RESULTS, oversamplingFactor = DEFAULT_OVERSAMPLING_FACTOR } = options
-    if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > MAX_DIMENSIONS) {
-      throw new RangeError(
-        `strands_mongodb: 'dimensions' is ${dimensions} and must be an integer within 1..${MAX_DIMENSIONS}.`
-      )
-    }
+    requireNumber('dimensions', dimensions, { min: 1, max: MAX_DIMENSIONS, integer: true })
     if (!(SIMILARITIES as readonly string[]).includes(similarity)) {
       throw new TypeError(
         `strands_mongodb: 'similarity' is '${String(similarity)}' and must be one of ${SIMILARITIES.join(', ')}.`
-      )
-    }
-    if (!Number.isInteger(maxResults) || maxResults < 1) {
-      throw new RangeError(`strands_mongodb: 'maxResults' is ${maxResults} and must be an integer of at least 1.`)
-    }
-    if (!(oversamplingFactor >= 1)) {
-      throw new RangeError(`strands_mongodb: 'oversamplingFactor' is ${oversamplingFactor} and must be at least 1.`)
-    }
-    const numCandidates = maxResults * oversamplingFactor
-    if (numCandidates > MAX_NUM_CANDIDATES) {
-      throw new RangeError(
-        `strands_mongodb: numCandidates would be ${numCandidates}, over the server's bound of ${MAX_NUM_CANDIDATES}. Lower 'maxResults' or 'oversamplingFactor'.`
       )
     }
     this._embedder = embedder
@@ -102,7 +87,7 @@ export class MongoDBVectorSearchStrategy implements SearchStrategy<MongoDBStorag
     this._similarity = similarity
     this._indexName = indexName
     this._maxResults = maxResults
-    this._numCandidates = numCandidates
+    this._numCandidates = candidateCount(maxResults, oversamplingFactor, 'maxResults')
   }
 
   /**

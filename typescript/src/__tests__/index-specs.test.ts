@@ -4,7 +4,6 @@ import commands from '../__fixtures__/commands.json' with { type: 'json' }
 import specFixtures from '../__fixtures__/index-specs.json' with { type: 'json' }
 import {
   BAKED_IN_FILTER_FIELDS,
-  checkTtl,
   declaredFilterFields,
   DEFAULT_EMBEDDING_MODEL,
   dropIndexCommand,
@@ -135,31 +134,21 @@ describe('AT-067 vectorMode', () => {
     expect(error.message).toContain('cosine')
   })
 
-  it.each([0, -1, 8193])('rejects dimensions outside the Atlas bounds: %d', (dimensions) => {
-    const error = errorOf(() => vectorMode({ database: 'd', embeddingDimensions: dimensions, similarity: 'cosine' }))
+  it.each([0, -1, 8193, 1.5, NaN])(
+    'rejects dimensions that are not an integer within the Atlas bounds: %d',
+    (dimensions) => {
+      const error = errorOf(() => vectorMode({ database: 'd', embeddingDimensions: dimensions, similarity: 'cosine' }))
 
-    expect(error).toBeInstanceOf(RangeError)
-    expect(error.message).toContain('[1..8192]')
-    expect(error.message).toContain(String(dimensions))
-  })
+      expect(error).toBeInstanceOf(RangeError)
+      expect(error.message).toContain('1..8192')
+      expect(error.message).toContain(String(dimensions))
+    }
+  )
 })
 
 describe('AT-125: the default readiness timeout', () => {
   it('is the measured 300 seconds', () => {
     expect(READY_TIMEOUT_SECONDS).toBe(300)
-  })
-})
-
-describe('checkTtl', () => {
-  it.each([undefined, 0, 60])('accepts %s', (ttlSeconds) => {
-    expect(() => checkTtl(ttlSeconds)).not.toThrow()
-  })
-
-  it('rejects a negative lifetime and names the key', () => {
-    const error = errorOf(() => checkTtl(-1))
-
-    expect(error).toBeInstanceOf(RangeError)
-    expect(error.message).toMatch(/^strands_mongodb: 'ttlSeconds' is -1/)
   })
 })
 

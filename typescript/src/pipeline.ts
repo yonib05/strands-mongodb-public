@@ -1,4 +1,5 @@
 import type { Document } from 'mongodb'
+import { requireNumber } from './checks.js'
 import { CONTENT_FIELD, MAX_NUM_CANDIDATES, VECTOR_FIELD } from './index-specs.js'
 import { DEFAULT_OVERSAMPLING_FACTOR, type VectorMode } from './types.js'
 
@@ -20,22 +21,20 @@ export const SCORE_FIELD = 'score'
 /**
  * Derives `numCandidates` from a resolved limit and validates it.
  *
- * @param limit - Resolved result ceiling. Must be at least 1
- * @param oversamplingFactor - Multiplier turning the limit into a candidate pool. Must be at least 1
- * @returns `limit * oversamplingFactor`, within `[1..MAX_NUM_CANDIDATES]`
- * @throws RangeError if either number is below 1 or the product exceeds `MAX_NUM_CANDIDATES`
+ * @param limit - Resolved result ceiling
+ * @param oversamplingFactor - Multiplier turning the limit into a candidate pool
+ * @param limitKey - What the caller calls the limit, for the message
+ * @returns `limit * oversamplingFactor`
+ * @throws RangeError if the limit is not an integer of at least 1, the factor is not a finite number of at least 1,
+ * or the product is not an integer within `1..MAX_NUM_CANDIDATES`
  */
-export function candidateCount(limit: number, oversamplingFactor = DEFAULT_OVERSAMPLING_FACTOR): number {
-  if (!(limit >= 1)) {
-    throw new RangeError(`strands_mongodb: 'limit' is ${limit} and must be at least 1.`)
-  }
-  if (!(oversamplingFactor >= 1)) {
-    throw new RangeError(`strands_mongodb: 'oversamplingFactor' is ${oversamplingFactor} and must be at least 1.`)
-  }
+export function candidateCount(limit: number, oversamplingFactor: number, limitKey = 'limit'): number {
+  requireNumber(limitKey, limit, { min: 1, integer: true })
+  requireNumber('oversamplingFactor', oversamplingFactor, { min: 1 })
   const candidates = limit * oversamplingFactor
-  if (candidates > MAX_NUM_CANDIDATES) {
+  if (!Number.isInteger(candidates) || candidates > MAX_NUM_CANDIDATES) {
     throw new RangeError(
-      `strands_mongodb: numCandidates would be ${candidates} (limit ${limit} times 'oversamplingFactor' ${oversamplingFactor}), outside the server's bounds [1..${MAX_NUM_CANDIDATES}]. Lower the limit or the factor.`
+      `strands_mongodb: numCandidates would be ${candidates} ('${limitKey}' ${limit} times 'oversamplingFactor' ${oversamplingFactor}), and the server takes an integer within 1..${MAX_NUM_CANDIDATES}. Change '${limitKey}' or the factor.`
     )
   }
   return candidates

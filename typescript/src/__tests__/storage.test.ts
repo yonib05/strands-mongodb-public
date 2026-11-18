@@ -211,6 +211,30 @@ describe('MongoDBStorage', () => {
       expect(() => new MongoDBStorage({ database: 'appdb' }, { ttlSeconds: -1 })).toThrow(RangeError)
     })
 
+    it.each([NaN, Infinity])('throws a RangeError for a ttlSeconds of %d', (ttlSeconds) => {
+      expect(() => new MongoDBStorage({ database: 'appdb' }, { ttlSeconds })).toThrow(RangeError)
+    })
+
+    it('throws a RangeError for an indexReadyTimeout that is not a number of seconds', () => {
+      const error = errorOf(() => new MongoDBStorage({ database: 'appdb', indexReadyTimeout: NaN }))
+
+      expect(error).toBeInstanceOf(RangeError)
+      expect(error.message).toContain("'indexReadyTimeout'")
+    })
+
+    it.each([
+      ['database', { database: 5 }, {}],
+      ['collection', { database: 'appdb' }, { collection: 5 }],
+      ['prefix', { database: 'appdb' }, { prefix: 7 }],
+    ])('throws a TypeError naming %s when it is not a string', (key, config, options) => {
+      const error = errorOf(
+        () => new MongoDBStorage(config as unknown as MongoDBConfig, options as unknown as MongoDBStorageOptions)
+      )
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain(`'${key}'`)
+    })
+
     it('throws a StorageError for a prefix with a .. segment, before the connection is resolved', () => {
       expect(() => new MongoDBStorage({ database: 'appdb' }, { prefix: 'a/../b' })).toThrow(StorageError)
     })
