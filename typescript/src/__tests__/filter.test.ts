@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer'
-import { BSON, BSONRegExp, ObjectId } from 'mongodb'
+import { Binary, BSON, BSONRegExp, Decimal128, Long, ObjectId } from 'mongodb'
 import { describe, expect, it } from 'vitest'
 import { compose, validate } from '../filter.js'
 import { BAKED_IN_FILTER_FIELDS as BAKED_IN } from '../index-specs.js'
@@ -155,10 +155,50 @@ describe('validate', () => {
       ['an ObjectId', new ObjectId()],
       ['a Date', new Date(0)],
       ['a Buffer', Buffer.from('gold')],
+      ['a Binary', new Binary(Buffer.from('gold'))],
+      ['a Decimal128', Decimal128.fromString('1.5')],
+      ['a Long', Long.fromNumber(5)],
+      ['a value from a second copy of bson 7', { _bsontype: 'ObjectId', [Symbol.for('@@mdb.bson.version')]: 7 }],
     ])('passes %s value, since the driver encodes it as a scalar', (_kind, value) => {
       const filter = { tier: value, nested: [{ tier: value }] }
 
       validate(filter, { declaredFields: ['tier', 'nested'] })
+    })
+
+    it.each([
+      ['parsed from JSON', JSON.parse('{"_bsontype": "x", "$ne": 1}') as unknown],
+      ['from another major version of bson', { _bsontype: 'ObjectId', [Symbol.for('@@mdb.bson.version')]: 6 }],
+    ])('rejects an object carrying a _bsontype marker %s, naming the path', (_kind, value) => {
+      const message = messageOf(() => validate({ tier: { inner: [value] } }, { declaredFields: DECLARED }))
+
+      expect(message).toMatch(/^strands_mongodb: /)
+      expect(message).toContain("'tier.inner[0]'")
+      expect(message).toContain('_bsontype')
+    })
+
+    it('rejects a _bsontype marker on the filter itself', () => {
+      const filter = JSON.parse('{"_bsontype": "x", "tier": "gold"}') as Record<string, unknown>
+
+      expect(messageOf(() => validate(filter, { declaredFields: [...DECLARED, '_bsontype'] }))).toContain('_bsontype')
+    })
+
+    it('reports an operator key before a forged _bsontype value', () => {
+      const forgedValue = JSON.parse('{"_bsontype": "x"}') as unknown
+
+      expect(() => validate({ tier: forgedValue, scope: { $ne: 1 } }, { declaredFields: DECLARED })).toThrow(/\$ne/)
+    })
+
+    it.each([
+      ['a Map', new Map([['tier', 'gold']])],
+      ['an array', [{ tier: 'gold' }]],
+      ['a Date', new Date(0)],
+    ])('rejects %s as the filter itself', (_kind, value) => {
+      const message = messageOf(() =>
+        validate(value as unknown as Record<string, unknown>, { declaredFields: DECLARED })
+      )
+
+      expect(message).toMatch(/^strands_mongodb: /)
+      expect(message).toContain('plain object')
     })
 
     it('accepts a null-prototype object as the filter itself', () => {
@@ -184,6 +224,18 @@ describe('validate', () => {
       expect(message).toContain("'tier'")
       expect(message).toContain('regular expression')
       expect(message).not.toContain('^gol')
+    })
+
+    it('names the path of a nested regex', () => {
+      const message = messageOf(() => validate({ tier: { inner: [1, /x/] } }, { declaredFields: DECLARED }))
+
+      expect(message).toContain("'tier.inner[1]'")
+    })
+
+    it('rejects a BSONRegExp from a second copy of bson', () => {
+      const foreign = { _bsontype: 'BSONRegExp', pattern: 'x', options: '', [Symbol.for('@@mdb.bson.version')]: 7 }
+
+      expect(() => validate({ tier: foreign }, { declaredFields: DECLARED })).toThrow(/regular expression/)
     })
 
     it('AT-179 rejects a BSONRegExp value', () => {
@@ -230,11 +282,11 @@ describe('validate', () => {
 
       expect(message).toMatch(/^strands_mongodb: /)
       expect(message).toContain('filterFields')
-      expect(message).toContain('Filterable here: scope, store_name.')
+      expect(message).toContain('scope, store_name')
     })
 
     it('says none when nothing is declared', () => {
-      expect(() => validate({ region: 'eu' }, { declaredFields: [] })).toThrow(/Filterable here: none\./)
+      expect(() => validate({ region: 'eu' }, { declaredFields: [] })).toThrow(/filterable here: none/)
     })
 
     it('passes a declared field', () => {
@@ -353,6 +405,12 @@ describe('compose', () => {
 
       expect(term).not.toBe(caller)
       expect(term).toEqual({ 'metadata.tier': 'gold' })
+    })
+
+    it('rejects a Map rather than dropping it, since it would add no term', () => {
+      const caller = new Map([['tier', 'gold']]) as unknown as Record<string, unknown>
+
+      expect(() => compose([caller], options)).toThrow(TypeError)
     })
 
     it('keeps a BSON value as the same instance', () => {
