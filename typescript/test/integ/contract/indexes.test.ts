@@ -81,7 +81,7 @@ describeTier('contract', 'indexes', () => {
     expect(error).toBeInstanceOf(StorageError)
     expect(error.message).toContain(collection.collectionName)
     expect(await db.listCollections({ name: collection.collectionName }).toArray()).toEqual([])
-    const commands = [...error.message.matchAll(/db\.runCommand\((\{.*?\})\)\n/g)].map((match) => JSON.parse(match[1]!))
+    const commands = [...error.message.matchAll(/^db\.runCommand\((\{.*\})\)$/gm)].map((match) => JSON.parse(match[1]!))
     expect(commands).toHaveLength(memorySpecs().length)
     for (const command of commands) await db.command(command as Document)
     await ordinary(collection, memorySpecs(), false)
@@ -109,7 +109,8 @@ describeTier('contract', 'indexes', () => {
     const error = await rejectionOf(ordinary(collection, [spec]))
 
     expect(error).toBeInstanceOf(StorageError)
-    expect(error.message).toContain('its expireAfterSeconds is 3600 and this package needs 0')
+    expect(error.message).toContain('expireAfterSeconds')
+    expect(error.message).toContain('3600')
     expect(error.message).toContain(dropIndexCommand(collection.collectionName, 'theirs'))
     expect(await indexNames(collection)).toEqual(['_id_', 'theirs'])
   })

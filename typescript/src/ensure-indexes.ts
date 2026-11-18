@@ -101,7 +101,7 @@ function absent(collection: Collection, missing: Array<IndexSpec | SearchIndexSp
   const names = missing.map((spec) => spec.name).join(', ')
   const commands = missing.map((spec) => spec.creationCommand(collection.collectionName)).join('\n')
   return new StorageError(
-    `strands_mongodb: ${missing.length} required index(es) are absent from ${namespaceOf(collection)} and ensureIndexes is false: ${names}. Run these, wait for any search index to report READY, then retry:\n${commands}`
+    `strands_mongodb: ${missing.length} required index(es) are absent from ${namespaceOf(collection)} and ensureIndexes is false: ${names}. Run these, then retry once any search index reports READY:\n${commands}`
   )
 }
 
