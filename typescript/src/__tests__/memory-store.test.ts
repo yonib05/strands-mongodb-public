@@ -3,7 +3,7 @@ import { inspect } from 'node:util'
 import { SpanStatusCode } from '@opentelemetry/api'
 import { type MemoryEntry, MemoryManager, StorageError } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
-import { type Document, type MongoClient, MongoNetworkTimeoutError, ObjectId } from 'mongodb'
+import { type Document, type MongoClient, MongoNetworkTimeoutError, MongoTopologyClosedError, ObjectId } from 'mongodb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConstructedMongoClient, FakeCollection, FakeMongoClient, freshUri } from '../__fixtures__/fake-mongo.js'
 import { oneSpan, recordSpans, reportedTiers, spansNamed } from '../__fixtures__/spans.js'
@@ -1746,6 +1746,31 @@ describe('MongoDBMemoryStore', () => {
       await store.close()
 
       expect(client.closeCount).toBe(0)
+    })
+  })
+
+  describe('a client the driver closed after a failed first connection', () => {
+    it('replaces the client it built and initializes on the fresh one', async () => {
+      const connection = { database: 'appdb', connectionString: freshUri(), logger: new RecordingLogger() }
+      const store = new MongoDBMemoryStore({ name: 'facts', config: connection, writable: true })
+      const dead = ConstructedMongoClient.built[0]!
+      dead.db('appdb').collection('memory').db.listCollectionsError = new MongoTopologyClosedError()
+
+      await expect(store.add(CONTENT)).resolves.toMatchObject({ inserted: 1 })
+
+      expect(dead.closeCount).toBe(1)
+      expect(ConstructedMongoClient.built).toHaveLength(2)
+      await close(connection)
+    })
+
+    it('says an injected client is closed', async () => {
+      const { store, collection } = setup()
+      collection.db.listCollectionsError = new MongoTopologyClosedError()
+
+      const error = await rejectionOf(store.initialize())
+
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain('injected')
     })
   })
 

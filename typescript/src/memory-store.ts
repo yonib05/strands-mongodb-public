@@ -11,7 +11,7 @@ import {
 } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
 import { BSON, type Collection, type Document, MongoError, MongoServerError, ObjectId } from 'mongodb'
-import { close as release, type Connection, resolve } from './client.js'
+import { close as release, type Connection, onLiveClient, resolve } from './client.js'
 import { compose, validate } from './filter.js'
 import { embed } from './embedding.js'
 import { ensure } from './ensure-indexes.js'
@@ -501,7 +501,7 @@ export class MongoDBMemoryStore implements MemoryStore {
   // The message names only the namespace: the subject of a memory operation is user content.
   private async _reporting<T>(verb: string, fn: () => Promise<T>): Promise<T> {
     try {
-      return await fn()
+      return await onLiveClient(this._connectionConfig, fn)
     } catch (error) {
       if (!(error instanceof MongoError)) throw error
       throw new StorageError(`strands_mongodb: ${verb} ${this._target} failed: ${error.message}`, { cause: error })

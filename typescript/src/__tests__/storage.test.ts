@@ -7,7 +7,14 @@ import {
   type SearchStrategy,
   type StorageSearchResult,
 } from '@strands-agents/sdk/storage/search'
-import { Binary, BSON, type Document, type MongoClient, MongoNetworkTimeoutError } from 'mongodb'
+import {
+  Binary,
+  BSON,
+  type Document,
+  type MongoClient,
+  MongoNetworkTimeoutError,
+  MongoTopologyClosedError,
+} from 'mongodb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConstructedMongoClient, FakeCollection, FakeMongoClient, freshUri } from '../__fixtures__/fake-mongo.js'
 import { oneSpan, recordSpans, spansNamed } from '../__fixtures__/spans.js'
@@ -1349,6 +1356,75 @@ describe('MongoDBStorage', () => {
       await storage.close()
 
       expect(ConstructedMongoClient.built[0]!.closeCount).toBe(1)
+      expect(client.closeCount).toBe(0)
+    })
+  })
+
+  describe('a client the driver closed after a failed first connection', () => {
+    it('replaces the client it built and answers from the fresh one', async () => {
+      const config = { database: 'appdb', connectionString: freshUri() }
+      const storage = new MongoDBStorage(config)
+      const dead = ConstructedMongoClient.built[0]!
+      dead.db('appdb').collection('storage').failure = new MongoTopologyClosedError()
+
+      await expect(storage.read('a/b')).resolves.toBeNull()
+
+      expect(dead.closeCount).toBe(1)
+      expect(ConstructedMongoClient.built).toHaveLength(2)
+      await close(config)
+    })
+
+    it('replaces it when the closed topology surfaces inside a wrapped probe', async () => {
+      const config = { database: 'appdb', connectionString: freshUri() }
+      const storage = new MongoDBStorage(config)
+      const dead = ConstructedMongoClient.built[0]!
+      dead.db('appdb').collection('storage').db.listCollectionsError = new MongoTopologyClosedError()
+
+      await storage.ensureIndexes()
+
+      expect(dead.closeCount).toBe(1)
+      expect(ConstructedMongoClient.built).toHaveLength(2)
+      await close(config)
+    })
+
+    it('reports the failure of the fresh client, not the closed topology', async () => {
+      const config = { database: 'appdb', connectionString: freshUri() }
+      const storage = new MongoDBStorage(config)
+      const dead = ConstructedMongoClient.built[0]!
+      dead.db('appdb').collection('storage').failure = new MongoTopologyClosedError()
+      vi.spyOn(FakeCollection.prototype, 'findOne').mockRejectedValueOnce(networkFailure('still unreachable'))
+
+      const error = await rejectionOf(storage.read('a/b'))
+
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain('still unreachable')
+      await close(config)
+    })
+
+    it('does not reopen a pool the caller closed while the operation ran', async () => {
+      const config = { database: 'appdb', connectionString: freshUri() }
+      const storage = new MongoDBStorage(config)
+      const closed = new MongoTopologyClosedError()
+      vi.spyOn(FakeCollection.prototype, 'findOne').mockImplementationOnce(async () => {
+        await storage.close()
+        throw closed
+      })
+
+      const error = await rejectionOf(storage.read('a/b'))
+
+      expect(error.cause).toBe(closed)
+      expect(ConstructedMongoClient.built).toHaveLength(1)
+    })
+
+    it('says an injected client is closed, since only its owner can reopen it', async () => {
+      const { storage, collection, client } = setup()
+      collection.failure = new MongoTopologyClosedError()
+
+      const error = await rejectionOf(storage.read('a/b'))
+
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain('injected')
+      expect(error.cause).toBe(collection.failure)
       expect(client.closeCount).toBe(0)
     })
   })

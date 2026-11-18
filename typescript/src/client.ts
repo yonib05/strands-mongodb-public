@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
-import type { Logger } from '@strands-agents/sdk'
+import { type Logger, StorageError } from '@strands-agents/sdk'
 import { type Collection, MongoClient, type MongoClientOptions } from 'mongodb'
-import { namespaceOf } from './driver-errors.js'
+import { clientClosed, namespaceOf } from './driver-errors.js'
 import { defaultLogger, logFields } from './logging.js'
 import { rankFusionSupport, requireBinaryComparison, searchSupport } from './probes.js'
 import { event } from './telemetry.js'
@@ -16,6 +16,9 @@ const MISSING_CONNECTION =
 
 const RETRY_WRITES_DISABLED =
   'strands_mongodb: retryWrites is disabled on this connection, so a write interrupted by a primary election fails instead of being retried. Remove retryWrites=false to restore the retries.'
+
+const INJECTED_CLIENT_CLOSED =
+  'strands_mongodb: the injected MongoClient is closed, which the driver does to a client whose first connection failed. Call connect() on it, or inject a new client.'
 
 /** What a deployment can do, probed once and cached on its connection. */
 export interface Capabilities {
@@ -158,6 +161,36 @@ export async function close(config: MongoDBConfig): Promise<void> {
   // Forgotten before the await, so a concurrent close finds nothing to close again.
   constructed.delete(key)
   await connection.client.close()
+}
+
+/**
+ * Runs `work`, and once more on a fresh client when the one this package built turns out to be closed.
+ *
+ * @remarks
+ * The driver closes a client for good when its first connection fails, where pymongo selects a server again.
+ *
+ * @param config - The configuration `work` resolves its connection from, on every run
+ * @param work - The operation
+ * @returns Whatever `work` resolves to
+ * @throws StorageError if the closed client was injected, since only its owner can reopen it
+ */
+export async function onLiveClient<T>(config: MongoDBConfig, work: () => Promise<T>): Promise<T> {
+  const connection = resolve(config)
+  try {
+    return await work()
+  } catch (error) {
+    if (!clientClosed(error)) throw error
+    if (config.client !== undefined) throw new StorageError(INJECTED_CLIENT_CLOSED, { cause: error })
+    const key = identity(config.connectionString ?? '', config.clientOptions)
+    const registered = constructed.get(key)
+    // Absent after `close()`: the caller released the pool, so nothing reopens it here.
+    if (registered === undefined) throw error
+    if (registered === connection) {
+      constructed.delete(key)
+      await connection.client.close()
+    }
+    return work()
+  }
 }
 
 // The driver ignores a repeated identical `appendMetadata`, so a re-registered injected client is attributed once.

@@ -3,7 +3,7 @@ import { type Logger, StorageError } from '@strands-agents/sdk'
 import type { Storage } from '@strands-agents/sdk/storage'
 import type { SearchStrategy, StorageSearchResult } from '@strands-agents/sdk/storage/search'
 import { Binary, BSON, type Collection, type Document, type Filter, MongoError } from 'mongodb'
-import { close as release, type Connection, resolve } from './client.js'
+import { close as release, type Connection, onLiveClient, resolve } from './client.js'
 import { ensure } from './ensure-indexes.js'
 import { checkTtl, EXPIRES_FIELD, READY_TIMEOUT_SECONDS, type SearchIndexSpec, storageSpecs } from './index-specs.js'
 import { abbreviate, NAMESPACED, normalizeKey, normalizePrefix, successor, tokenize } from './keys.js'
@@ -279,17 +279,19 @@ export class MongoDBStorage implements Storage {
    * a strategy's search index fails or does not finish in time, or a driver call fails
    */
   ensureIndexes(): Promise<void> {
-    return traced('storage', 'ensure_indexes', this._spanBase(), async () => {
-      await this._requireBinaryKeys()
-      const spec = this._searchStrategy?.indexSpec?.()
-      await ensure(this._collection(), {
-        ordinary: storageSpecs(),
-        search: spec === undefined ? [] : [spec],
-        create: this._config.ensureIndexes ?? true,
-        timeout: this._config.indexReadyTimeout ?? READY_TIMEOUT_SECONDS,
-        logger: this._logger,
+    return traced('storage', 'ensure_indexes', this._spanBase(), () =>
+      onLiveClient(this._config, async () => {
+        await this._requireBinaryKeys()
+        const spec = this._searchStrategy?.indexSpec?.()
+        await ensure(this._collection(), {
+          ordinary: storageSpecs(),
+          search: spec === undefined ? [] : [spec],
+          create: this._config.ensureIndexes ?? true,
+          timeout: this._config.indexReadyTimeout ?? READY_TIMEOUT_SECONDS,
+          logger: this._logger,
+        })
       })
-    })
+    )
   }
 
   /**
@@ -319,7 +321,7 @@ export class MongoDBStorage implements Storage {
   // Wraps the whole operation, not one call: `list` fails while its cursor drains, after `find` returned.
   private async _reporting<T>(verb: string, subject: string, fn: () => Promise<T>): Promise<T> {
     try {
-      return await fn()
+      return await onLiveClient(this._config, fn)
     } catch (error) {
       if (!(error instanceof MongoError)) throw error
       throw new StorageError(

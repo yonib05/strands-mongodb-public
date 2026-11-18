@@ -1,5 +1,5 @@
 import { StorageError } from '@strands-agents/sdk'
-import { type Collection, MongoServerError } from 'mongodb'
+import { type Collection, MongoServerError, MongoTopologyClosedError } from 'mongodb'
 
 /** Server code for a namespace that does not exist. Not an error when reading indexes. */
 export const COLLECTION_ABSENT = 26
@@ -22,6 +22,17 @@ export function namespaceOf(collection: Collection): string {
  */
 export function serverCode(error: unknown): number | undefined {
   return error instanceof MongoServerError && typeof error.code === 'number' ? error.code : undefined
+}
+
+/**
+ * Tells whether a failure, bare or wrapped by {@link failure}, is the driver refusing to use a closed client.
+ *
+ * @param error - Whatever an operation threw
+ * @returns `true` for a `MongoTopologyClosedError` or a `StorageError` caused by one
+ */
+export function clientClosed(error: unknown): boolean {
+  const cause: unknown = error instanceof StorageError ? error.cause : error
+  return cause instanceof MongoTopologyClosedError
 }
 
 /**
