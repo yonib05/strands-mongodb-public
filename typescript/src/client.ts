@@ -70,7 +70,7 @@ export class Connection {
   }
 
   /**
-   * Probes what the deployment can do, once per connection, and warns if it has no Atlas Search.
+   * Probes what the deployment can do, once per connection when called under `locked`, and warns if it has no Atlas Search.
    *
    * @param collection - Any collection on the deployment. Need not exist
    * @param logger - Receives the `no_search_setup` warning and the `rank_fusion_probe_failed` event

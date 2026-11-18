@@ -26,8 +26,6 @@ function silentLogger(): Logger {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 }
 
-/** A server error carrying a code, as the driver raises one. */
-
 function fakeCollection(name = 'memory'): FakeCollection {
   return new FakeCollection('testdb', name)
 }

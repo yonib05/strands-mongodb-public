@@ -17,7 +17,8 @@
     "./memory": {
       "types": "./dist/memory/index.d.ts",
       "default": "./dist/memory/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",

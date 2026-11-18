@@ -232,6 +232,7 @@ export class FakeDb {
 
   async command(command: Document): Promise<Document> {
     this.commandCalls.push(command)
+    if (!('buildInfo' in command)) throw new Error(`FakeDb does not support ${Object.keys(command).join(', ')}`)
     if (this.commandError !== undefined) throw this.commandError
     return this.buildInfo
   }

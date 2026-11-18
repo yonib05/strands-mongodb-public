@@ -34,7 +34,7 @@ export interface MongoDBConfig {
   readonly client?: MongoClient
   /** Used only when `client` is absent. Supplying neither throws. */
   readonly connectionString?: string
-  /** Options for the client built from `connectionString`. Compared by value, except non-plain values such as a `Buffer`, which are compared by identity. */
+  /** Options for the client built from `connectionString`. Compared by value, except functions and class instances, such as an OIDC callback, which are compared by identity. */
   readonly clientOptions?: MongoClientOptions
   /** Whether `initialize()` creates missing indexes. Defaults to `true`; `false` means verify only. */
   readonly ensureIndexes?: boolean
