@@ -357,7 +357,7 @@ async function waitUntilReady(
           `strands_mongodb: waited ${timeout}s for ${pending.length} search index(es) on ${namespaceOf(collection)} to report READY: ${stuck}. Retry to keep waiting, or read the status with db.${collection.collectionName}.getSearchIndexes().`
         )
       }
-      await sleep(POLL_INTERVAL_MS, signal)
+      await sleep(Math.min(POLL_INTERVAL_MS, deadline - Date.now()), signal)
     }
   } finally {
     for (const wait of pending) wait.span.end(end)

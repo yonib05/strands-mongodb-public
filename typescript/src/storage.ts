@@ -32,7 +32,7 @@ export interface MongoDBStorageOptions {
   prefix?: string
   /** Lifetime of written documents in seconds. Stamps `expires_at` only; `ensureIndexes()` creates the index that acts on it. */
   ttlSeconds?: number | undefined
-  /** What `search` runs instead of scoring keys. Without one, payloads are never searched. */
+  /** What `search` runs instead of scoring keys. Without one, payloads are never searched. A strategy of your own reaches the data through `read` and `list` only. */
   searchStrategy?: SearchStrategy<MongoDBStorage> | undefined
 }
 
@@ -141,8 +141,8 @@ export class MongoDBStorage implements Storage {
    */
   write(key: string, data: Uint8Array): Promise<void> {
     return this._run('write', 'writing', key, async () => {
-      await this._requireBinaryKeys()
       const id = this._idFor(key)
+      await this._requireBinaryKeys()
       const now = new Date()
       const document: StoredDocument = { _id: id, data: new Binary(data), updated_at: now }
       if (this._ttlSeconds !== undefined) document[EXPIRES_FIELD] = new Date(now.getTime() + this._ttlSeconds * 1000)
@@ -178,8 +178,9 @@ export class MongoDBStorage implements Storage {
    */
   read(key: string): Promise<Uint8Array | null> {
     return this._run('read', 'reading', key, async () => {
+      const id = this._idFor(key)
       await this._requireBinaryKeys()
-      const document = await this._typed().findOne({ _id: this._idFor(key) })
+      const document = await this._typed().findOne({ _id: id })
       annotate('strands_mongodb.found', document !== null)
       return document === null ? null : payloadBytes(document.data, document._id)
     })
@@ -193,8 +194,9 @@ export class MongoDBStorage implements Storage {
    */
   delete(key: string): Promise<void> {
     return this._run('delete', 'deleting', key, async () => {
+      const id = this._idFor(key)
       await this._requireBinaryKeys()
-      const result = await this._typed().deleteOne({ _id: this._idFor(key) })
+      const result = await this._typed().deleteOne({ _id: id })
       annotate('strands_mongodb.deleted_count', result.deletedCount)
     })
   }
@@ -211,13 +213,14 @@ export class MongoDBStorage implements Storage {
    */
   list(query: string): Promise<string[]> {
     return this._run('list', 'listing', query, async () => {
+      const range = this._rangeFor(query)
       await this._requireBinaryKeys()
       const documents = await this._typed()
-        .find(this._rangeFor(query), { projection: { _id: 1 } })
+        .find(range, { projection: { _id: 1 } })
         .sort({ _id: 1 })
         .toArray()
       // Strip only the instance prefix, so the keys returned can be passed straight back to `read`.
-      const keys = documents.map((document) => document._id.slice(this._prefix.length))
+      const keys = documents.map((document) => String(document._id).slice(this._prefix.length))
       annotate('strands_mongodb.result_count', keys.length)
       return keys
     })
@@ -233,8 +236,9 @@ export class MongoDBStorage implements Storage {
    * search content.
    *
    * @param query - A natural-language string; one that tokenizes to nothing returns `[]` without a round trip
-   * @returns Matched keys with scores, highest first, ties in ascending key order; `data` is left unset
-   * @throws StorageError if the collation is not binary, the aggregation fails, or the strategy throws
+   * @returns Matched keys with scores, highest first. Without a strategy, ties are in ascending key order and `data`
+   * is left unset
+   * @throws StorageError if the strategy throws, or without one the collation is not binary or the aggregation fails
    */
   search(query: string): Promise<StorageSearchResult[]> {
     return this._run('search', 'searching', query, async () => {
@@ -271,8 +275,9 @@ export class MongoDBStorage implements Storage {
    */
   deletePrefix(prefix: string): Promise<number> {
     return this._run('delete_prefix', 'deleting the prefix', prefix, async () => {
+      const range = this._rangeFor(prefix)
       await this._requireBinaryKeys()
-      const result = await this._typed().deleteMany(this._rangeFor(prefix))
+      const result = await this._typed().deleteMany(range)
       annotate('strands_mongodb.deleted_count', result.deletedCount)
       return result.deletedCount
     })

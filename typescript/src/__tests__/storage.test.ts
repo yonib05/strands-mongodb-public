@@ -341,6 +341,17 @@ describe('MongoDBStorage', () => {
       expect(error.message).toContain('..')
     })
 
+    it.each(['write', 'read', 'delete', 'list', 'deletePrefix'] as const)(
+      'rejects an invalid key or prefix on %s before any round trip',
+      async (method) => {
+        const { storage, collection } = setup()
+
+        await expect(storage[method]('a/../b', PAYLOAD)).rejects.toBeInstanceOf(StorageError)
+
+        expect(collection.db.listCollectionsCalls).toEqual([])
+      }
+    )
+
     it.each(['read', 'delete'] as const)('normalizes on %s too', async (method) => {
       const { storage, collection } = setup()
       seed(collection, 'a/b')

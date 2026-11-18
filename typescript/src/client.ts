@@ -95,7 +95,7 @@ export class Connection {
   }
 }
 
-// Keyed by a digest, never by the connection string, so no key can leak a password.
+// Keyed by a digest of the connection string and client options.
 const constructed = new Map<string, Connection>()
 const injected = new WeakMap<MongoClient, Connection>()
 const objectIds = new WeakMap<object, number>()
@@ -204,6 +204,7 @@ function stableJson(value: unknown): string {
 function normalise(value: unknown): unknown {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
   if (typeof value === 'number') return Number.isFinite(value) ? value : String(value)
+  if (typeof value === 'bigint') return `${value}n`
   if (Array.isArray(value)) return value.map(normalise)
   if (typeof value === 'object' && isPlain(value)) {
     const record = value as Record<string, unknown>

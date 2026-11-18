@@ -31,6 +31,7 @@ export type ReservedMetadata = Record<(typeof RESERVED)[number], JSONValue>
  * @remarks
  * Stores share one client and pool when their configs hold the same `client` object, or equal `connectionString`
  * and `clientOptions`, even as separate config objects. `close()` on any of them closes that shared pool.
+ * `MongoDBStorage` reads the keys down to `indexReadyTimeout` and `logger`; the rest configure `MongoDBMemoryStore`.
  */
 export interface MongoDBConfig {
   /** Database holding this deployment's collections. The only required key. */

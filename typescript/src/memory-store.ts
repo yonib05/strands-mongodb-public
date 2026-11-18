@@ -234,7 +234,8 @@ export class MongoDBMemoryStore implements MemoryStore {
    * @remarks
    * Idempotent and safe to call concurrently. Calls on one connection run one at a time, and a named `searchType`
    * holds its turn while it waits for its index, up to `indexReadyTimeout`. Under `auto` a building index is
-   * skipped instead and retried inside a later call: after 60 seconds, then at doubling intervals up to an hour.
+   * skipped instead and retried inside a later call: after 60 seconds, or 120 after a first search that waited, then
+   * at doubling intervals up to an hour.
    *
    * @throws StorageError if a driver call fails, the collection's collation is not binary, an existing index
    * conflicts, an index is missing and `ensureIndexes` is `false`, or `searchType` names a tier that a deployment
