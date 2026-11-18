@@ -870,6 +870,14 @@ describe('MongoDBStorage', () => {
       expect(collection.namesCalled).toEqual(['aggregate'])
     })
 
+    it('hints the _id index, so an unprefixed scan reads no payload', async () => {
+      const { storage, collection } = setup()
+
+      await storage.search('dark mode')
+
+      expect(collection.calls[0]!.args[1]).toEqual({ hint: { _id: 1 } })
+    })
+
     it('emits project, match, sort with no range match for an unnamespaced store', async () => {
       const { storage, collection } = setup()
 

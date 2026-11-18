@@ -213,20 +213,34 @@ describeTier('contract', 'storage', () => {
     expect(await storage.search('NOTES')).toEqual([{ key: 'ÉCOLE/notes', score: 1 }])
   })
 
-  it('AT-032e: the search scan is covered by the _id index and fetches no documents', async () => {
-    const scoped = store('covered').namespace('tenant-a')
-    for (const key of KEYS) await scoped.write(key, new Uint8Array(400).fill(0x78))
-
-    const plan = await db.command({
-      explain: { aggregate: created.at(-1)!, pipeline: scoped['_searchPipeline'](tokenize('dark mode')), cursor: {} },
-      verbosity: 'executionStats',
+  it('AT-032e: the search scan is covered by the _id index and fetches no documents, with or without a prefix', async () => {
+    const monitored = new MongoClient(tierUri('contract')!, { monitorCommands: true })
+    const sent: Document[] = []
+    monitored.on('commandStarted', (event) => {
+      if (event.commandName === 'aggregate') sent.push(event.command)
     })
+    const name = fresh('covered')
+    const unprefixed = new MongoDBStorage({ database: DATABASE, client: monitored }, { collection: name })
 
-    const cursor = (plan.stages as Document[])[0]!.$cursor as Document
-    expect((cursor.executionStats as Document).totalDocsExamined).toBe(0)
-    const winning = JSON.stringify((cursor.queryPlanner as Document).winningPlan)
-    expect(winning).toContain('IXSCAN')
-    expect(winning).not.toContain('COLLSCAN')
+    try {
+      for (const storage of [unprefixed, unprefixed.namespace('tenant-a')]) {
+        for (const key of KEYS) await storage.write(key, new Uint8Array(400).fill(0x78))
+        await storage.search('dark mode')
+      }
+
+      expect(sent).toHaveLength(2)
+      for (const { pipeline, hint } of sent) {
+        const plan = JSON.stringify(
+          await db.command({ explain: { aggregate: name, pipeline, hint, cursor: {} }, verbosity: 'executionStats' })
+        )
+        expect(plan.match(/"totalDocsExamined":\d+/g)).toEqual(['"totalDocsExamined":0'])
+        expect(plan).toContain('IXSCAN')
+        expect(plan).not.toContain('COLLSCAN')
+      }
+    } finally {
+      await unprefixed.close()
+      await monitored.close()
+    }
   })
 
   it('AT-035, AT-121b: ensureIndexes creates the TTL index once, and a TTL store stamps the field it watches', async () => {

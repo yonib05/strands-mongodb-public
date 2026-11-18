@@ -216,7 +216,10 @@ export class MongoDBStorage implements Storage {
       // Same short circuit as `KeywordSearchStrategy`: scoring every key zero would cost a full scan.
       if (tokens.size === 0) return []
       await this._requireBinaryKeys()
-      const documents = await this._typed().aggregate(this._searchPipeline(tokens)).toArray()
+      // The hint keeps the scan on `_id_`, reading no payload: without it an unprefixed store is a COLLSCAN.
+      const documents = await this._typed()
+        .aggregate(this._searchPipeline(tokens), { hint: { _id: 1 } })
+        .toArray()
       const results = documents.map((document) => ({
         key: String(document._id).slice(this._prefix.length),
         score: Number(document.score),
@@ -340,7 +343,7 @@ export class MongoDBStorage implements Storage {
 
   private _searchPipeline(tokens: Set<string>): Document[] {
     const stages: Document[] = []
-    // With an instance prefix, bounded by it: a covered IXSCAN on `_id_` instead of a COLLSCAN.
+    // Bounded by the instance prefix, not the query.
     const range = this._rangeFor('')
     if (Object.keys(range).length > 0) stages.push({ $match: range })
     // Score the key the caller wrote, without the prefix. `$substrCP` counts code points, as `Array.from` does.

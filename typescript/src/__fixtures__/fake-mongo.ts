@@ -438,8 +438,8 @@ export class FakeCollection {
   }
 
   /** Answers a search pipeline with `searchResults`; runs any other over the stored documents. */
-  aggregate(pipeline: Document[]): { toArray(): Promise<Document[]> } {
-    this.record('aggregate', pipeline)
+  aggregate(pipeline: Document[], options?: Document): { toArray(): Promise<Document[]> } {
+    this.record('aggregate', pipeline, ...(options === undefined ? [] : [options]))
     return {
       toArray: async () =>
         isSearchPipeline(pipeline) ? this.searchResults.map(clone) : runPipeline(this.docs.map(clone), pipeline),
