@@ -369,8 +369,9 @@ export class FakeCollection {
     if (!this.exists) throw new Error(`FakeCollection: createSearchIndex on absent ${this.collectionName}`)
     const name = description.name ?? 'default'
     const present = this.searchIndexes.get(name)
-    // As atlas-local 8 answers a name already taken: the same definition changes nothing, another is code 68. The
-    // code 2 of two concurrent creates is pinned by the two-client test in test/integ/integration/memory-store.test.ts.
+    // As atlas-local 8 answers a name already taken: the same definition changes nothing, another is code 68. Both
+    // are pinned in test/integ/integration/indexes.test.ts, and the code 2 of two concurrent creates by the
+    // two-client test in test/integ/integration/memory-store.test.ts.
     if (present !== undefined && isDeepStrictEqual(present.latestDefinition, description.definition)) return name
     if (present !== undefined) {
       // Imported here: a static runtime import would cycle through the tests that mock `MongoClient` with this file.

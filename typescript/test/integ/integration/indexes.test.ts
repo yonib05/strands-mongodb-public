@@ -103,6 +103,18 @@ describeTier('integration', 'indexes', () => {
     expect((error as MongoServerError).code).toBe(26)
   })
 
+  it('a create under a name already taken by the same definition answers the name and changes nothing', async () => {
+    const collection = fresh('same')
+    const [vector] = memorySearchSpecs(MANUAL)
+    await search(collection, [vector!])
+    const before = (await listed(collection)).map((index) => [index.name, index.latestVersion])
+
+    await expect(collection.createSearchIndex(vector!.toDescription())).resolves.toBe(vector!.name)
+
+    expect(before).toHaveLength(1)
+    expect((await listed(collection)).map((index) => [index.name, index.latestVersion])).toEqual(before)
+  })
+
   it('a create under a name already taken by another definition is refused with code 68, and ensure reports the conflict', async () => {
     const collection = fresh('taken')
     const [vector] = memorySearchSpecs(MANUAL)
