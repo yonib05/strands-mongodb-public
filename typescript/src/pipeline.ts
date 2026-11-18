@@ -1,5 +1,5 @@
 import type { Document } from 'mongodb'
-import { CONTENT_FIELD, MAX_NUM_CANDIDATES, VECTOR_FIELD } from './indexes.js'
+import { CONTENT_FIELD, MAX_NUM_CANDIDATES, VECTOR_FIELD } from './index-specs.js'
 import { DEFAULT_OVERSAMPLING_FACTOR, type VectorMode } from './types.js'
 
 /** Rank constant the server applies inside `$rankFusion`, never sent. A fused score is a sum of `1 / (rank + 60)`. */

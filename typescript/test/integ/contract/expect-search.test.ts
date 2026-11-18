@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { MongoClient } from 'mongodb'
 import { expect, it } from 'vitest'
-import { searchSupport } from '../../../src/indexes.js'
-import { defaultLogger } from '../../../src/logging.js'
+import { searchSupport } from '../../../src/probes.js'
 import { tierUri } from '../../env.js'
 import { describeTier } from '../../tiers.js'
 
@@ -15,7 +14,7 @@ describeTier('contract', 'the deployment the environment promised', () => {
     try {
       // An absent collection is enough: the probe reads the server's answer, not an index.
       const collection = client.db('strands_mongodb_contract').collection(`expect_search_${randomUUID().slice(0, 8)}`)
-      const support = await searchSupport(collection, defaultLogger)
+      const support = await searchSupport(collection)
 
       expect(support, `${EXPECT_SEARCH} is set, but MONGODB_URI names a deployment without a search process`).toEqual({
         available: true,

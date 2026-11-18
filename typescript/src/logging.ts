@@ -1,10 +1,8 @@
 import type { Logger } from '@strands-agents/sdk'
 
-/** Every event name this package logs, identical to the Python package's. */
+/** Every event name this package logs. All but `rank_fusion_probe_failed` are also the Python package's. */
 export type LogEvent =
   | 'retry_writes_disabled'
-  | 'attribution_not_visible'
-  | 'closed_loop_client_dropped'
   | 'reserved_key_collision'
   | 'no_search_setup'
   | 'tier_unavailable'
@@ -15,7 +13,7 @@ export type LogEvent =
   | 'creating_indexes'
   | 'creating_search_index'
   | 'search_index_status'
-  | 'attribute_dropped'
+  | 'rank_fusion_probe_failed'
 
 /** Optional context rendered into a log line by {@link logFields}. */
 export interface LogContext {
@@ -36,7 +34,7 @@ export const defaultLogger: Logger = {
  *
  * @param event - The event being logged
  * @param context - Optional namespace and tier; absent keys are omitted
- * @returns The rendered fields
+ * @returns The fields, comma separated
  */
 export function logFields(event: LogEvent, context: LogContext = {}): string {
   const parts = [`event=${event}`]

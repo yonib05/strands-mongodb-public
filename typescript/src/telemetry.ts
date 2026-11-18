@@ -41,6 +41,16 @@ export interface SpanBase {
 }
 
 /**
+ * Builds the two attributes that name a collection.
+ *
+ * @param collection - The collection a span is about
+ * @returns Its database and collection names
+ */
+export function namespaceAttributes(collection: { dbName: string; collectionName: string }): Attributes {
+  return { 'strands_mongodb.database': collection.dbName, 'strands_mongodb.collection': collection.collectionName }
+}
+
+/**
  * Records one `INTERNAL` span named `strands_mongodb.<surface>.<operation>` around a store operation.
  *
  * @param surface - `storage` or `memory`

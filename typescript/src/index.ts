@@ -11,7 +11,7 @@ export {
   MAX_DIMENSIONS,
   MAX_NUM_CANDIDATES,
   READY_TIMEOUT_SECONDS,
-} from './indexes.js'
+} from './index-specs.js'
 export {
   DEFAULT_COLLECTION,
   MongoDBMemoryStore,

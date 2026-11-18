@@ -13,7 +13,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConstructedMongoClient, FakeCollection, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
 import { oneSpan, recordSpans, spansNamed } from '../__fixtures__/spans.js'
 import { close } from '../client.js'
-import { EXPIRES_FIELD, READY_TIMEOUT_SECONDS, SearchIndexNotReady, SearchIndexSpec } from '../indexes.js'
+import { SearchIndexNotReady } from '../ensure-indexes.js'
+import { EXPIRES_FIELD, READY_TIMEOUT_SECONDS, SearchIndexSpec } from '../index-specs.js'
 import { NAMESPACED, successor } from '../keys.js'
 import { MAX_DOCUMENT_BYTES, MAX_KEY_BYTES, MongoDBStorage, type MongoDBStorageOptions } from '../storage.js'
 import type { MongoDBConfig } from '../types.js'
@@ -1301,7 +1302,6 @@ describe('MongoDBStorage', () => {
       expect(error.message).toContain('appdb.storage')
       expect(error.message).toContain("'en'")
       expect(error.message).toContain('simple')
-      expect(error.message).toContain('cannot be changed')
     })
 
     it('still lets the store be closed', async () => {

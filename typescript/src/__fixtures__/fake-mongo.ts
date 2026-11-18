@@ -483,8 +483,9 @@ export class FakeMongoClient {
     return this.closeCount > 0
   }
 
-  // Does not dedupe, unlike the driver, so a test can count this package's own appends.
+  // A repeated identical entry is ignored, as the driver ignores it.
   appendMetadata(info: DriverInfo): void {
+    if (this.appended.some((seen) => seen.name === info.name && seen.version === info.version)) return
     this.appended.push(info)
     const { driver } = this.options.metadata
     driver.name += `|${info.name ?? ''}`

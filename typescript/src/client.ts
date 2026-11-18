@@ -1,19 +1,21 @@
 import { createHash } from 'node:crypto'
-import { MongoClient } from 'mongodb'
+import type { Logger } from '@strands-agents/sdk'
+import { type Collection, MongoClient, type MongoClientOptions } from 'mongodb'
+import { namespaceOf } from './driver-errors.js'
 import { defaultLogger, logFields } from './logging.js'
+import { rankFusionSupport, requireBinaryComparison, searchSupport } from './probes.js'
 import { event } from './telemetry.js'
 import type { MongoDBConfig } from './types.js'
 import { PACKAGE_VERSION } from './version.js'
 
-// The `driver.name` entry server logs and Atlas telemetry group by. Changing it orphans usage data.
-/** Name this package appends to the driver's handshake metadata. */
+/** Name appended to the driver's handshake metadata. Server logs group by it, so changing it orphans usage data. */
 export const DRIVER_NAME = 'Strands-MongoDB'
 
 const MISSING_CONNECTION =
-  "strands_mongodb: a MongoDB connection is required, but neither 'client' nor 'connectionString' was set in the configuration. Set 'connectionString' to a MongoDB URI, or set 'client' to a MongoClient you already have."
+  "strands_mongodb: neither 'client' nor 'connectionString' is set in the configuration. Set 'connectionString' to a MongoDB URI, or 'client' to a MongoClient you already have."
 
 const RETRY_WRITES_DISABLED =
-  "strands_mongodb: retryWrites is disabled on this MongoDB connection; this package relies on the driver's retries for its single-document writes, so a write interrupted by a primary election surfaces to the caller instead of being replayed. Nothing is corrupted; remove retryWrites=false to restore the designed behavior."
+  'strands_mongodb: retryWrites is disabled on this connection, so a write interrupted by a primary election fails instead of being retried. Remove retryWrites=false to restore the retries.'
 
 /** What a deployment can do, probed once and cached on its connection. */
 export interface Capabilities {
@@ -25,22 +27,26 @@ export interface Capabilities {
   rankFusion: boolean
 }
 
-/** One MongoDB client and the per-connection state a config object cannot hold. Never holds the connection string. */
+/** One MongoDB client and what has been learned about its deployment. Never holds the connection string. */
 export class Connection {
-  /** Result of the capability probe, absent until it has run. */
-  capabilities?: Capabilities
-  /** `db.coll` namespaces whose default collation was read and found binary. */
-  readonly binaryKeys = new Set<string>()
+  private _capabilities: Capabilities | undefined
+  private readonly _binaryKeys = new Set<string>()
   private _tail: Promise<unknown> = Promise.resolve()
 
   /**
    * @param client - The shared client, built here or injected by the caller
-   * @param owned - Whether this module built the client; an injected one is never closed
    */
-  constructor(
-    readonly client: MongoClient,
-    readonly owned: boolean
-  ) {}
+  constructor(readonly client: MongoClient) {}
+
+  /** Result of {@link Connection.probe}, absent until it has run. */
+  get capabilities(): Capabilities | undefined {
+    return this._capabilities
+  }
+
+  /** `db.coll` namespaces whose default collation was read and found binary. */
+  get binaryKeys(): ReadonlySet<string> {
+    return this._binaryKeys
+  }
 
   /**
    * Runs `fn` once every earlier call has settled, guarding one-time setup against concurrent stores.
@@ -57,13 +63,48 @@ export class Connection {
     )
     return result
   }
+
+  /**
+   * Verifies, once per namespace, that the collection compares keys byte for byte.
+   *
+   * @param collection - The collection about to be operated on. An absent one is read again on the next call
+   * @throws StorageError if the collection's default collation is not binary, or reading it fails
+   */
+  async requireBinaryKeys(collection: Collection): Promise<void> {
+    const namespace = namespaceOf(collection)
+    if (this._binaryKeys.has(namespace)) return
+    if (await requireBinaryComparison(collection)) this._binaryKeys.add(namespace)
+  }
+
+  /**
+   * Probes what the deployment can do, once per connection, and warns if it has no Atlas Search.
+   *
+   * @param collection - Any collection on the deployment. Need not exist
+   * @param logger - Receives the `no_search_setup` warning and the `rank_fusion_probe_failed` event
+   * @returns The cached answer on every later call
+   * @throws StorageError if the search probe fails for a reason other than "no Atlas Search"
+   */
+  async probe(collection: Collection, logger: Logger): Promise<Capabilities> {
+    if (this._capabilities !== undefined) return this._capabilities
+    const support = await searchSupport(collection)
+    // Only where search exists: hybrid needs both search tiers, so without them the version changes nothing.
+    const rankFusion = support.available ? await rankFusionSupport(collection, logger) : false
+    const capabilities: Capabilities = { search: support.available, rankFusion }
+    if (support.code !== undefined) capabilities.noSearchCode = support.code
+    this._capabilities = capabilities
+    if (!capabilities.search) {
+      const namespace = namespaceOf(collection)
+      logger.warn(
+        `strands_mongodb: ${namespace} is on a deployment that does not run Atlas Search (server error code ${support.code}), so memories can be written but not searched. Point 'connectionString' at MongoDB Atlas or a local Atlas deployment. | ${logFields('no_search_setup', { namespace })}`
+      )
+    }
+    return capabilities
+  }
 }
 
 // Keyed by a digest, never by the connection string, so no key can leak a password.
 const constructed = new Map<string, Connection>()
 const injected = new WeakMap<MongoClient, Connection>()
-// Outlives `close()`, so a close-and-resolve cycle never grows the handshake metadata.
-const attributed = new WeakSet<MongoClient>()
 const objectIds = new WeakMap<object, number>()
 let nextObjectId = 0
 
@@ -71,7 +112,8 @@ let nextObjectId = 0
  * Returns the shared connection for a config, creating it on first use.
  *
  * @param config - Only the connection fields are read; `database` does not affect identity
- * @returns The same connection for every config with the same connection identity
+ * @returns The same connection for every config with the same injected client, or the same connection string and
+ * client options
  * @throws TypeError if neither `client` nor `connectionString` is set
  */
 export function resolve(config: MongoDBConfig): Connection {
@@ -79,28 +121,26 @@ export function resolve(config: MongoDBConfig): Connection {
   if (client !== undefined) {
     const existing = injected.get(client)
     if (existing !== undefined) return existing
-    if (!attributed.has(client)) {
-      client.appendMetadata({ name: DRIVER_NAME, version: PACKAGE_VERSION })
-      attributed.add(client)
-    }
-    const connection = register(client, false, config)
+    const connection = register(client, config)
     injected.set(client, connection)
     return connection
   }
 
-  const key = identity(config)
+  const { connectionString } = config
+  if (!connectionString) throw new TypeError(MISSING_CONNECTION)
+  const key = identity(connectionString, config.clientOptions)
   const existing = constructed.get(key)
   if (existing !== undefined) return existing
-  const created = new MongoClient(config.connectionString!, config.clientOptions)
-  created.appendMetadata({ name: DRIVER_NAME, version: PACKAGE_VERSION })
-  const connection = register(created, true, config)
+  const connection = register(new MongoClient(connectionString, config.clientOptions), config)
   constructed.set(key, connection)
   return connection
 }
 
 /**
- * Releases the connection for a config, closing the client only if this module built it.
- * Idempotent, and a no-op for a config that never resolved. A later `resolve` opens a fresh pool.
+ * Closes the client built for a config's connection identity, for every store that shares it.
+ *
+ * @remarks
+ * An injected client is forgotten, never closed. Idempotent, and a later {@link resolve} opens a fresh pool.
  *
  * @param config - The configuration whose connection to release
  */
@@ -110,8 +150,9 @@ export async function close(config: MongoDBConfig): Promise<void> {
     injected.delete(client)
     return
   }
-  if (!config.connectionString) return
-  const key = identity(config)
+  const { connectionString } = config
+  if (!connectionString) return
+  const key = identity(connectionString, config.clientOptions)
   const connection = constructed.get(key)
   if (connection === undefined) return
   // Forgotten before the await, so a concurrent close finds nothing to close again.
@@ -119,20 +160,21 @@ export async function close(config: MongoDBConfig): Promise<void> {
   await connection.client.close()
 }
 
-function register(client: MongoClient, owned: boolean, config: MongoDBConfig): Connection {
+// The driver ignores a repeated identical `appendMetadata`, so a re-registered injected client is attributed once.
+function register(client: MongoClient, config: MongoDBConfig): Connection {
+  client.appendMetadata({ name: DRIVER_NAME, version: PACKAGE_VERSION })
   if (client.options.retryWrites === false) {
     const logger = config.logger ?? defaultLogger
     logger.warn(`${RETRY_WRITES_DISABLED} | ${logFields('retry_writes_disabled')}`)
   }
-  event('strands_mongodb.client.acquired', { 'strands_mongodb.client.injected': !owned })
-  return new Connection(client, owned)
+  event('strands_mongodb.client.acquired', { 'strands_mongodb.client.injected': config.client !== undefined })
+  return new Connection(client)
 }
 
-function identity(config: MongoDBConfig): string {
-  const { connectionString } = config
-  if (!connectionString) throw new TypeError(MISSING_CONNECTION)
-  const options = stableJson(config.clientOptions ?? {})
-  return createHash('sha256').update(`${connectionString}\0${options}`).digest('hex')
+function identity(connectionString: string, clientOptions: MongoClientOptions = {}): string {
+  return createHash('sha256')
+    .update(`${connectionString}\0${stableJson(clientOptions)}`)
+    .digest('hex')
 }
 
 // Non-JSON objects render with a per-object id, so distinct objects key distinctly, as Python's `repr` does.

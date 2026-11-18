@@ -159,8 +159,8 @@ describe('AT-114: no Markdown file in the repository carries a credential', () =
 
 describe('AT-115: the house conventions hold in src/', () => {
   describe('logging', () => {
-    it('declares the fourteen events', () => {
-      expect(logEvents().size).toBe(14)
+    it('declares the twelve events', () => {
+      expect(logEvents().size).toBe(12)
     })
 
     it('passes a logFields event literal on every logger call', () => {

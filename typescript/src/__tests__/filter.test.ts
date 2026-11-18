@@ -1,9 +1,8 @@
 import { Buffer } from 'node:buffer'
 import { BSON, BSONRegExp, ObjectId } from 'mongodb'
 import { describe, expect, it } from 'vitest'
-import { BAKED_IN_FILTER_FIELDS, compose, validate } from '../filter.js'
-
-const BAKED_IN = BAKED_IN_FILTER_FIELDS
+import { compose, validate } from '../filter.js'
+import { BAKED_IN_FILTER_FIELDS as BAKED_IN } from '../index-specs.js'
 
 function messageOf(run: () => void): string {
   try {
@@ -14,12 +13,6 @@ function messageOf(run: () => void): string {
   }
   throw new Error('expected a TypeError')
 }
-
-describe('BAKED_IN_FILTER_FIELDS', () => {
-  it('is scope and store_name, in wire format', () => {
-    expect(BAKED_IN_FILTER_FIELDS).toEqual(['scope', 'store_name'])
-  })
-})
 
 describe('BSON encoding premise', () => {
   const plain = BSON.serialize({ tier: { $ne: 'gold' } })

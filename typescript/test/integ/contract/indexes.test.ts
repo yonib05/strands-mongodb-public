@@ -2,19 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { StorageError } from '@strands-agents/sdk'
 import { type Collection, type Db, type Document, MongoClient } from 'mongodb'
 import { afterAll, beforeAll, expect, it } from 'vitest'
-import {
-  dropIndexCommand,
-  ensure,
-  memorySpecs,
-  RANK_FUSION_MIN_MAJOR,
-  rankFusionSupport,
-  readCollation,
-  requireBinaryComparison,
-  SEARCH_UNSUPPORTED_CODES,
-  searchSupport,
-  storageSpecs,
-} from '../../../src/indexes.js'
+import { ensure } from '../../../src/ensure-indexes.js'
+import { dropIndexCommand, memorySpecs, storageSpecs } from '../../../src/index-specs.js'
 import { defaultLogger } from '../../../src/logging.js'
+import { rankFusionSupport, requireBinaryComparison, searchSupport } from '../../../src/probes.js'
 import { tierUri } from '../../env.js'
 import { describeTier } from '../../tiers.js'
 
@@ -147,28 +138,24 @@ describeTier('contract', 'indexes', () => {
     await db.createCollection(plain.collectionName)
     await db.createCollection(simple.collectionName, { collation: { locale: 'simple' } })
 
-    expect(await readCollation(folded, defaultLogger)).toEqual({ exists: true, locale: 'en' })
-    expect(await readCollation(plain, defaultLogger)).toEqual({ exists: true })
-    // The server does not store a simple collation.
-    expect(await readCollation(simple, defaultLogger)).toEqual({ exists: true })
-    expect(await readCollation(absent, defaultLogger)).toEqual({ exists: false })
-
-    const error = await rejectionOf(requireBinaryComparison(folded, defaultLogger))
+    const error = await rejectionOf(requireBinaryComparison(folded))
     expect(error).toBeInstanceOf(StorageError)
     expect(error.message).toContain("'en'")
     expect(error.message).toContain(`${folded.dbName}.${folded.collectionName}`)
-    expect(await requireBinaryComparison(plain, defaultLogger)).toBe(true)
-    expect(await requireBinaryComparison(absent, defaultLogger)).toBe(false)
+    expect(await requireBinaryComparison(plain)).toBe(true)
+    // The server does not store a simple collation, so this reads as an uncollated collection.
+    expect(await requireBinaryComparison(simple)).toBe(true)
+    expect(await requireBinaryComparison(absent)).toBe(false)
   })
 
   it('AT-053d, AT-145: probes the deployment for Atlas Search and $rankFusion', async () => {
     const collection = fresh('probe')
 
-    const support = await searchSupport(collection, defaultLogger)
+    const support = await searchSupport(collection)
     const fusion = await rankFusionSupport(collection, defaultLogger)
 
-    if (!support.available) expect(SEARCH_UNSUPPORTED_CODES.has(support.code!)).toBe(true)
+    if (!support.available) expect([31082, 115, 6047401]).toContain(support.code)
     const { versionArray } = (await db.command({ buildInfo: 1 })) as { versionArray: number[] }
-    expect(fusion).toBe(versionArray[0]! >= RANK_FUSION_MIN_MAJOR)
+    expect(fusion).toBe(versionArray[0]! >= 8)
   })
 })

@@ -13,24 +13,20 @@ import type { Embedder } from '@strands-agents/sdk/storage/search'
 import { BSON, type Collection, type Document, MongoError, MongoServerError, ObjectId } from 'mongodb'
 import { type Capabilities, close as release, type Connection, resolve } from './client.js'
 import { compose, validate } from './filter.js'
+import { embed } from './embedding.js'
+import { ensure, SearchIndexNotReady } from './ensure-indexes.js'
 import {
   checkTtl,
   CONTENT_FIELD,
   declaredFilterFields,
-  embed,
-  ensure,
   EXPIRES_FIELD,
   memorySearchSpecs,
   memorySpecs,
-  rankFusionSupport,
   READY_TIMEOUT_SECONDS,
-  requireBinaryComparison,
-  SearchIndexNotReady,
   type SearchIndexSpec,
-  searchSupport,
   VECTOR_FIELD,
   vectorMode,
-} from './indexes.js'
+} from './index-specs.js'
 import { defaultLogger, logFields } from './logging.js'
 import { checkQueryKeys, hybridStages, SCORE_FIELD, textStages, vectorStages } from './pipeline.js'
 import { annotate, type SpanBase, traced } from './telemetry.js'
@@ -622,16 +618,11 @@ export class MongoDBMemoryStore implements MemoryStore {
         return
       }
       const collection = this._collection()
-      const target = this._target
 
       // Before any index is created: a case-folding collation would let one scope read another's documents.
-      let verified = connection.binaryKeys.has(target)
-      if (!verified) {
-        verified = await requireBinaryComparison(collection, this._logger)
-        if (verified) connection.binaryKeys.add(target)
-      }
+      await connection.requireBinaryKeys(collection)
 
-      const capabilities = await this._probe(connection, collection)
+      const capabilities = await connection.probe(collection, this._logger)
       // Ordinary indexes always, search or not: they include the unique index behind `add`'s deduplication.
       await ensure(collection, {
         ordinary: memorySpecs(),
@@ -651,29 +642,11 @@ export class MongoDBMemoryStore implements MemoryStore {
       }
 
       // An absent collection could not be verified above; creating the indexes created it, so check it now.
-      if (!verified && (await requireBinaryComparison(collection, this._logger))) connection.binaryKeys.add(target)
+      await connection.requireBinaryKeys(collection)
 
       annotate('strands_mongodb.search.tiers', this._tiers.join(','))
       this._initialized = true
     })
-  }
-
-  // Search support belongs to the deployment, so stores sharing a connection probe once.
-  private async _probe(connection: Connection, collection: Collection): Promise<Capabilities> {
-    const cached = connection.capabilities
-    if (cached !== undefined) return cached
-    const support = await searchSupport(collection, this._logger)
-    // Only where search exists: hybrid needs both search tiers, so without them the version changes nothing.
-    const rankFusion = support.available ? await rankFusionSupport(collection, this._logger) : false
-    const capabilities: Capabilities = { search: support.available, rankFusion }
-    if (support.code !== undefined) capabilities.noSearchCode = support.code
-    connection.capabilities = capabilities
-    if (!capabilities.search) {
-      this._logger.warn(
-        `strands_mongodb: ${this._target} is on a deployment that does not run Atlas Search, so no search index was created and no query can be answered here. The server reported error code ${capabilities.noSearchCode} when asked to list its search indexes. Ordinary indexes and writes are unaffected, so this store can hold memories and cannot read them back. Point 'connectionString' at MongoDB Atlas, or at a local Atlas deployment started with 'atlas deployments setup --type local', which runs the same search process. | ${logFields('no_search_setup', { namespace: this._target })}`
-      )
-    }
-    return capabilities
   }
 
   // A retry that fails, or still finds a tier missing, keeps the tiers the store has and doubles the delay.

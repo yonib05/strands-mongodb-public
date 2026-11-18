@@ -21,7 +21,9 @@ import {
 import { type Db, type Document, MongoClient, MongoServerError, ObjectId } from 'mongodb'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { close } from '../../../src/client.js'
-import { ensure, EXPIRES_FIELD, searchSupport } from '../../../src/indexes.js'
+import { ensure } from '../../../src/ensure-indexes.js'
+import { EXPIRES_FIELD } from '../../../src/index-specs.js'
+import { searchSupport } from '../../../src/probes.js'
 import { MongoDBMemoryStore, UNSCOPED } from '../../../src/memory-store.js'
 import { MongoDBStorage } from '../../../src/storage.js'
 import type { MongoDBConfig, MongoDBMemoryStoreConfig } from '../../../src/types.js'
@@ -512,7 +514,7 @@ describeTier('contract', 'memory store', () => {
     const { store: auto } = store('nosearch_auto', { store: { writable: true } })
     const { store: vector } = store('nosearch_vector', { connection: { ...MANUAL_VECTOR, searchType: 'vector' } })
     await auto.initialize()
-    const support = await searchSupport(auto['_collection'](), auto['_logger'])
+    const support = await searchSupport(auto['_collection']())
 
     if (support.available) {
       expect(await vector.search({ vector: [0, 0, 0, 1] })).toEqual([])

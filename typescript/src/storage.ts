@@ -4,15 +4,8 @@ import type { Storage } from '@strands-agents/sdk/storage'
 import type { SearchStrategy, StorageSearchResult } from '@strands-agents/sdk/storage/search'
 import { Binary, BSON, type Collection, type Document, type Filter, MongoError } from 'mongodb'
 import { close as release, type Connection, resolve } from './client.js'
-import {
-  checkTtl,
-  ensure,
-  EXPIRES_FIELD,
-  READY_TIMEOUT_SECONDS,
-  requireBinaryComparison,
-  type SearchIndexSpec,
-  storageSpecs,
-} from './indexes.js'
+import { ensure } from './ensure-indexes.js'
+import { checkTtl, EXPIRES_FIELD, READY_TIMEOUT_SECONDS, type SearchIndexSpec, storageSpecs } from './index-specs.js'
 import { abbreviate, NAMESPACED, normalizeKey, normalizePrefix, successor, tokenize } from './keys.js'
 import { defaultLogger } from './logging.js'
 import { annotate, type SpanBase, traced } from './telemetry.js'
@@ -360,9 +353,7 @@ export class MongoDBStorage implements Storage {
 
   // Only a verified collection is cached: an absent one may yet be created with any collation.
   private async _requireBinaryKeys(): Promise<void> {
-    const connection = this._connection
-    if (connection.binaryKeys.has(this._target)) return
-    if (await requireBinaryComparison(this._collection(), this._logger)) connection.binaryKeys.add(this._target)
+    await this._connection.requireBinaryKeys(this._collection())
   }
 
   private _spanBase(): SpanBase {

@@ -1,8 +1,5 @@
 import { BSONRegExp } from 'mongodb'
 
-/** Fields the vector index always declares filterable, before `filterFields`. Stored names, so snake_case. */
-export const BAKED_IN_FILTER_FIELDS = ['scope', 'store_name'] as const
-
 // Every object the driver encodes as a subdocument is walked; these encode as BSON scalars instead.
 // bson treats `_bsontype == null` as a plain document, so only a non-null marker is a BSON type.
 function isBsonScalar(value: object): boolean {

@@ -4,7 +4,7 @@ import type { Embedder } from '@strands-agents/sdk/storage/search'
 import { Binary, type Document, type MongoClient } from 'mongodb'
 import { describe, expect, it, vi } from 'vitest'
 import { type FakeCollection, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
-import { DEFAULT_VECTOR_INDEX_NAME, MAX_DIMENSIONS } from '../indexes.js'
+import { DEFAULT_VECTOR_INDEX_NAME, MAX_DIMENSIONS } from '../index-specs.js'
 import { MongoDBStorage } from '../storage.js'
 import {
   DEFAULT_STORAGE_VECTOR_INDEX_NAME,

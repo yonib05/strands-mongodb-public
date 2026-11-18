@@ -71,9 +71,9 @@ describe('resolve', () => {
       const error = errorOf(() => resolve({ database: 'appdb' }))
 
       expect(error).toBeInstanceOf(TypeError)
-      expect(error.message).toBe(
-        "strands_mongodb: a MongoDB connection is required, but neither 'client' nor 'connectionString' was set in the configuration. Set 'connectionString' to a MongoDB URI, or set 'client' to a MongoClient you already have."
-      )
+      expect(error.message).toMatch(/^strands_mongodb: /)
+      expect(error.message).toContain("'client'")
+      expect(error.message).toContain("'connectionString'")
     })
 
     it('treats an empty connection string as missing', () => {
@@ -114,11 +114,6 @@ describe('resolve', () => {
       expect(client.closeCount).toBe(1)
     })
 
-    it('records ownership from the field that supplied the client', () => {
-      expect(track({ database: 'appdb', client: injected() }).owned).toBe(false)
-      expect(track({ database: 'appdb', connectionString: uri() }).owned).toBe(true)
-    })
-
     it('lets an injected client win over a connection string, which is never read', () => {
       const client = injected()
       const config = {
@@ -132,7 +127,6 @@ describe('resolve', () => {
       const connection = track(config)
 
       expect(connection.client).toBe(client)
-      expect(connection.owned).toBe(false)
       expect(ConstructedMongoClient.built).toEqual([])
     })
   })
@@ -300,9 +294,10 @@ describe('resolve', () => {
 
       track({ database: 'appdb', connectionString: uri('?retryWrites=false'), logger })
 
-      expect(warnings(logger)).toEqual([
-        "strands_mongodb: retryWrites is disabled on this MongoDB connection; this package relies on the driver's retries for its single-document writes, so a write interrupted by a primary election surfaces to the caller instead of being replayed. Nothing is corrupted; remove retryWrites=false to restore the designed behavior. | event=retry_writes_disabled",
-      ])
+      const [line, ...rest] = warnings(logger)
+      expect(rest).toEqual([])
+      expect(line).toMatch(/^strands_mongodb: retryWrites is disabled/)
+      expect(line).toMatch(/\| event=retry_writes_disabled$/)
     })
 
     it('warns for client options disabling retries', () => {

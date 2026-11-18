@@ -29,7 +29,7 @@ import {
   READY_TIMEOUT_SECONDS,
   storageSpecs,
   VECTOR_FIELD,
-} from '../indexes.js'
+} from '../index-specs.js'
 import type { LogEvent } from '../logging.js'
 import { DEFAULT_COLLECTION } from '../memory-store.js'
 import { RANK_FUSION_PENALTY } from '../pipeline.js'
@@ -167,8 +167,6 @@ const SPAN_NAMES = {
 const EVENT_NAMES = { 'strands_mongodb.client.acquired': true } satisfies Record<EventName, true>
 const LOG_EVENTS = {
   retry_writes_disabled: true,
-  attribution_not_visible: true,
-  closed_loop_client_dropped: true,
   reserved_key_collision: true,
   no_search_setup: true,
   tier_unavailable: true,
@@ -179,7 +177,7 @@ const LOG_EVENTS = {
   creating_indexes: true,
   creating_search_index: true,
   search_index_status: true,
-  attribute_dropped: true,
+  rank_fusion_probe_failed: true,
 } satisfies Record<LogEvent, true>
 
 const TRACEABLE_VALUES: Record<string, string[]> = {

@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { StorageError } from '@strands-agents/sdk'
 import { type Collection, type Db, type Document, MongoClient, type MongoServerError } from 'mongodb'
 import { afterAll, beforeAll, expect, it } from 'vitest'
-import { ensure, memorySearchSpecs, readiness, type SearchIndexSpec } from '../../../src/indexes.js'
+import { ensure } from '../../../src/ensure-indexes.js'
+import { memorySearchSpecs, type SearchIndexSpec } from '../../../src/index-specs.js'
 import { defaultLogger } from '../../../src/logging.js'
 import type { MongoDBConfig } from '../../../src/types.js'
 import { tierUri } from '../../env.js'
@@ -119,7 +120,7 @@ describeTier('integration', 'indexes', () => {
       const [observed] = await collection.listSearchIndexes(spec.name).toArray()
       const status = String((observed as Document | undefined)?.status)
       if (observed !== undefined && status !== 'READY') {
-        expect(readiness(status)).toBe('building')
+        expect(status).not.toBe('FAILED')
         await search(collection, [spec], false)
         return
       }

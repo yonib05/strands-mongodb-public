@@ -1,7 +1,7 @@
 import type { Document } from 'mongodb'
 import { describe, expect, it } from 'vitest'
 import fixtures from '../__fixtures__/pipeline-stages.json' with { type: 'json' }
-import { CONTENT_FIELD, DEFAULT_EMBEDDING_MODEL, MAX_NUM_CANDIDATES, VECTOR_FIELD } from '../indexes.js'
+import { CONTENT_FIELD, DEFAULT_EMBEDDING_MODEL, MAX_NUM_CANDIDATES, VECTOR_FIELD } from '../index-specs.js'
 import {
   candidateCount,
   checkCandidateCount,

@@ -816,7 +816,7 @@ strands_mongodb: <sentence> | event=<name>, namespace=<database>.<collection>, t
 ```
 
 `event` is always present; `namespace` and `tier` appear where the line is about one. The event names are
-stable, and identical to the Python package's `strands_mongodb_event` values:
+stable, and those the Python package also logs carry its `strands_mongodb_event` values:
 
 | `event` | Level | Logged when |
 |---|---|---|
@@ -831,8 +831,7 @@ stable, and identical to the Python package's `strands_mongodb_event` values:
 | `creating_indexes` | `info` | Ordinary indexes are being created |
 | `creating_search_index` | `info` | A search index is being created |
 | `search_index_status` | `info` | A search index changed status while being waited for |
-| `attribute_dropped` | `debug` | A span attribute was not on the allow-list and was dropped |
-| `attribution_not_visible`, `closed_loop_client_dropped` | none | Declared in `LogEvent` for parity with the Python package and never emitted by this one: the Node driver always takes `appendMetadata`, and Node has no event loop to close under a client |
+| `rank_fusion_probe_failed` | `debug` | `buildInfo` failed, so the deployment is treated as unable to run `$rankFusion`. TypeScript only |
 
 ## Examples
 

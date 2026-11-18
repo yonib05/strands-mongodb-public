@@ -8,14 +8,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConstructedMongoClient, FakeCollection, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
 import { oneSpan, recordSpans, spansNamed } from '../__fixtures__/spans.js'
 import { close } from '../client.js'
-import {
-  CONTENT_FIELD,
-  EXPIRES_FIELD,
-  memorySearchSpecs,
-  READY_TIMEOUT_SECONDS,
-  SearchIndexNotReady,
-  VECTOR_FIELD,
-} from '../indexes.js'
+import { SearchIndexNotReady } from '../ensure-indexes.js'
+import { CONTENT_FIELD, EXPIRES_FIELD, memorySearchSpecs, READY_TIMEOUT_SECONDS, VECTOR_FIELD } from '../index-specs.js'
 import {
   DEFAULT_COLLECTION,
   mergeMetadata,
