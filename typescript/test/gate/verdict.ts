@@ -1,5 +1,5 @@
 import type { Item } from './checklist.js'
-import { REAL_DEPLOYMENT_PROJECTS, type RecordedTest, type Results } from './reporter.js'
+import { REAL_DEPLOYMENT_PROJECTS, type RecordedTest, type Results, type Revision } from './reporter.js'
 
 const LEADING_IDS = /^(?:AT|CH|MP)-\d{1,3}[a-z]*(?:,\s*(?:AT|CH|MP)-\d{1,3}[a-z]*)*/
 
@@ -11,19 +11,26 @@ export function leadingIds(title: string): string[] {
 const label = (test: RecordedTest) => `${test.file} > ${test.titles.join(' > ')}`
 
 /**
- * Refuses recorded runs that did not test the commit being released.
+ * Refuses a working tree, or recorded runs, that are not the commit being released.
  *
  * @param results - The recorded runs
- * @param head - The commit checked out now
- * @returns One line per run from another commit or from a modified tree, naming the project to rerun
+ * @param now - The commit checked out, and whether the working tree differs from it
+ * @returns One line for a modified tree, and one per run from another commit or from a modified tree, each naming
+ * what to do
  */
-export function stale(results: Results, head: string): string[] {
-  return REAL_DEPLOYMENT_PROJECTS.flatMap((project) => {
+export function stale(results: Results, now: Revision): string[] {
+  const head = now.commit.slice(0, 7)
+  const tree = now.dirty
+    ? [`the working tree differs from commit ${head}: commit the changes, then rerun both tiers and this gate`]
+    : []
+  const runs = REAL_DEPLOYMENT_PROJECTS.flatMap((project) => {
     const run = results[project]
-    if (run === undefined || (run.commit === head && !run.dirty)) return []
+    if (run === undefined || (run.commit === now.commit && !run.dirty)) return []
     const tested = `${run.dirty ? 'a modified tree at' : 'commit'} ${run.commit.slice(0, 7)}`
-    return [`the ${project} results are from ${tested}, not commit ${head.slice(0, 7)}: rerun npm run test:${project}`]
+    const fix = `${run.dirty ? 'commit the changes, then ' : ''}rerun npm run test:${project}`
+    return [`the ${project} results are from ${tested}, not commit ${head}: ${fix}`]
   })
+  return [...tree, ...runs]
 }
 
 /**

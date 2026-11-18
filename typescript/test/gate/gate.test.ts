@@ -93,16 +93,25 @@ describe('the release gate verdict', () => {
     expect(unproven({}, [ITEM])).toHaveLength(1)
   })
 
-  it('refuses a run from another commit or from a modified tree, naming the project to rerun', () => {
-    const head = 'b'.repeat(40)
-    const current = { ...run(), commit: head }
+  it('refuses a run from another commit or from a modified tree, naming what to do', () => {
+    const head = { commit: 'b'.repeat(40), dirty: false }
+    const current = { ...run(), commit: head.commit }
 
     expect(stale({ contract: current, integration: current }, head)).toEqual([])
     expect(stale({ contract: run(), integration: current }, head)).toEqual([
       'the contract results are from commit aaaaaaa, not commit bbbbbbb: rerun npm run test:contract',
     ])
     expect(stale({ integration: { ...current, dirty: true } }, head)).toEqual([
-      'the integration results are from a modified tree at bbbbbbb, not commit bbbbbbb: rerun npm run test:integration',
+      'the integration results are from a modified tree at bbbbbbb, not commit bbbbbbb: commit the changes, then rerun npm run test:integration',
+    ])
+  })
+
+  it('refuses a working tree modified since the tiers ran clean', () => {
+    const head = { commit: 'b'.repeat(40), dirty: true }
+    const current = { ...run(), commit: head.commit }
+
+    expect(stale({ contract: current, integration: current }, head)).toEqual([
+      'the working tree differs from commit bbbbbbb: commit the changes, then rerun both tiers and this gate',
     ])
   })
 

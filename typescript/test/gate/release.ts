@@ -5,7 +5,7 @@ import { stale, unproven } from './verdict.js'
 
 const items = CHECKLIST.filter((item) => RELEASE_GATE.has(item.number))
 const results = readResults()
-const problems = [...stale(results, revision().commit), ...unproven(results, items)]
+const problems = [...stale(results, revision()), ...unproven(results, items)]
 
 if (problems.length > 0) {
   console.error(`release gate: ${problems.length} problem(s) in the ${REAL_DEPLOYMENT_PROJECTS.join(' and ')} runs`)

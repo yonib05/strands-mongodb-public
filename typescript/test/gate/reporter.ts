@@ -17,10 +17,8 @@ export interface RecordedTest {
   state: TestState
 }
 
-/** The last run of one project: the commit it tested, whether the tree differed from it, and every test. */
-export interface RecordedRun {
-  commit: string
-  dirty: boolean
+/** The last run of one project: the revision it tested, and every test. */
+export interface RecordedRun extends Revision {
   tests: RecordedTest[]
 }
 
@@ -35,7 +33,12 @@ export function readResults(): Results {
 }
 
 /** The commit checked out, and whether the working tree differs from it. */
-export function revision(): { commit: string; dirty: boolean } {
+export interface Revision {
+  commit: string
+  dirty: boolean
+}
+
+export function revision(): Revision {
   const git = (...args: string[]): string => execFileSync('git', args, { cwd: PACKAGE_ROOT, encoding: 'utf8' }).trim()
   return { commit: git('rev-parse', 'HEAD'), dirty: git('status', '--porcelain') !== '' }
 }
