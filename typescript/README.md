@@ -159,8 +159,9 @@ the options of an injected client. `GSSAPI` needs the `kerberos` package and `MO
 
 The first five keys are the SDK's `MemoryStoreConfig`. The constructor checks what TypeScript cannot
 check for a JavaScript caller. `name`, `scope`, `collection`, and the connection's `database`,
-`vectorIndexName`, `textIndexName`, `embeddingModel` and `filterFields` entries must be strings, and
-`searchType` and `similarity` one of their listed values, or it throws `TypeError`. A numeric setting that is
+`vectorIndexName`, `textIndexName`, `embeddingModel` and `filterFields` entries must be strings,
+`writable` and `ensureIndexes` booleans, and `searchType` and `similarity` one of their listed values, or
+it throws `TypeError`. A numeric setting that is
 not a number, or is `NaN` or infinite, throws `RangeError`. A `connectionString` or `clientOptions` the driver
 cannot parse throws the driver's `MongoParseError`, from either class.
 
@@ -296,8 +297,9 @@ const store = new MongoDBMemoryStore({
 ```
 
 Without an `embedder`, memories are stored with no `embedding`, and only a query carrying a `vector` can
-use the vector tier. A vector of the wrong length throws `RangeError` before the write. An `embedder` on
-a store where Atlas embeds throws `TypeError`.
+use the vector tier. A vector of the wrong length throws `RangeError` before the write, and one that is
+not a plain array of finite numbers, such as a `Float32Array`, throws `TypeError`. An `embedder` on a
+store where Atlas embeds throws `TypeError`.
 
 ### Reserved metadata keys
 

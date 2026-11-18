@@ -14,8 +14,13 @@ function claimsBsonType(value: object): boolean {
   return Reflect.get(value, '_bsontype') != null
 }
 
+// The symbol alone is not enough: without a string `_bsontype`, bson encodes the object as a document.
 function isBsonValue(value: object): boolean {
-  return INSTALLED_BSON_VERSION !== undefined && Reflect.get(value, BSON_VERSION) === INSTALLED_BSON_VERSION
+  return (
+    typeof Reflect.get(value, '_bsontype') === 'string' &&
+    INSTALLED_BSON_VERSION !== undefined &&
+    Reflect.get(value, BSON_VERSION) === INSTALLED_BSON_VERSION
+  )
 }
 
 // Every other object is encoded as a subdocument and walked. `DBRef.fields`, `Code` scope and getters are not read.

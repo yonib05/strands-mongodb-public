@@ -244,6 +244,26 @@ describe('MongoDBStorage', () => {
       expect(() => new MongoDBStorage({ database: 'appdb' }, { prefix: 'a/../b' })).toThrow(StorageError)
     })
 
+    it.each([
+      ['config', [undefined]],
+      ['config', [null]],
+      ['options', [{ database: 'appdb', connectionString: 'mongodb://unused' }, null]],
+    ])('throws a TypeError naming %s when it is not an object', (name, args) => {
+      const error = errorOf(() => new MongoDBStorage(...(args as [MongoDBConfig, MongoDBStorageOptions])))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toMatch(/^strands_mongodb: /)
+      expect(error.message).toContain(`'${name}'`)
+      expect(ConstructedMongoClient.built).toEqual([])
+    })
+
+    it('throws a TypeError for an ensureIndexes that is not a boolean, so a string cannot create indexes', () => {
+      const error = errorOf(() => setup({}, { ensureIndexes: 'false' as unknown as boolean }))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain("'ensureIndexes'")
+    })
+
     it('throws a TypeError when neither client nor connectionString is set', () => {
       expect(() => new MongoDBStorage({ database: 'appdb' })).toThrow(TypeError)
     })
@@ -367,6 +387,35 @@ describe('MongoDBStorage', () => {
       await storage.write('/sessions//abc', PAYLOAD)
 
       expect(ids(collection)).toEqual(['tenant-a/sessions/abc'])
+    })
+  })
+
+  describe('a key, prefix or query that is not a string is a TypeError before any call', () => {
+    it.each([
+      ['key', (storage: MongoDBStorage, value: string) => storage.write(value, PAYLOAD)],
+      ['key', (storage: MongoDBStorage, value: string) => storage.read(value)],
+      ['key', (storage: MongoDBStorage, value: string) => storage.delete(value)],
+      ['query', (storage: MongoDBStorage, value: string) => storage.list(value)],
+      ['query', (storage: MongoDBStorage, value: string) => storage.search(value)],
+      ['prefix', (storage: MongoDBStorage, value: string) => storage.deletePrefix(value)],
+    ])('rejects with a TypeError naming %s', async (name, call) => {
+      for (const value of [undefined, 123, { $gt: '' }]) {
+        const { storage, collection } = setup()
+
+        const error = await rejectionOf(call(storage, value as unknown as string))
+
+        expect(error).toBeInstanceOf(TypeError)
+        expect(error.message).toMatch(/^strands_mongodb: /)
+        expect(error.message).toContain(`'${name}'`)
+        expect(collection.calls).toEqual([])
+      }
+    })
+
+    it('throws a TypeError naming prefix from namespace', () => {
+      const error = errorOf(() => setup().storage.namespace(5 as unknown as string))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain("'prefix'")
     })
   })
 

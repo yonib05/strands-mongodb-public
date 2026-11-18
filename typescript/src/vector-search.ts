@@ -1,7 +1,7 @@
 import { TextDecoder } from 'node:util'
 import type { Embedder, SearchStrategy, StorageSearchResult } from '@strands-agents/sdk/storage/search'
 import { Binary, type Document } from 'mongodb'
-import { requireNumber, requireOneOf, requireString } from './checks.js'
+import { requireEmbedder, requireNumber, requireObject, requireOneOf, requireString } from './checks.js'
 import { embed } from './embedding.js'
 import { MAX_DIMENSIONS, SearchIndexSpec, SIMILARITIES, VECTOR_FIELD } from './index-specs.js'
 import { candidateCount, SCORE_FIELD, VECTOR_SCORE_META } from './pipeline.js'
@@ -71,11 +71,14 @@ export class MongoDBVectorSearchStrategy implements SearchStrategy<MongoDBStorag
    *
    * @param options - Embedder, vector shape, index name and result bounds
    * @throws RangeError if `dimensions`, `maxResults`, `oversamplingFactor` or their product is out of range
-   * @throws TypeError if `similarity` is not one the server supports, or `indexName` is not a string
+   * @throws TypeError if `options` is not an object, `embedder` has no `embed` method, `similarity` is not one the
+   * server supports, or `indexName` is not a string
    */
   constructor(options: MongoDBVectorSearchStrategyOptions) {
+    requireObject('options', options)
     const { embedder, dimensions, similarity, indexName = DEFAULT_STORAGE_VECTOR_INDEX_NAME } = options
     const { maxResults = DEFAULT_MAX_SEARCH_RESULTS, oversamplingFactor = DEFAULT_OVERSAMPLING_FACTOR } = options
+    requireEmbedder(embedder)
     requireNumber('dimensions', dimensions, { min: 1, max: MAX_DIMENSIONS, integer: true })
     requireOneOf('similarity', similarity, SIMILARITIES)
     requireString('indexName', indexName)

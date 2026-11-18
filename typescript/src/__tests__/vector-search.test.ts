@@ -70,6 +70,27 @@ function stored(collection: FakeCollection, _id: string): Document {
 }
 
 describe('MongoDBVectorSearchStrategy', () => {
+  describe('untyped input is rejected at construction', () => {
+    it.each([
+      ['no embedder', { dimensions: 4, similarity: 'cosine' }],
+      ['an embedder with no embed method', { embedder: {}, dimensions: 4, similarity: 'cosine' }],
+    ])('throws a TypeError naming embedder for %s', (_kind, options) => {
+      const error = errorOf(() => new MongoDBVectorSearchStrategy(options as MongoDBVectorSearchStrategyOptions))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain("'embedder'")
+    })
+
+    it.each([undefined, null])('throws a TypeError naming options when they are %s', (options) => {
+      const error = errorOf(
+        () => new MongoDBVectorSearchStrategy(options as unknown as MongoDBVectorSearchStrategyOptions)
+      )
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain("'options'")
+    })
+  })
+
   describe('AT-237: every bound the server would enforce later is enforced at construction', () => {
     it.each([
       [{ dimensions: 0 }, RangeError, "'dimensions' is 0"],

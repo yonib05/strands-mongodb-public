@@ -177,6 +177,15 @@ describe('validate', () => {
       expect(message).toContain('_bsontype')
     })
 
+    it('walks an object carrying the bson version symbol but no _bsontype, and rejects its operator', () => {
+      const unmarked = { [Symbol.for('@@mdb.bson.version')]: 7, $ne: 'x' }
+
+      expect(messageOf(() => validate({ tier: unmarked }, { declaredFields: DECLARED }))).toContain("'$ne'")
+      expect(messageOf(() => validate({ tier: { inner: [unmarked] } }, { declaredFields: DECLARED }))).toContain(
+        "'$ne'"
+      )
+    })
+
     it('rejects a _bsontype marker on the filter itself', () => {
       const filter = JSON.parse('{"_bsontype": "x", "tier": "gold"}') as Record<string, unknown>
 

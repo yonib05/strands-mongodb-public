@@ -11,10 +11,18 @@ import {
 } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
 import { BSON, type Collection, type Document, MongoError, MongoServerError, ObjectId } from 'mongodb'
-import { requireNumber, requireOneOf, requireString, requireTtlSeconds } from './checks.js'
+import {
+  requireBoolean,
+  requireEmbedder,
+  requireNumber,
+  requireObject,
+  requireOneOf,
+  requireString,
+  requireTtlSeconds,
+} from './checks.js'
 import { close as release, type Connection, onLiveClient, resolve } from './client.js'
 import { compose, validate } from './filter.js'
-import { embed } from './embedding.js'
+import { embed, isVector } from './embedding.js'
 import { ensure } from './ensure-indexes.js'
 import {
   CONTENT_FIELD,
@@ -87,7 +95,7 @@ function queryParts(query: unknown): MongoDBSearchQuery {
   }
   const { text, vector } = query as MongoDBSearchQuery
   if (text !== undefined) requireString('text', text)
-  if (vector !== undefined && !(Array.isArray(vector) && vector.every(Number.isFinite))) {
+  if (vector !== undefined && !isVector(vector)) {
     throw new TypeError(
       "strands_mongodb: the query's 'vector' must be an array of finite numbers. Pass the embedding your model returned."
     )
@@ -145,9 +153,10 @@ export class MongoDBMemoryStore implements MemoryStore {
 
   /**
    * @param config - The store's own fields plus the connection config under `config`
-   * @throws TypeError if `config` or `config.database` is missing, a string setting is not a string, `searchType` or
-   * `similarity` is not a listed value, both score bounds are set, `filter` is invalid, the vector keys contradict
-   * each other, or `embedder` is set on the AutoEmbeddings path
+   * @throws TypeError if `config` or `config.database` is missing, a string setting is not a string, `writable` or
+   * `ensureIndexes` is not a boolean, `filterFields` is not an array of strings, `searchType` or `similarity` is not a
+   * listed value, both score bounds are set, `filter` is invalid, the vector keys contradict each other, or `embedder`
+   * has no `embed` method or is set on the AutoEmbeddings path
    * @throws RangeError if `minScore` or `maxScore` is not a finite number, `ttlSeconds` or `indexReadyTimeout` is not
    * a finite number of at least `0`, `ttlSeconds` puts the expiry past the last date JavaScript can represent, or
    * `maxSearchResults` or `embeddingDimensions` is not an integer within its bounds
@@ -155,8 +164,10 @@ export class MongoDBMemoryStore implements MemoryStore {
    */
   constructor(config: MongoDBMemoryStoreConfig) {
     // Every check runs before `resolve`, so a config that fails leaves no connection pool behind.
+    requireObject('config', config)
     const connection = config.config
     if (connection === undefined) throw new TypeError(MISSING_CONFIG)
+    requireObject('config.config', connection)
     requireString('name', config.name)
     if (config.scope !== undefined) requireString('scope', config.scope)
     if (config.collection !== undefined) requireString('collection', config.collection)
@@ -165,7 +176,15 @@ export class MongoDBMemoryStore implements MemoryStore {
     for (const key of ['vectorIndexName', 'textIndexName', 'embeddingModel'] as const) {
       if (connection[key] !== undefined) requireString(key, connection[key])
     }
-    connection.filterFields?.forEach((field, index) => requireString(`filterFields[${index}]`, field))
+    const { filterFields = [] } = connection
+    if (!Array.isArray(filterFields)) {
+      throw new TypeError(
+        `strands_mongodb: 'filterFields' must be an array of strings, but it is ${typeof filterFields}.`
+      )
+    }
+    filterFields.forEach((field, index) => requireString(`filterFields[${index}]`, field))
+    if (config.writable !== undefined) requireBoolean('writable', config.writable)
+    if (connection.ensureIndexes !== undefined) requireBoolean('ensureIndexes', connection.ensureIndexes)
     const searchType = connection.searchType || 'auto'
     requireOneOf('searchType', searchType, SEARCH_TYPES)
     this.name = config.name
@@ -200,11 +219,12 @@ export class MongoDBMemoryStore implements MemoryStore {
     this._ensureIndexes = connection.ensureIndexes ?? true
     this._searchType = searchType
     // The index definition decides what is filterable, so configured and per-query filters share one list.
-    this._declaredFields = declaredFilterFields(connection.filterFields ?? [])
+    this._declaredFields = declaredFilterFields(filterFields)
     if (this.filter !== undefined) validate(this.filter, { declaredFields: this._declaredFields })
 
     this._mode = vectorMode(connection)
     if (config.embedder !== undefined) {
+      requireEmbedder(config.embedder)
       if (this._mode.autoEmbed) throw new TypeError(EMBEDDER_ON_AUTO_EMBED)
       this._embedding = { embedder: config.embedder, dimensions: this._mode.dimensions }
     }
@@ -252,7 +272,8 @@ export class MongoDBMemoryStore implements MemoryStore {
    * @param content - The memory to store, verbatim; never included in an error or a log line
    * @param metadata - Optional caller metadata, stored nested and returned by `search`
    * @returns The document id with the insert and duplicate counts; a duplicate reports the existing id
-   * @throws TypeError if this store is not writable or `content` is not a string, before any network call
+   * @throws TypeError if this store is not writable, `content` is not a string, `metadata` is not an object, or
+   * `embedder` returns something other than a plain array of finite numbers
    * @throws RangeError if `embedder` returns a vector whose length is not `embeddingDimensions`
    * @throws StorageError if `initialize()` fails or a driver call fails
    */
@@ -260,6 +281,7 @@ export class MongoDBMemoryStore implements MemoryStore {
     return this._run('add', 'adding a memory to', async () => {
       if (!this.writable) throw new TypeError(notWritable(this.name, 'add()'))
       requireString('content', content)
+      if (metadata !== undefined) requireObject('metadata', metadata)
       await this.initialize()
       // Before the upsert, so a failed embedding stores nothing rather than a memory no vector search finds.
       const vector = this._embedding === undefined ? undefined : await this._embed(this._embedding, content)

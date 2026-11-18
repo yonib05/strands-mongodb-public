@@ -3,7 +3,7 @@ import { type Logger, StorageError } from '@strands-agents/sdk'
 import type { Storage } from '@strands-agents/sdk/storage'
 import type { SearchStrategy, StorageSearchResult } from '@strands-agents/sdk/storage/search'
 import { Binary, BSON, type Collection, type Document, type Filter, MongoError } from 'mongodb'
-import { requireString, requireTtlSeconds } from './checks.js'
+import { requireBoolean, requireObject, requireString, requireTtlSeconds } from './checks.js'
 import { close as release, type Connection, onLiveClient, resolve } from './client.js'
 import { ensure } from './ensure-indexes.js'
 import { EXPIRES_FIELD, readyTimeout, type SearchIndexSpec, storageSpecs } from './index-specs.js'
@@ -97,8 +97,8 @@ export class MongoDBStorage implements Storage {
   /**
    * @param config - Connection and deployment settings; instances with the same connection identity share one pool
    * @param options - Collection, prefix, TTL and search strategy
-   * @throws TypeError if `config` has no `database` or neither `client` nor `connectionString`, or `database`,
-   * `collection` or `prefix` is not a string
+   * @throws TypeError if `config` or `options` is not an object, `config` has no `database` or neither `client` nor
+   * `connectionString`, `database`, `collection` or `prefix` is not a string, or `ensureIndexes` is not a boolean
    * @throws RangeError if `ttlSeconds` or `indexReadyTimeout` is not a finite number of at least `0`, or `ttlSeconds`
    * puts the expiry past the last date JavaScript can represent
    * @throws StorageError if `prefix` contains a backslash or a `..` segment
@@ -106,9 +106,12 @@ export class MongoDBStorage implements Storage {
    */
   constructor(config: MongoDBConfig, options: MongoDBStorageOptions = {}) {
     // Validated before `resolve`, which registers a pool nothing could close if this threw afterwards.
+    requireObject('config', config)
+    requireObject('options', options)
     const { database } = config
     if (database === undefined) throw new TypeError(MISSING_DATABASE)
     requireString('database', database)
+    if (config.ensureIndexes !== undefined) requireBoolean('ensureIndexes', config.ensureIndexes)
     const { collection = 'storage', prefix = '', ttlSeconds } = options
     requireString('collection', collection)
     requireString('prefix', prefix)
@@ -136,6 +139,7 @@ export class MongoDBStorage implements Storage {
    *
    * @param key - The key to write under; `a//b` and `a/b` are one key
    * @param data - The bytes to store, round-tripped unchanged including an empty payload
+   * @throws TypeError if `key` is not a string
    * @throws StorageError if the key is invalid or too long, the document exceeds {@link MAX_DOCUMENT_BYTES}, the
    * collation is not binary, the write fails, or the search strategy fails to index the already stored value
    */
@@ -173,6 +177,7 @@ export class MongoDBStorage implements Storage {
    *
    * @param key - The key to read
    * @returns The stored bytes as a `Uint8Array`, or `null` when the key is absent
+   * @throws TypeError if `key` is not a string
    * @throws StorageError if the key is invalid or too long, the collation is not binary, the read fails, or the
    * document holds no binary payload
    */
@@ -190,6 +195,7 @@ export class MongoDBStorage implements Storage {
    * Removes `key`. Deleting a key that does not exist is not an error.
    *
    * @param key - The key to remove
+   * @throws TypeError if `key` is not a string
    * @throws StorageError if the key is invalid or too long, the collation is not binary, or the delete fails
    */
   delete(key: string): Promise<void> {
@@ -209,10 +215,12 @@ export class MongoDBStorage implements Storage {
    *
    * @param query - A key prefix; `''` matches everything
    * @returns Full keys, not the part after `query`
+   * @throws TypeError if `query` is not a string
    * @throws StorageError if the prefix is invalid, the collation is not binary, or the scan fails at any point
    */
   list(query: string): Promise<string[]> {
     return this._run('list', 'listing', query, async () => {
+      requireString('query', query)
       const range = this._rangeFor(query)
       await this._requireBinaryKeys()
       const documents = await this._typed()
@@ -238,10 +246,12 @@ export class MongoDBStorage implements Storage {
    * @param query - A natural-language string; one that tokenizes to nothing returns `[]` without a round trip
    * @returns Matched keys with scores, highest first. Without a strategy, ties are in ascending key order and `data`
    * is left unset
+   * @throws TypeError if `query` is not a string
    * @throws StorageError if the strategy throws, or without one the collation is not binary or the aggregation fails
    */
   search(query: string): Promise<StorageSearchResult[]> {
     return this._run('search', 'searching', query, async () => {
+      requireString('query', query)
       const strategy = this._searchStrategy
       if (strategy !== undefined) return this._searchWith(strategy, query)
       const tokens = tokenize(query)
@@ -271,10 +281,12 @@ export class MongoDBStorage implements Storage {
    *
    * @param prefix - The key prefix to remove
    * @returns How many documents were removed
+   * @throws TypeError if `prefix` is not a string
    * @throws StorageError if the prefix is invalid, the collation is not binary, or the delete fails
    */
   deletePrefix(prefix: string): Promise<number> {
     return this._run('delete_prefix', 'deleting the prefix', prefix, async () => {
+      requireString('prefix', prefix)
       const range = this._rangeFor(prefix)
       await this._requireBinaryKeys()
       const result = await this._typed().deleteMany(range)
@@ -288,9 +300,11 @@ export class MongoDBStorage implements Storage {
    *
    * @param prefix - Prefix appended to any prefix already in force
    * @returns A full `MongoDBStorage`, so `deletePrefix` and the indexed `list` keep working
+   * @throws TypeError if `prefix` is not a string
    * @throws StorageError if `prefix` contains a backslash or a `..` segment
    */
   namespace(prefix: string): MongoDBStorage {
+    requireString('prefix', prefix)
     const scoped = new MongoDBStorage(this.#config, {
       collection: this._collectionName,
       prefix: `${this._prefix}${prefix}`,
@@ -423,6 +437,7 @@ export class MongoDBStorage implements Storage {
   }
 
   private _idFor(key: string): string {
+    requireString('key', key)
     const id = `${this._prefix}${normalizeKey(key)}`
     // Measured on the prefixed form, since that is what becomes the index entry.
     const encoded = Buffer.byteLength(id, 'utf8')

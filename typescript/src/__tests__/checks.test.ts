@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { errorOf } from '../__fixtures__/errors.js'
-import { requireNumber, requireString } from '../checks.js'
+import { requireBoolean, requireEmbedder, requireNumber, requireObject, requireString } from '../checks.js'
 
 describe('requireNumber', () => {
   it.each([0, 0.5, 60])('accepts %d within the bounds', (value) => {
@@ -31,5 +31,44 @@ describe('requireString', () => {
 
   it('accepts a string', () => {
     expect(() => requireString('collection', 'memory')).not.toThrow()
+  })
+})
+
+describe('requireBoolean', () => {
+  it.each(['false', 0, null, {}])('rejects %j with a TypeError naming the key', (value) => {
+    const error = errorOf(() => requireBoolean('writable', value))
+
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toContain("'writable'")
+  })
+
+  it.each([true, false])('accepts %s', (value) => {
+    expect(() => requireBoolean('writable', value)).not.toThrow()
+  })
+})
+
+describe('requireObject', () => {
+  it.each([undefined, null, 'abc', 5, ['a']])('rejects %j with a TypeError naming the key', (value) => {
+    const error = errorOf(() => requireObject('metadata', value))
+
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toMatch(/^strands_mongodb: 'metadata' /)
+  })
+
+  it('accepts an object', () => {
+    expect(() => requireObject('metadata', { tier: 'gold' })).not.toThrow()
+  })
+})
+
+describe('requireEmbedder', () => {
+  it.each([undefined, null, 5, {}, { embed: 'voyage' }])('rejects %j with a TypeError naming the key', (value) => {
+    const error = errorOf(() => requireEmbedder(value))
+
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toContain("'embedder'")
+  })
+
+  it('accepts an object with an embed method', () => {
+    expect(() => requireEmbedder({ embed: async () => [1] })).not.toThrow()
   })
 })

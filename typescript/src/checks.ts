@@ -1,3 +1,5 @@
+import type { Embedder } from '@strands-agents/sdk/storage/search'
+
 /**
  * Rejects a setting that is not a string, since an operator object from a JavaScript caller would join a query.
  *
@@ -6,11 +8,46 @@
  * @throws TypeError if `value` is not a string
  */
 export function requireString(key: string, value: unknown): asserts value is string {
-  if (typeof value !== 'string') {
-    throw new TypeError(
-      `strands_mongodb: '${key}' must be a string, but it is ${value === null ? 'null' : typeof value}.`
-    )
+  if (typeof value !== 'string') throw wrongType(key, 'a string', value)
+}
+
+/**
+ * Rejects a setting that is not a boolean, since a string such as `'false'` is truthy.
+ *
+ * @param key - The setting's name, for the message
+ * @param value - What the caller supplied
+ * @throws TypeError if `value` is not a boolean
+ */
+export function requireBoolean(key: string, value: unknown): asserts value is boolean {
+  if (typeof value !== 'boolean') throw wrongType(key, 'a boolean', value)
+}
+
+/**
+ * Rejects an argument that is not an object, before a property is read off it.
+ *
+ * @param key - The argument's name, for the message
+ * @param value - What the caller supplied
+ * @throws TypeError if `value` is a primitive, `null` or an array
+ */
+export function requireObject(key: string, value: unknown): asserts value is object {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw wrongType(key, 'an object', value)
+}
+
+/**
+ * Rejects an `embedder` that has no `embed` method.
+ *
+ * @param value - What the caller supplied
+ * @throws TypeError if `value` is not an object with an `embed` function
+ */
+export function requireEmbedder(value: unknown): asserts value is Embedder {
+  if (typeof value !== 'object' || value === null || typeof Reflect.get(value, 'embed') !== 'function') {
+    throw wrongType('embedder', 'an object with an embed() method', value)
   }
+}
+
+function wrongType(key: string, expected: string, value: unknown): TypeError {
+  const actual = value === null ? 'null' : Array.isArray(value) ? 'an array' : typeof value
+  return new TypeError(`strands_mongodb: '${key}' must be ${expected}, but it is ${actual}.`)
 }
 
 /**

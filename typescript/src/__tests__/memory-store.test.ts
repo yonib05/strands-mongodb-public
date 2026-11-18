@@ -183,6 +183,45 @@ describe('MongoDBMemoryStore', () => {
       expect(error.message).toContain("'config'")
     })
 
+    it.each([
+      ['config', undefined],
+      ['config', null],
+      ['config.config', { name: 'facts', config: null }],
+    ])('throws a TypeError naming %s when it is not an object', (name, config) => {
+      const error = errorOf(() => new MongoDBMemoryStore(config as unknown as MongoDBMemoryStoreConfig))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toMatch(/^strands_mongodb: /)
+      expect(error.message).toContain(`'${name}'`)
+    })
+
+    it.each([
+      ['writable', { store: { writable: 'false' as unknown as boolean } }],
+      ['ensureIndexes', { config: { ensureIndexes: 'false' as unknown as boolean } }],
+    ])(
+      'throws a TypeError naming %s when it is a string, so it cannot enable writes or index creation',
+      (key, options) => {
+        const error = errorOf(() => setup(options))
+
+        expect(error).toBeInstanceOf(TypeError)
+        expect(error.message).toContain(`'${key}'`)
+      }
+    )
+
+    it('throws a TypeError naming filterFields when it is not an array', () => {
+      const error = errorOf(() => setup({ config: { filterFields: 'metadata.tier' as unknown as string[] } }))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toMatch(/^strands_mongodb: 'filterFields' /)
+    })
+
+    it('throws a TypeError naming embedder when it has no embed method', () => {
+      const error = errorOf(() => setup({ store: { embedder: 5 as unknown as Embedder }, config: MANUAL_VECTOR }))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toMatch(/^strands_mongodb: 'embedder' /)
+    })
+
     it('throws a TypeError for a config with no name', () => {
       const error = errorOf(
         () =>
@@ -1090,6 +1129,19 @@ describe('MongoDBMemoryStore', () => {
       expect(error.message).toContain(expected)
       expectUntouched(collection)
     })
+
+    it.each(['abc', 5, ['tier'], null])(
+      'rejects metadata %j with a TypeError naming it, before any round trip',
+      async (metadata) => {
+        const { store, collection } = setup({ store: { writable: true } })
+
+        const error = await rejectionOf(store.add(CONTENT, metadata as unknown as Record<string, string>))
+
+        expect(error).toBeInstanceOf(TypeError)
+        expect(error.message).toMatch(/^strands_mongodb: 'metadata' /)
+        expectUntouched(collection)
+      }
+    )
 
     it('rejects content that is not a string with a TypeError, before any round trip', async () => {
       const { store, collection } = setup({ store: { writable: true } })
