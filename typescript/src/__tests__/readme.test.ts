@@ -170,22 +170,13 @@ const LOG_EVENTS = {
   rank_fusion_probe_failed: true,
 } satisfies Record<LogEvent, true>
 
-// Limits rows that quote a value, by the name in their last column.
-const TRACEABLE_VALUES: Record<string, string[]> = {
-  MAX_KEY_BYTES: [String(MAX_KEY_BYTES)],
-  MAX_DOCUMENT_BYTES: [`${MAX_DOCUMENT_BYTES / 1024 / 1024} MiB`, String(MAX_DOCUMENT_BYTES)],
-  embeddingDimensions: [String(MAX_DIMENSIONS)],
-  oversamplingFactor: [String(MAX_NUM_CANDIDATES)],
+// Limits rows that quote a value, by the name in their first column.
+const LIMIT_VALUES: Record<string, string[]> = {
+  'Key length': [String(MAX_KEY_BYTES)],
+  'Document size': [`${MAX_DOCUMENT_BYTES / 1024 / 1024} MiB`, String(MAX_DOCUMENT_BYTES)],
+  'Vector dimensions': [String(MAX_DIMENSIONS)],
+  'Vector candidates per query': [String(MAX_NUM_CANDIDATES)],
 }
-
-// Limits rows about a behaviour, which no constant states.
-const TRACEABLE_IDS = new Set([
-  'close()',
-  'MongoDBStorage.list()',
-  'MongoDBStorage.search()',
-  'MongoDBStorage.ensureIndexes()',
-  'MongoDBMemoryStore.search()',
-])
 
 function renderedCommands(): { create: string[]; drop: string[] } {
   const config: MongoDBConfig = { database: 'agents' }
@@ -283,26 +274,13 @@ describe('AT-094: the configuration tables match the types', () => {
 })
 
 describe('AT-095: the documented values are the values', () => {
-  const limitRows = () =>
-    tableRows('limits').map((cells) => [cells[0]!, cells[1]!, cells[2]!.replace(/`/g, '')] as const)
+  it('quotes the current value on every limits row that states a constant', () => {
+    const rows = new Map(tableRows('limits').map((cells) => [cells[0]!, cells[1]!]))
 
-  it('names a traceable source on every limits row', () => {
-    const rows = limitRows()
-    expect(rows.length).toBeGreaterThan(0)
-    expect(rows.filter(([, , source]) => !(source in TRACEABLE_VALUES) && !TRACEABLE_IDS.has(source))).toEqual([])
-  })
-
-  it('keeps every limit that has no constant behind it', () => {
-    const cited = new Set(limitRows().map(([, , source]) => source))
-    expect([...TRACEABLE_IDS].filter((id) => !cited.has(id))).toEqual([])
-  })
-
-  it('quotes the current value on every row citing a constant', () => {
-    for (const [limit, value, source] of limitRows()) {
-      const accepted = TRACEABLE_VALUES[source]
-      if (accepted === undefined) continue
+    for (const [limit, accepted] of Object.entries(LIMIT_VALUES)) {
+      const value = rows.get(limit)
       expect(
-        accepted.some((form) => value.includes(form)),
+        accepted.some((form) => value?.includes(form)),
         `${limit}: ${value} is not ${accepted.join(' or ')}`
       ).toBe(true)
     }

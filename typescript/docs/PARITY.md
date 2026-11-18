@@ -1,7 +1,7 @@
 # Parity with the Python package
 
 Both packages write the same documents and indexes, so they can share a collection. The first two
-sections are what a user of both will notice. The third is what the port measured to get there.
+sections are what a user of both will notice. The last is for maintainers of the port.
 
 ## Behaviours shared with Python that a user may trip on
 
@@ -24,6 +24,7 @@ both languages.
 ## Where TypeScript knowingly differs from Python
 
 - Result metadata keys are camelCase: `_relevanceScore` and `_searchType`, where Python returns `_relevance_score` and `_search_type`. `_id` and `_scope` are the same. Stored documents are identical.
+- `search` returns stored metadata as relaxed EJSON, because the SDK types it as JSON: a stored date arrives as `{ $date: '...' }`, an ObjectId as `{ $oid: '...' }`, and a 64-bit integer beyond the safe range as a number that may be rounded. Python returns the raw values.
 - Log fields ride in the message tail (`| event=<name>, namespace=<db.coll>, tier=<tier>`), because the SDK's `Logger` has no `extra`. Python passes them as `strands_mongodb_event`, `strands_mongodb_namespace` and `strands_mongodb_tier`.
 - `rank_fusion_probe_failed` is logged at `debug` when `buildInfo` fails. Python logs nothing there.
 - The key-only search pipeline carries `hint: { _id: 1 }`. Without it an unprefixed store plans a COLLSCAN that reads every payload (measured on MongoDB 8.0.4: 50 of 50 documents examined, against 0 with the hint). Python sends no hint and has the COLLSCAN: worth raising upstream.
@@ -39,20 +40,12 @@ both languages.
 - A caller's filter is copied one level deep when it is composed with the scope, where Python copies it at every depth. A nested value changed between `search()` being called and the query being sent is sent as changed.
 - `search` picks its tier from one reading of the prepared tiers, taken before it embeds the query. Python reads them again after embedding, so a retry in between can leave it with keys no remaining tier accepts.
 
-## Measurements
+## Porting notes for maintainers
 
-Taken on 2026-11-05 with `mongodb@7.8.0` and `bson@7.3.4`, and pinned by the tests that cite them.
+What the port measured, with `mongodb@7.8.0` and `bson@7.3.4`. The tests that cite a note pin it.
 Fixtures in `src/__fixtures__/` are regenerated with `cd python && hatch run python ../typescript/scripts/export-python-fixtures.py`, and CI fails when the result differs from what is committed.
 
 ### 1. SDK floor: `@strands-agents/sdk` 1.23.0
-
-The floor is `>=1.23.0`.
-`StorageSearchResult` is exported from `@strands-agents/sdk/storage/search`, not from `@strands-agents/sdk/storage`.
-
-```ts
-import type { Storage } from '@strands-agents/sdk/storage'
-import type { SearchStrategy, Embedder, StorageSearchResult } from '@strands-agents/sdk/storage/search'
-```
 
 A file with this package's SDK imports compiles as follows. The floors job in CI repeats it at 1.23.0 on every pull request.
 
@@ -67,47 +60,17 @@ A file with this package's SDK imports compiles as follows. The floors job in CI
 
 The TypeScript SDK's `KeywordSearchStrategy`: `text.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean)`, into a `Set`.
 The Python SDK's: `{t for t in re.split(r"\W+", text.lower()) if t}`.
-The source regexes differ textually but split on the same characters.
-Every code point assigned in Python 3.13's Unicode 15.1 is classified the same by Python `\w` and by JS `[\p{L}\p{N}_]` (Node 24, Unicode 17). The 9039 differences are all code points unassigned in Unicode 15.1.
-`str.lower()` and `String.prototype.toLowerCase()` agree on every code point assigned in Unicode 15.1, including final sigma.
+The two split on the same characters and lowercase the same way for every code point assigned in Unicode 15.1 (Python 3.13), final sigma included.
 
 ### 3. `listSearchIndexes` status fields
 
-atlas-local `mongodb/mongodb-atlas-local:8` (MongoDB 8.3.13), driver `mongodb@7.8.0`, `bson@7.3.4`.
-Fields: `id`, `name`, `type`, `status`, `queryable`, `latestVersion`, `latestDefinition`.
-`status` goes from `PENDING` to `READY`; `queryable` goes from `false` to `true`.
-
-Abbreviated, with only the fields that change between creation and settling:
-
-```
-{ name: 'vector_index', type: 'vectorSearch', status: 'PENDING', queryable: false, ... }
-{ name: 'vector_index', type: 'vectorSearch', status: 'READY', queryable: true, ... }
-```
+On `mongodb/mongodb-atlas-local:8` a search index reports `id`, `name`, `type`, `status`, `queryable`, `latestVersion` and `latestDefinition`.
+`status` goes from `PENDING` to `READY`, and `queryable` from `false` to `true`.
 
 ### 4. AutoEmbeddings on atlas-local: code 8
 
-Creating an `autoEmbed` index fails with code 8. No AutoEmbeddings index can exist on this image:
-
-```
-{
-  name: 'MongoServerError',
-  code: 8,
-  codeName: 'UnknownError',
-  message: 'CanonicalModel: voyage-4-lite not registered yet, supported models are: []'
-}
-```
-
-An AutoEmbeddings `$vectorSearch` (`query: { text }`, `model`) against a READY manual index also fails with code 8, for `path: 'content'` and for `path: 'embedding'`:
-
-```
-{
-  name: 'MongoServerError',
-  code: 8,
-  codeName: 'UnknownError',
-  message: 'Executor error during aggregate command on namespace: parity2.memory :: caused by :: queryVector must be present'
-}
-```
-
+Creating an `autoEmbed` index on `mongodb/mongodb-atlas-local:8` fails with code 8 (`CanonicalModel: voyage-4-lite not registered yet, supported models are: []`), so no AutoEmbeddings index can exist on this image.
+An AutoEmbeddings `$vectorSearch` (`query: { text }`, `model`) against a READY manual index also fails with code 8 (`queryVector must be present`).
 A `$vectorSearch` naming an index that does not exist returns `[]` with no error.
 
 ### 5. Empty `Binary`
@@ -116,16 +79,8 @@ A `$vectorSearch` naming an index that does not exist returns `[]` with no error
 
 ### 6. Document size: matches `_encoded_size`
 
-`BSON.calculateObjectSize({ _id, data: Binary, updated_at: Date })` equals `46 + utf8(_id) + data.length`.
-Adding `expires_at: Date` adds exactly 20.
-Both equal `BSON.serialize(...).length`, and a bare `Uint8Array` for `data` sizes the same as a `Binary`.
-
-Every combination of four keys (1 to 26 UTF-8 bytes) and four `data` lengths (0 to 65536) matched `_encoded_size`, for example:
-
-```
-key                    keyBytes  size   plain  python  withTtl  pythonTtl
-'strands/session/abc'  19        1000   1065   1065    1085     1085
-```
+`BSON.calculateObjectSize({ _id, data: Binary, updated_at: Date })` equals `46 + utf8(_id) + data.length`, and `expires_at: Date` adds exactly 20.
+Both equal `BSON.serialize(...).length` and Python's `_encoded_size`.
 
 ### 7. `listIndexes` on an absent collection: code 26
 

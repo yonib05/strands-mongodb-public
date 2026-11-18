@@ -236,8 +236,8 @@ stored. `maxResults` and `oversamplingFactor` both default to 10.
 `MongoDBStorage`: `read()` returns `null` for an absent key, and `list()` returns keys in ascending byte
 order. `write()` and `delete()` return nothing. `deletePrefix()` returns the number of documents removed.
 `namespace(prefix)` returns a `MongoDBStorage` over the same collection, scoped under the prefix. An
-invalid key or prefix throws `StorageError`: at once from the constructor and `namespace()`, and after
-the collation check from an operation.
+invalid key or prefix throws `StorageError` before any round trip: from the constructor and
+`namespace()`, and as a rejected promise from an operation.
 
 `MongoDBMemoryStore`: `delete()` and `deleteAll()` return the number of documents removed. `add()`
 returns a `MongoDBAddResult` with `ids`, `inserted` and `duplicates`: content already stored is a
@@ -303,6 +303,8 @@ a store where Atlas embeds throws `TypeError`.
 
 Every returned entry carries four keys in its `metadata`. They win over a stored key of the same name,
 and the collision is logged.
+Stored metadata is returned as relaxed EJSON: a stored date arrives as `{ $date }`, and a 64-bit integer
+beyond the safe range as a number that may be rounded.
 
 | Key | Holds |
 |---|---|
@@ -401,18 +403,18 @@ The collation check is required: a collection whose default collation is not bin
 ## Limits
 
 <!-- limits -->
-| Limit | What to do | Applies to |
-|---|---|---|
-| `close()` closes the shared pool | It closes the pool of every store with the same connection identity. A later operation on any of them opens a new pool. Call it once, at shutdown. | `close()` |
-| `list` and `deletePrefix` match string prefixes | `'user1'` also matches `'user10/a'`. End the prefix with `/`. `deletePrefix('')` removes every key under the instance's prefix. `list` returns every match in one array. | `MongoDBStorage.list()` |
-| `search` without a strategy scores keys only | Values are not searched. Key letters are lowercased for ASCII only, so a key word with a non-ASCII capital such as `ÉCOLE` matches no query. Pass a `searchStrategy`. | `MongoDBStorage.search()` |
-| `ttlSeconds` on storage needs the TTL index | Call `await storage.ensureIndexes()` once at startup. The memory store creates its TTL index in `initialize()`. | `MongoDBStorage.ensureIndexes()` |
-| Key length | 1024 bytes of UTF-8, prefix included. Longer throws `StorageError` before the write. | `MAX_KEY_BYTES` |
-| Document size | 16 MiB. Larger throws `StorageError` before the write. | `MAX_DOCUMENT_BYTES` |
-| An empty result can hide a failure | `MemoryManager` logs a failed store search as a warning and returns the other stores' results. | `MongoDBMemoryStore.search()` |
-| Searches can fail after a slow index build | Under `auto`, if no tier is ready within `indexReadyTimeout` on the first search, searches throw `StorageError` until a retry finds one. The first retry is 120 seconds after that search, and the interval doubles up to an hour. | `MongoDBMemoryStore.search()` |
-| Vector candidates per query | 10000. A `limit` times `oversamplingFactor` above it, or not a whole number, throws `RangeError`. | `oversamplingFactor` |
-| Vector dimensions | 8192 when you supply the vectors. | `embeddingDimensions` |
+| Limit | What to do |
+|---|---|
+| `close()` closes the shared pool | It closes the pool of every store with the same connection identity. A later operation on any of them opens a new pool. Call it once, at shutdown. |
+| `list` and `deletePrefix` match string prefixes | `'user1'` also matches `'user10/a'`. End the prefix with `/`. `deletePrefix('')` removes every key under the instance's prefix. `list` returns every match in one array. |
+| `search` without a strategy scores keys only | Values are not searched. Key letters are lowercased for ASCII only, so a key word with a non-ASCII capital such as `ÉCOLE` matches no query. Pass a `searchStrategy`. |
+| `ttlSeconds` on storage needs the TTL index | Call `await storage.ensureIndexes()` once at startup. The memory store creates its TTL index in `initialize()`. |
+| Key length | 1024 bytes of UTF-8, prefix included. Longer throws `StorageError` before the write. |
+| Document size | 16 MiB. Larger throws `StorageError` before the write. |
+| An empty result can hide a failure | `MemoryManager` logs a failed store search as a warning and returns the other stores' results. |
+| Searches can fail after a slow index build | Under `auto`, if no tier is ready within `indexReadyTimeout` on the first search, searches throw `StorageError` until a retry finds one. The first retry is 120 seconds after that search, and the interval doubles up to an hour. |
+| Vector candidates per query | 10000. A `limit` times `oversamplingFactor` above it, or not a whole number, throws `RangeError`. |
+| Vector dimensions | 8192 when you supply the vectors. |
 
 ## Observability
 
