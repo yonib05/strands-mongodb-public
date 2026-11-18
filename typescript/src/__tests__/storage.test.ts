@@ -212,9 +212,12 @@ describe('MongoDBStorage', () => {
       expect(() => new MongoDBStorage({ database: 'appdb' }, { ttlSeconds: -1 })).toThrow(RangeError)
     })
 
-    it.each([NaN, Infinity])('throws a RangeError for a ttlSeconds of %d', (ttlSeconds) => {
-      expect(() => new MongoDBStorage({ database: 'appdb' }, { ttlSeconds })).toThrow(RangeError)
-    })
+    it.each([NaN, Infinity, 1e20, Number.MAX_SAFE_INTEGER])(
+      'throws a RangeError for a ttlSeconds of %d',
+      (ttlSeconds) => {
+        expect(() => new MongoDBStorage({ database: 'appdb' }, { ttlSeconds })).toThrow(RangeError)
+      }
+    )
 
     it('throws a RangeError for an indexReadyTimeout that is not a number of seconds', () => {
       const error = errorOf(() => new MongoDBStorage({ database: 'appdb', indexReadyTimeout: NaN }))

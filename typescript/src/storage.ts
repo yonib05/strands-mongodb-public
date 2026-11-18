@@ -3,7 +3,7 @@ import { type Logger, StorageError } from '@strands-agents/sdk'
 import type { Storage } from '@strands-agents/sdk/storage'
 import type { SearchStrategy, StorageSearchResult } from '@strands-agents/sdk/storage/search'
 import { Binary, BSON, type Collection, type Document, type Filter, MongoError } from 'mongodb'
-import { requireNumber, requireString } from './checks.js'
+import { requireString, requireTtlSeconds } from './checks.js'
 import { close as release, type Connection, onLiveClient, resolve } from './client.js'
 import { ensure } from './ensure-indexes.js'
 import { EXPIRES_FIELD, readyTimeout, type SearchIndexSpec, storageSpecs } from './index-specs.js'
@@ -79,7 +79,8 @@ export class MongoDBStorage implements Storage {
    * @param options - Collection, prefix, TTL and search strategy
    * @throws TypeError if `config` has no `database` or neither `client` nor `connectionString`, or `database`,
    * `collection` or `prefix` is not a string
-   * @throws RangeError if `ttlSeconds` or `indexReadyTimeout` is not a finite number of at least `0`
+   * @throws RangeError if `ttlSeconds` or `indexReadyTimeout` is not a finite number of at least `0`, or `ttlSeconds`
+   * puts the expiry past the last date JavaScript can represent
    * @throws StorageError if `prefix` contains a backslash or a `..` segment
    */
   constructor(config: MongoDBConfig, options: MongoDBStorageOptions = {}) {
@@ -90,7 +91,7 @@ export class MongoDBStorage implements Storage {
     const { collection = 'storage', prefix = '', ttlSeconds } = options
     requireString('collection', collection)
     requireString('prefix', prefix)
-    if (ttlSeconds !== undefined) requireNumber('ttlSeconds', ttlSeconds, { min: 0 })
+    if (ttlSeconds !== undefined) requireTtlSeconds(ttlSeconds)
     this._databaseName = database
     this._collectionName = collection
     const normalized = normalizePrefix(prefix).replace(/\/+$/, '')

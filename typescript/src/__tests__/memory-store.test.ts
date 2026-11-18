@@ -17,7 +17,9 @@ import {
   DEFAULT_MAX_SEARCH_RESULTS,
   type MongoDBConfig,
   type MongoDBMemoryStoreConfig,
+  type MongoDBSearchQuery,
   RESERVED_METADATA_KEYS,
+  type SearchType,
 } from '../types.js'
 import { errorOf, rejectionOf, serverError } from '../__fixtures__/errors.js'
 import { RecordingLogger } from '../__fixtures__/logger.js'
@@ -251,6 +253,10 @@ describe('MongoDBMemoryStore', () => {
     it.each([
       ['ttlSeconds', { store: { ttlSeconds: NaN } }],
       ['ttlSeconds', { store: { ttlSeconds: Infinity } }],
+      ['ttlSeconds', { store: { ttlSeconds: 1e20 } }],
+      ['minScore', { store: { minScore: NaN } }],
+      ['minScore', { store: { minScore: '0.5' as unknown as number } }],
+      ['maxScore', { store: { maxScore: Infinity } }],
       ['indexReadyTimeout', { config: { indexReadyTimeout: NaN } }],
       ['indexReadyTimeout', { config: { indexReadyTimeout: -1 } }],
       ['embeddingDimensions', { config: { embeddingDimensions: 1.5, similarity: 'cosine' as const } }],
@@ -270,6 +276,35 @@ describe('MongoDBMemoryStore', () => {
 
       expect(error).toBeInstanceOf(TypeError)
       expect(error.message).toContain(`'${key}'`)
+    })
+
+    it('throws a TypeError naming the tiers for a searchType that is none of them', () => {
+      const error = errorOf(() => setup({ config: { searchType: 'semantic' as unknown as SearchType } }))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain("'searchType' is 'semantic'")
+      expect(error.message).toContain('auto, vector, text, hybrid')
+    })
+
+    it.each(['vectorIndexName', 'textIndexName', 'embeddingModel'] as const)(
+      'throws a TypeError naming %s when it is not a string',
+      (key) => {
+        const error = errorOf(() => setup({ config: { [key]: { $ne: '' } as unknown as string } }))
+
+        expect(error).toBeInstanceOf(TypeError)
+        expect(error.message).toContain(`'${key}'`)
+      }
+    )
+
+    it('throws a TypeError for a filterFields entry that is not a string', () => {
+      const error = errorOf(() => setup({ config: { filterFields: [7 as unknown as string] } }))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain("'filterFields[0]'")
+    })
+
+    it('accepts a negative score bound, which a dotProduct score can be', () => {
+      expect(setup({ store: { minScore: -0.5 } }).store.minScore).toBe(-0.5)
     })
 
     it('AT-226: accepts 0 as a lifetime, and an explicit undefined as no lifetime', () => {
@@ -1037,6 +1072,32 @@ describe('MongoDBMemoryStore', () => {
 
       expect(error).toBeInstanceOf(TypeError)
       expect(error.message).toContain(expected)
+      expectUntouched(collection)
+    })
+
+    it.each([
+      [{ text: { $x: 1 } }, "'text'"],
+      [{ text: 7 }, "'text'"],
+      [{ vector: 'dark mode' }, "'vector'"],
+      [{ vector: [0.1, NaN, 0.3, 0.4] }, "'vector'"],
+      [{ vector: [0.1, '0.2', 0.3, 0.4] }, "'vector'"],
+    ])('rejects a query %j whose key has the wrong type with a TypeError', async (query, expected) => {
+      const { store, collection } = setup({ config: MANUAL_VECTOR })
+
+      const error = await rejectionOf(store.search(query as unknown as MongoDBSearchQuery))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain(expected)
+      expectUntouched(collection)
+    })
+
+    it('rejects content that is not a string with a TypeError, before any round trip', async () => {
+      const { store, collection } = setup({ store: { writable: true } })
+
+      const error = await rejectionOf(store.add(42 as unknown as string))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain("'content'")
       expectUntouched(collection)
     })
 

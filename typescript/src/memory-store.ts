@@ -11,7 +11,7 @@ import {
 } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
 import { BSON, type Collection, type Document, MongoError, MongoServerError, ObjectId } from 'mongodb'
-import { requireNumber, requireString } from './checks.js'
+import { requireNumber, requireOneOf, requireString, requireTtlSeconds } from './checks.js'
 import { close as release, type Connection, onLiveClient, resolve } from './client.js'
 import { compose, validate } from './filter.js'
 import { embed } from './embedding.js'
@@ -28,7 +28,7 @@ import {
 } from './index-specs.js'
 import { defaultLogger, logFields } from './logging.js'
 import { checkQueryKeys, hybridStages, SCORE_FIELD, textStages, vectorStages } from './pipeline.js'
-import { type PickedTier, type ScoreBound, SearchTiers } from './search-tiers.js'
+import { type PickedTier, type ScoreBound, SEARCH_TYPES, SearchTiers } from './search-tiers.js'
 import { annotate, type SpanBase, traced } from './telemetry.js'
 import {
   DEFAULT_MAX_SEARCH_RESULTS,
@@ -84,13 +84,22 @@ function queryParts(query: unknown): MongoDBSearchQuery {
       `strands_mongodb: 'query' must be a string or a MongoDBSearchQuery object, but it is ${query === null ? 'null' : Array.isArray(query) ? 'an array' : typeof query}.`
     )
   }
+  const { text, vector } = query as MongoDBSearchQuery
+  if (text !== undefined) requireString('text', text)
+  if (vector !== undefined && !(Array.isArray(vector) && vector.every(Number.isFinite))) {
+    throw new TypeError(
+      "strands_mongodb: the query's 'vector' must be an array of finite numbers. Pass the embedding your model returned."
+    )
+  }
   return query
 }
+
+const LIMIT = { min: 1, integer: true }
 
 // Every supplied limit is checked, not only the one that wins. The key names are the caller's, in priority order.
 function resolveLimit(limits: Array<[key: string, value: number | undefined]>): number {
   for (const [key, value] of limits) {
-    if (value !== undefined) requireNumber(key, value, { min: 1, integer: true })
+    if (value !== undefined) requireNumber(key, value, LIMIT)
   }
   return limits.find(([, value]) => value !== undefined)?.[1] ?? DEFAULT_MAX_SEARCH_RESULTS
 }
@@ -120,7 +129,6 @@ export class MongoDBMemoryStore implements MemoryStore {
   private readonly _databaseName: string
   private readonly _collectionName: string
   private readonly _ensureIndexes: boolean
-  private readonly _indexReadyTimeout: number
   private readonly _searchType: SearchType
   private readonly _declaredFields: string[]
   private readonly _mode: VectorMode
@@ -136,10 +144,11 @@ export class MongoDBMemoryStore implements MemoryStore {
 
   /**
    * @param config - The store's own fields plus the connection config under `config`
-   * @throws TypeError if `config` or `config.database` is missing, `name`, `scope`, `collection` or `database` is
-   * not a string, both score bounds are set, `filter` is invalid, the vector keys contradict each other, or
-   * `embedder` is set on the AutoEmbeddings path
-   * @throws RangeError if `ttlSeconds` or `indexReadyTimeout` is not a finite number of at least `0`, or
+   * @throws TypeError if `config` or `config.database` is missing, a string setting is not a string, `searchType` or
+   * `similarity` is not a listed value, both score bounds are set, `filter` is invalid, the vector keys contradict
+   * each other, or `embedder` is set on the AutoEmbeddings path
+   * @throws RangeError if `minScore` or `maxScore` is not a finite number, `ttlSeconds` or `indexReadyTimeout` is not
+   * a finite number of at least `0`, `ttlSeconds` puts the expiry past the last date JavaScript can represent, or
    * `maxSearchResults` or `embeddingDimensions` is not an integer within its bounds
    */
   constructor(config: MongoDBMemoryStoreConfig) {
@@ -151,6 +160,12 @@ export class MongoDBMemoryStore implements MemoryStore {
     if (config.collection !== undefined) requireString('collection', config.collection)
     if (connection.database === undefined) throw new TypeError(MISSING_DATABASE)
     requireString('database', connection.database)
+    for (const key of ['vectorIndexName', 'textIndexName', 'embeddingModel'] as const) {
+      if (connection[key] !== undefined) requireString(key, connection[key])
+    }
+    connection.filterFields?.forEach((field, index) => requireString(`filterFields[${index}]`, field))
+    const searchType = connection.searchType || 'auto'
+    requireOneOf('searchType', searchType, SEARCH_TYPES)
     this.name = config.name
     if (config.description !== undefined) this.description = config.description
     if (config.maxSearchResults !== undefined) this.maxSearchResults = config.maxSearchResults
@@ -159,13 +174,17 @@ export class MongoDBMemoryStore implements MemoryStore {
     if (config.extraction !== undefined) this.extraction = config.extraction
     this.scope = config.scope || UNSCOPED
     if (config.filter !== undefined) this.filter = config.filter
-    if (config.minScore !== undefined) this.minScore = config.minScore
-    if (config.maxScore !== undefined) this.maxScore = config.maxScore
+    for (const bound of ['minScore', 'maxScore'] as const) {
+      const value = config[bound]
+      if (value === undefined) continue
+      requireNumber(bound, value)
+      this[bound] = value
+    }
     if (config.ttlSeconds !== undefined) {
-      requireNumber('ttlSeconds', config.ttlSeconds, { min: 0 })
+      requireTtlSeconds(config.ttlSeconds)
       this.ttlSeconds = config.ttlSeconds
     }
-    resolveLimit([['maxSearchResults', this.maxSearchResults]])
+    if (this.maxSearchResults !== undefined) requireNumber('maxSearchResults', this.maxSearchResults, LIMIT)
     if (this.minScore !== undefined && this.maxScore !== undefined) {
       throw new TypeError(
         `strands_mongodb: 'minScore' is ${this.minScore} and 'maxScore' is ${this.maxScore}, and only one bound can be set. Remove one of them.`
@@ -177,8 +196,7 @@ export class MongoDBMemoryStore implements MemoryStore {
     this._databaseName = connection.database
     this._collectionName = config.collection ?? DEFAULT_COLLECTION
     this._ensureIndexes = connection.ensureIndexes ?? true
-    this._indexReadyTimeout = readyTimeout(connection)
-    this._searchType = connection.searchType || 'auto'
+    this._searchType = searchType
     // The index definition decides what is filterable, so configured and per-query filters share one list.
     this._declaredFields = declaredFilterFields(connection.filterFields ?? [])
     if (this.filter !== undefined) validate(this.filter, { declaredFields: this._declaredFields })
@@ -190,7 +208,6 @@ export class MongoDBMemoryStore implements MemoryStore {
     }
     const [vector, text] = memorySearchSpecs(connection)
     this._indexNames = { vector: vector.name, text: text.name }
-    const searchType = this._searchType
     this._fusionPossible = !this._mode.autoEmbed && (searchType === 'auto' || searchType === 'hybrid')
 
     Object.defineProperty(this, '_connectionConfig', { value: connection, enumerable: false })
@@ -201,7 +218,7 @@ export class MongoDBMemoryStore implements MemoryStore {
       mode: this._mode,
       specs: { vector, text },
       create: this._ensureIndexes,
-      timeout: this._indexReadyTimeout,
+      timeout: readyTimeout(connection),
       bound: this._bound,
       logger: this._logger,
     })
@@ -232,13 +249,14 @@ export class MongoDBMemoryStore implements MemoryStore {
    * @param content - The memory to store, verbatim; never included in an error or a log line
    * @param metadata - Optional caller metadata, stored nested and returned by `search`
    * @returns The document id with the insert and duplicate counts; a duplicate reports the existing id
-   * @throws TypeError if this store is not writable, before any network call
+   * @throws TypeError if this store is not writable or `content` is not a string, before any network call
    * @throws RangeError if `embedder` returns a vector whose length is not `embeddingDimensions`
    * @throws StorageError if `initialize()` fails or a driver call fails
    */
   add(content: string, metadata?: Record<string, JSONValue>): Promise<MongoDBAddResult> {
     return this._run('add', 'adding a memory to', async () => {
       if (!this.writable) throw new TypeError(notWritable(this.name, 'add()'))
+      requireString('content', content)
       await this.initialize()
       // Before the upsert, so a failed embedding stores nothing rather than a memory no vector search finds.
       const vector = this._embedding === undefined ? undefined : await this._embed(this._embedding, content)
@@ -285,8 +303,8 @@ export class MongoDBMemoryStore implements MemoryStore {
    * @param query - A plain string, or a `MongoDBSearchQuery` carrying `text`, `vector`, `filter`, `limit`, `oversamplingFactor`
    * @param options - The SDK's per-call options; a query's `limit` wins over `maxSearchResults`
    * @returns Up to the resolved limit of entries, each with `_id`, `_relevanceScore`, `_searchType` and `_scope` in its metadata
-   * @throws TypeError if the query sets neither or both vector keys where nothing fuses them, the filter is invalid,
-   * or no prepared tier fits the query's shape
+   * @throws TypeError if `text` is not a string or `vector` is not an array of finite numbers, the query sets neither,
+   * or both where no tier fuses them, the filter is invalid, or no prepared tier fits the query's shape
    * @throws RangeError if a limit is not an integer of at least 1, or the candidate count is out of bounds
    * @throws StorageError if the deployment cannot search, no tier is ready, `initialize()` fails, or a driver call fails
    */

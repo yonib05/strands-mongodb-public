@@ -1,5 +1,5 @@
 import type { Document, IndexDescription, SearchIndexDescription } from 'mongodb'
-import { requireNumber } from './checks.js'
+import { requireNumber, requireOneOf } from './checks.js'
 import type { MongoDBConfig, VectorMode } from './types.js'
 
 /** Document field holding the text a memory is about, indexed for vector and full-text search. */
@@ -61,7 +61,6 @@ export function readyTimeout(config: MongoDBConfig): number {
  */
 export function vectorMode(config: MongoDBConfig): VectorMode {
   const { embeddingModel: model, embeddingDimensions: dimensions, similarity } = config
-  const similarities = SIMILARITIES.join(', ')
 
   if (model !== undefined && (dimensions !== undefined || similarity !== undefined)) {
     const manual = [dimensions !== undefined && "'embeddingDimensions'", similarity !== undefined && "'similarity'"]
@@ -81,15 +80,11 @@ export function vectorMode(config: MongoDBConfig): VectorMode {
   }
   if (similarity === undefined) {
     throw new TypeError(
-      `strands_mongodb: 'embeddingDimensions' is set but 'similarity' is not, and it has no default. Set one of ${similarities}.`
+      `strands_mongodb: 'embeddingDimensions' is set but 'similarity' is not, and it has no default. Set one of ${SIMILARITIES.join(', ')}.`
     )
   }
   requireNumber('embeddingDimensions', dimensions, { min: 1, max: MAX_DIMENSIONS, integer: true })
-  if (!(SIMILARITIES as readonly string[]).includes(similarity)) {
-    throw new TypeError(
-      `strands_mongodb: 'similarity' is '${similarity}', which Atlas does not accept. Choose one of ${similarities}.`
-    )
-  }
+  requireOneOf('similarity', similarity, SIMILARITIES)
   return { autoEmbed: false, dimensions, similarity }
 }
 

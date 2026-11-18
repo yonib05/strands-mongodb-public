@@ -7,6 +7,9 @@ import { logFields } from './logging.js'
 import { annotate } from './telemetry.js'
 import type { ResolvedSearchType, SearchType, VectorMode } from './types.js'
 
+/** Every `searchType` a config may name. Mirrors `SearchType` at runtime. */
+export const SEARCH_TYPES = ['auto', 'vector', 'text', 'hybrid'] as const satisfies readonly SearchType[]
+
 /** Seconds before a search tier skipped under `auto` is tried again, inside the first store call after that. */
 export const TIER_RETRY_SECONDS = 60
 
