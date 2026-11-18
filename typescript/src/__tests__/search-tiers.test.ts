@@ -8,7 +8,7 @@ import type { Capabilities } from '../client.js'
 import { memorySearchSpecs } from '../index-specs.js'
 import { SearchTiers, type SearchTiersOptions, TIER_RETRY_MAX_SECONDS, TIER_RETRY_SECONDS } from '../search-tiers.js'
 import type { VectorMode } from '../types.js'
-import { errorOf, rejectionOf } from '../__fixtures__/errors.js'
+import { rejectionOf } from '../__fixtures__/errors.js'
 import { type Level, RecordingLogger } from '../__fixtures__/logger.js'
 
 const exporter = recordSpans()
@@ -523,9 +523,17 @@ describe('SearchTiers', () => {
       const { tiers, collection } = setup({ mode: MANUAL })
       await tiers.prepare(collection, FUSING)
 
-      expect(tiers.pick('dark mode', undefined)).toEqual({ tier: 'text', text: 'dark mode' })
-      expect(tiers.pick(undefined, QUERY_VECTOR)).toEqual({ tier: 'vector', text: undefined, vector: QUERY_VECTOR })
-      expect(tiers.pick('dark mode', QUERY_VECTOR)).toEqual({ tier: 'hybrid', text: 'dark mode', vector: QUERY_VECTOR })
+      expect(await tiers.pick('dark mode', undefined)).toEqual({ tier: 'text', text: 'dark mode' })
+      expect(await tiers.pick(undefined, QUERY_VECTOR)).toEqual({
+        tier: 'vector',
+        text: undefined,
+        vector: QUERY_VECTOR,
+      })
+      expect(await tiers.pick('dark mode', QUERY_VECTOR)).toEqual({
+        tier: 'hybrid',
+        text: 'dark mode',
+        vector: QUERY_VECTOR,
+      })
     })
 
     it('answers a text query from hybrid, then vector, on the AutoEmbeddings path', async () => {
@@ -534,12 +542,55 @@ describe('SearchTiers', () => {
       const single = setup()
       await single.tiers.prepare(single.collection, NOT_FUSING)
 
-      expect(fusing.tiers.pick('dark mode', undefined).tier).toBe('hybrid')
-      expect(single.tiers.pick('dark mode', undefined)).toEqual({
+      expect((await fusing.tiers.pick('dark mode', undefined)).tier).toBe('hybrid')
+      expect(await single.tiers.pick('dark mode', undefined)).toEqual({
         tier: 'vector',
         text: 'dark mode',
         vector: undefined,
       })
+    })
+
+    it('embeds a text query for the tier that reads a vector, keeping the text only for hybrid', async () => {
+      const embed = vi.fn(async () => QUERY_VECTOR)
+      const fusing = setup({ mode: MANUAL })
+      await fusing.tiers.prepare(fusing.collection, FUSING)
+      const single = setup({ mode: MANUAL })
+      await single.tiers.prepare(single.collection, NOT_FUSING)
+      const textOnly = setup({ mode: MANUAL, searchType: 'text' })
+      await textOnly.tiers.prepare(textOnly.collection, FUSING)
+
+      expect(await fusing.tiers.pick('dark mode', undefined, embed)).toEqual({
+        tier: 'hybrid',
+        text: 'dark mode',
+        vector: QUERY_VECTOR,
+      })
+      expect(await single.tiers.pick('dark mode', undefined, embed)).toEqual({
+        tier: 'vector',
+        text: undefined,
+        vector: QUERY_VECTOR,
+      })
+      expect(embed).toHaveBeenCalledTimes(2)
+      expect(await textOnly.tiers.pick('dark mode', undefined, embed)).toEqual({ tier: 'text', text: 'dark mode' })
+      expect(await fusing.tiers.pick(undefined, QUERY_VECTOR, embed)).toMatchObject({ tier: 'vector' })
+      expect(embed).toHaveBeenCalledTimes(2)
+    })
+
+    it('picks from the tiers it embedded for, though a retry replaces them meanwhile', async () => {
+      const [vector, text] = memorySearchSpecs({ database: 'appdb', embeddingDimensions: 4, similarity: 'cosine' })
+      const { tiers, fake, collection } = setup({ mode: MANUAL, specs: { vector, text }, create: false })
+      fake.addSearchIndex(vector.toDescription())
+      fake.addSearchIndex(text.toDescription())
+      await tiers.prepare(collection, FUSING)
+      const embed = async (): Promise<number[]> => {
+        fake.setSearchIndexStatus(text.name, 'PENDING')
+        await tiers.retry(collection)
+        return QUERY_VECTOR
+      }
+
+      const picked = await tiers.pick('dark mode', undefined, embed)
+
+      expect(tiers.prepared).toEqual(['vector'])
+      expect(picked.tier).toBe('hybrid')
     })
 
     it('names the build, not a missing search process, when search exists and no tier is ready', async () => {
@@ -547,7 +598,7 @@ describe('SearchTiers', () => {
       reporting(fake, 'PENDING', 'vector_index', 'text_index')
       await tiers.prepare(collection, NOT_FUSING)
 
-      const error = errorOf(() => tiers.pick('dark mode', undefined))
+      const error = await rejectionOf(tiers.pick('dark mode', undefined))
 
       expect(error).toBeInstanceOf(StorageError)
       expect(error.message).toContain("'auto'")
@@ -559,7 +610,7 @@ describe('SearchTiers', () => {
       const { tiers, collection } = setup()
       await tiers.prepare(collection, NO_SEARCH)
 
-      const error = errorOf(() => tiers.pick('dark mode', undefined))
+      const error = await rejectionOf(tiers.pick('dark mode', undefined))
 
       expect(error).toBeInstanceOf(StorageError)
       expect(error.message).toContain(NAMESPACE)
@@ -567,8 +618,8 @@ describe('SearchTiers', () => {
       expect(error.message).toContain('server error code 31082')
     })
 
-    it('says there is no probe result before prepare has run', () => {
-      const error = errorOf(() => setup().tiers.pick('dark mode', undefined))
+    it('says there is no probe result before prepare has run', async () => {
+      const error = await rejectionOf(setup().tiers.pick('dark mode', undefined))
 
       expect(error).toBeInstanceOf(StorageError)
       expect(error.message).toContain('no probe result')
@@ -578,7 +629,7 @@ describe('SearchTiers', () => {
       const { tiers, collection } = setup({ mode: MANUAL, searchType: 'vector' })
       await tiers.prepare(collection, FUSING)
 
-      const error = errorOf(() => tiers.pick('dark mode', undefined))
+      const error = await rejectionOf(tiers.pick('dark mode', undefined))
 
       expect(error).toBeInstanceOf(TypeError)
       expect(error.message).toContain(NAMESPACE)
@@ -590,7 +641,7 @@ describe('SearchTiers', () => {
       const { tiers, collection } = setup({ searchType: 'text' })
       await tiers.prepare(collection, FUSING)
 
-      const error = errorOf(() => tiers.pick(undefined, QUERY_VECTOR))
+      const error = await rejectionOf(tiers.pick(undefined, QUERY_VECTOR))
 
       expect(error).toBeInstanceOf(TypeError)
       expect(error.message).toContain("'text'")
@@ -601,7 +652,7 @@ describe('SearchTiers', () => {
       const { tiers, collection } = setup({ mode: MANUAL })
       await tiers.prepare(collection, NOT_FUSING)
 
-      const error = errorOf(() => tiers.pick('dark mode', QUERY_VECTOR))
+      const error = await rejectionOf(tiers.pick('dark mode', QUERY_VECTOR))
 
       expect(error).toBeInstanceOf(TypeError)
       expect(error.message).toContain("both 'text' and 'vector'")

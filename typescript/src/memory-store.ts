@@ -218,8 +218,8 @@ export class MongoDBMemoryStore implements MemoryStore {
    * skipped instead and retried inside a later call: after 60 seconds, then at doubling intervals up to an hour.
    *
    * @throws StorageError if a driver call fails, the collection's collation is not binary, an existing index
-   * conflicts, an index is missing and `ensureIndexes` is `false`, or `searchType` names a tier the deployment
-   * cannot prepare
+   * conflicts, an index is missing and `ensureIndexes` is `false`, or `searchType` names a tier that a deployment
+   * running Atlas Search cannot prepare. Without Atlas Search it resolves, and `search()` throws
    */
   async initialize(): Promise<void> {
     if (this._initialized && !this._tiers.retryDue) return
@@ -295,8 +295,7 @@ export class MongoDBMemoryStore implements MemoryStore {
       // First, so a search that fails early still records what was requested.
       annotate('strands_mongodb.search.requested', this._searchType)
       const parts = queryParts(query)
-      let queryText = parts.text
-      let queryVector = parts.vector
+      const { text: queryText, vector: queryVector } = parts
 
       // A query's `limit` ranks above `options` because it only arrives on a direct call.
       const limit = resolveLimit([
@@ -311,18 +310,12 @@ export class MongoDBMemoryStore implements MemoryStore {
 
       await this.initialize()
       await this._tiers.waitForFirst(this._collection())
-      const prepared = this._tiers.prepared
-      if (
-        this._embedding !== undefined &&
-        queryText !== undefined &&
-        queryVector === undefined &&
-        (prepared[0] === 'hybrid' || prepared[0] === 'vector')
-      ) {
-        queryVector = await this._embed(this._embedding, queryText)
-        // Kept for hybrid, which feeds `text` to `$search`; anywhere else both keys would be refused.
-        if (!prepared.includes('hybrid')) queryText = undefined
-      }
-      const picked = this._tiers.pick(queryText, queryVector)
+      const embedding = this._embedding
+      const picked = await this._tiers.pick(
+        queryText,
+        queryVector,
+        embedding && ((text): Promise<number[]> => this._embed(embedding, text))
+      )
       annotate('strands_mongodb.search.tier', picked.tier)
       const stages = this._stages(picked, { queryFilter, limit, oversamplingFactor: parts.oversamplingFactor })
 

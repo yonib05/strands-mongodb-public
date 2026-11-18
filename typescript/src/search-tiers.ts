@@ -114,14 +114,31 @@ export class SearchTiers {
    * Chooses the first prepared tier, in preference order, that fits the query's keys.
    *
    * @param text - The query's `text`, if set
-   * @param vector - The query's `vector`, if set or embedded
+   * @param vector - The query's `vector`, if set
+   * @param embed - Manual path only: embeds `text` when the best tier reads a vector and the query has none
    * @returns The tier and the keys it reads
    * @throws TypeError if no prepared tier fits the keys
    * @throws StorageError if no tier is prepared
    */
-  pick(text: string | undefined, vector: number[] | undefined): PickedTier {
-    const { namespace, mode } = this._options
+  async pick(
+    text: string | undefined,
+    vector: number[] | undefined,
+    embed?: (text: string) => Promise<number[]>
+  ): Promise<PickedTier> {
+    // Read once, so a retry that replaces the tiers while `embed` runs cannot change which tier the keys were made for.
     const prepared = this._prepared
+    if (embed === undefined || text === undefined || vector !== undefined) return this._fit(prepared, text, vector)
+    if (prepared[0] !== 'hybrid' && prepared[0] !== 'vector') return this._fit(prepared, text, vector)
+    // The text is kept for hybrid, which feeds it to `$search`; anywhere else both keys would be refused.
+    return this._fit(prepared, prepared.includes('hybrid') ? text : undefined, await embed(text))
+  }
+
+  private _fit(
+    prepared: readonly ResolvedSearchType[],
+    text: string | undefined,
+    vector: number[] | undefined
+  ): PickedTier {
+    const { namespace, mode } = this._options
     if (text !== undefined && vector !== undefined && !prepared.includes('hybrid')) {
       // Thrown rather than answered from one tier, which would silently ignore one of the two keys.
       throw new TypeError(
@@ -159,8 +176,8 @@ export class SearchTiers {
     )
   }
 
-  // Runs under the connection lock from `initialize()` and outside it after the first-search wait. Each run assigns
-  // its result after its last await, so an overlap costs at most one extra doubling of the delay.
+  // Also runs unlocked, after the first-search wait. Each run assigns its result after its last await, so an overlap
+  // costs at most one extra doubling of the delay.
   private async _retry(collection: Collection, options: { afterTimeout: boolean }): Promise<void> {
     let tiers: ResolvedSearchType[] | undefined
     try {
@@ -178,8 +195,8 @@ export class SearchTiers {
     annotate('strands_mongodb.search.tiers', this._prepared.join(','))
   }
 
-  // Every tier is waited on together, so a quick text build is not held behind a slow vector one. The losers are
-  // aborted once the first is ready, so no poll outlives the wait.
+  // Every tier is waited on together, so a quick text build is not held behind a slow vector one. Unlocked, as in
+  // Python: `prepare` created the indexes under the lock, so this only reads them unless one was dropped since.
   private async _waitForTheFirstReady(collection: Collection): Promise<void> {
     const { create, timeout, logger } = this._options
     const losers = new AbortController()
