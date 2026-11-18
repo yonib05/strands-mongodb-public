@@ -166,8 +166,7 @@ describe('AT-071 vectorIndexDefinition', () => {
 
   it('carries dimensions and similarity on the manual path', () => {
     const definition = vectorIndexDefinition(
-      vectorMode({ database: 'd', embeddingDimensions: 4, similarity: 'euclidean' }),
-      { vectorField: 'embedding' }
+      vectorMode({ database: 'd', embeddingDimensions: 4, similarity: 'euclidean' })
     )
 
     expect(definition.fields[0]).toEqual({
@@ -176,14 +175,6 @@ describe('AT-071 vectorIndexDefinition', () => {
       numDimensions: 4,
       similarity: 'euclidean',
     })
-  })
-
-  it('honours custom text and vector fields', () => {
-    expect(vectorIndexDefinition(vectorMode({ database: 'd' }), { textField: 'body' }).fields[0].path).toBe('body')
-    expect(
-      vectorIndexDefinition({ autoEmbed: false, dimensions: 2, similarity: 'cosine' }, { vectorField: 'v' }).fields[0]
-        .path
-    ).toBe('v')
   })
 
   it('never emits the placeholder dimension count', () => {
@@ -199,15 +190,13 @@ describe('AT-071 vectorIndexDefinition', () => {
   })
 
   it('appends caller filter fields after the baked-in two', () => {
-    const definition = vectorIndexDefinition(vectorMode({ database: 'd' }), {
-      filterFields: ['metadata.tier', 'owner'],
-    })
+    const definition = vectorIndexDefinition(vectorMode({ database: 'd' }), ['metadata.tier', 'owner'])
 
     expect(filterPaths(definition)).toEqual(['scope', 'store_name', 'metadata.tier', 'owner'])
   })
 
   it('declares a caller field that duplicates a baked-in one once', () => {
-    const definition = vectorIndexDefinition(vectorMode({ database: 'd' }), { filterFields: ['scope', 'owner'] })
+    const definition = vectorIndexDefinition(vectorMode({ database: 'd' }), ['scope', 'owner'])
 
     expect(filterPaths(definition)).toEqual(['scope', 'store_name', 'owner'])
   })
@@ -233,10 +222,6 @@ describe('textIndexDefinition', () => {
 
   it('turns dynamic mapping off', () => {
     expect(textIndexDefinition().mappings.dynamic).toBe(false)
-  })
-
-  it('maps a custom text field', () => {
-    expect(Object.keys(textIndexDefinition({ textField: 'body' }).mappings.fields)).toEqual(['body'])
   })
 })
 
@@ -387,7 +372,7 @@ describe('fixture parity with the Python package', () => {
     })
 
     it.each(specFixtures.vector_index_definition)('$name', ({ input, definition }) => {
-      expect(vectorIndexDefinition(fixtureMode(input.mode), { filterFields: input.filterFields })).toEqual(definition)
+      expect(vectorIndexDefinition(fixtureMode(input.mode), input.filterFields)).toEqual(definition)
     })
 
     it('text_index_definition', () => {

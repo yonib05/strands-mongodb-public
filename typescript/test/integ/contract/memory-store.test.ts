@@ -19,7 +19,7 @@ import {
 } from '@strands-agents/sdk'
 import { Collection, type Db, type Document, MongoClient, MongoServerError, ObjectId } from 'mongodb'
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
-import { close, resolve } from '../../../src/client.js'
+import { type Capabilities, close, resolve } from '../../../src/client.js'
 import { ensure } from '../../../src/ensure-indexes.js'
 import { EXPIRES_FIELD, memorySearchSpecs } from '../../../src/index-specs.js'
 import { searchSupport } from '../../../src/probes.js'
@@ -27,6 +27,7 @@ import { MongoDBMemoryStore, UNSCOPED } from '../../../src/memory-store.js'
 import { MongoDBStorage } from '../../../src/storage.js'
 import type { MongoDBConfig, MongoDBMemoryStoreConfig } from '../../../src/types.js'
 import { tierUri } from '../../env.js'
+import { capabilitiesOf } from '../deployment.js'
 import { describeTier } from '../../tiers.js'
 import { rejectionOf } from '../../../src/__fixtures__/errors.js'
 import { RecordingLogger } from '../../../src/__fixtures__/logger.js'
@@ -124,6 +125,7 @@ describeTier('contract', 'memory store', () => {
   const configs: MongoDBConfig[] = []
   let client: MongoClient
   let db: Db
+  let capabilities: Capabilities
 
   // A collection name unique to this run, dropped afterwards.
   function fresh(label: string): string {
@@ -153,9 +155,10 @@ describeTier('contract', 'memory store', () => {
     }
   }
 
-  beforeAll(() => {
+  beforeAll(async () => {
     client = new MongoClient(tierUri('contract')!)
     db = client.db(DATABASE)
+    capabilities = await capabilitiesOf(db)
   })
 
   afterAll(async () => {
@@ -172,21 +175,19 @@ describeTier('contract', 'memory store', () => {
   })
 
   it('AT-045a, AT-053a, AT-065: initialize twice creates the ordinary indexes once, and warns once where there is no search', async () => {
-    const { store: facts, logger, name, config } = store('ordinary')
+    const { store: facts, logger, name } = store('ordinary')
 
     await facts.initialize()
     await facts.initialize()
 
     const indexes = (await db.collection(name).listIndexes().toArray()).map((index) => String(index.name))
     expect(indexes.sort()).toEqual([...ORDINARY_INDEXES].sort())
-    const capabilities = resolve(config).capabilities
-    expect(capabilities).toBeDefined()
     const warnings = logger.lines('warn').filter((line) => line.includes('event=no_search_setup'))
-    if (capabilities!.search) {
+    if (capabilities.search) {
       expect(warnings).toEqual([])
     } else {
       expect(warnings).toHaveLength(1)
-      expect(warnings[0]).toContain(`error code ${capabilities!.noSearchCode}`)
+      expect(warnings[0]).toContain(`error code ${capabilities.noSearchCode}`)
       expect(reportedTiers(exporter)).toEqual([])
       expect(
         await db
@@ -203,7 +204,6 @@ describeTier('contract', 'memory store', () => {
 
     const tiers = await settled(built, db)
 
-    const capabilities = resolve(built.config).capabilities!
     expect(capabilities.search || !capabilities.rankFusion).toBe(true)
     if (!capabilities.search) expect(tiers).toEqual([])
     if (!capabilities.rankFusion) expect(tiers).not.toContain('hybrid')
@@ -221,7 +221,6 @@ describeTier('contract', 'memory store', () => {
 
     const tiers = await settled(built, db)
 
-    const capabilities = resolve(built.config).capabilities!
     if (capabilities.search && capabilities.rankFusion) {
       expect(tiers).toEqual(['hybrid', 'vector', 'text'])
       const statuses = Object.fromEntries(
@@ -238,7 +237,6 @@ describeTier('contract', 'memory store', () => {
 
     const tiers = await settled(built, db)
 
-    const capabilities = resolve(built.config).capabilities!
     if (tiers.length === 0) {
       const error = await rejectionOf(built.store.search('dark mode'))
       expect(error).toBeInstanceOf(StorageError)
@@ -257,7 +255,6 @@ describeTier('contract', 'memory store', () => {
     })
 
     const tiers = await settled(reference, db)
-    const capabilities = resolve(reference.config).capabilities!
 
     if (tiers.includes('hybrid')) {
       await hybrid.initialize()
@@ -288,7 +285,7 @@ describeTier('contract', 'memory store', () => {
 
       expect(await db.collection(name).listIndexes().toArray()).toHaveLength(ORDINARY_INDEXES.length)
       expect(probes.length).toBeLessThanOrEqual(1)
-      if (!resolve(config).capabilities!.search) expect(probes).toEqual([])
+      if (!capabilities.search) expect(probes).toEqual([])
     } finally {
       await close(config)
       await injected.close()
@@ -311,13 +308,18 @@ describeTier('contract', 'memory store', () => {
     await expect(facts.initialize()).rejects.toBeInstanceOf(StorageError)
   })
 
-  it('AT-192: an absent collection is verified once the indexes have created it', async () => {
-    const { store: facts, name, config } = store('absent')
+  it('AT-192: an absent collection is verified once the indexes have created it, and not read again', async () => {
+    const { store: facts, name, config } = store('absent', { connection: { clientOptions: { monitorCommands: true } } })
+    const collationReads: string[] = []
+    resolve(config).client.on('commandStarted', (event) => {
+      if (event.commandName === 'listCollections') collationReads.push(event.commandName)
+    })
     expect(await db.listCollections({ name }).toArray()).toEqual([])
 
     await facts.initialize()
+    await new MongoDBMemoryStore({ name: 'others', config, collection: name }).initialize()
 
-    expect(resolve(config).binaryKeys.has(`${DATABASE}.${name}`)).toBe(true)
+    expect(collationReads).toHaveLength(2)
     expect(await db.listCollections({ name }).toArray()).toHaveLength(1)
   })
 

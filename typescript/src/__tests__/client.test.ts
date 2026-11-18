@@ -6,7 +6,7 @@ import type { Collection, MongoClient, MongoClientOptions } from 'mongodb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConstructedMongoClient, FakeCollection, FakeMongoClient, freshUri } from '../__fixtures__/fake-mongo.js'
 import { recordSpans } from '../__fixtures__/spans.js'
-import { close, type Connection, DRIVER_NAME, resolve } from '../client.js'
+import { close, type Connection, resolve } from '../client.js'
 import type { MongoDBConfig } from '../types.js'
 import { PACKAGE_VERSION } from '../version.js'
 import { errorOf } from '../__fixtures__/errors.js'
@@ -216,13 +216,6 @@ describe('resolve', () => {
       expect(second.client).not.toBe(first.client)
     })
 
-    it('starts a connection with no capabilities and an empty binary-key cache', () => {
-      const connection = track({ database: 'appdb', connectionString: freshUri() })
-
-      expect(connection.capabilities).toBeUndefined()
-      expect(connection.binaryKeys).toEqual(new Set())
-    })
-
     it('probes the deployment once and hands every later caller the same answer', async () => {
       const connection = track({ database: 'appdb', connectionString: freshUri() })
       const collection = new FakeCollection('appdb', 'memory')
@@ -232,7 +225,6 @@ describe('resolve', () => {
 
       expect(first).toEqual({ search: true, rankFusion: true })
       expect(second).toBe(first)
-      expect(connection.capabilities).toBe(first)
       expect(collection.db.commandCalls).toHaveLength(1)
       expect(collection.searchIndexReads).toBe(1)
     })
@@ -243,22 +235,18 @@ describe('resolve', () => {
       const driver = collection as unknown as Collection
 
       await connection.requireBinaryKeys(driver)
-      expect(connection.binaryKeys).toEqual(new Set())
+      await connection.requireBinaryKeys(driver)
+      expect(collection.db.listCollectionsCalls).toHaveLength(2)
 
       collection.setCollation(undefined)
       await connection.requireBinaryKeys(driver)
       await connection.requireBinaryKeys(driver)
 
-      expect(connection.binaryKeys).toEqual(new Set(['appdb.memory']))
-      expect(collection.db.listCollectionsCalls).toHaveLength(2)
+      expect(collection.db.listCollectionsCalls).toHaveLength(3)
     })
   })
 
   describe('AT-013a, AT-013b, AT-230: driver attribution', () => {
-    it('pins the driver name exactly', () => {
-      expect(DRIVER_NAME).toBe('Strands-MongoDB')
-    })
-
     it('builds a client with the caller options unchanged and attributes it through appendMetadata', () => {
       const connectionString = freshUri()
 

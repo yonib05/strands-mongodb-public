@@ -8,8 +8,8 @@ import { event } from './telemetry.js'
 import type { MongoDBConfig } from './types.js'
 import { PACKAGE_VERSION } from './version.js'
 
-/** Name appended to the driver's handshake metadata. Server logs group by it, so changing it orphans usage data. */
-export const DRIVER_NAME = 'Strands-MongoDB'
+// Appended to the driver's handshake metadata. Server logs group by it, so changing it orphans usage data.
+const DRIVER_NAME = 'Strands-MongoDB'
 
 const MISSING_CONNECTION =
   "strands_mongodb: neither 'client' nor 'connectionString' is set in the configuration. Set 'connectionString' to a MongoDB URI, or 'client' to a MongoClient you already have."
@@ -40,16 +40,6 @@ export class Connection {
    * @param client - The shared client, built here or injected by the caller
    */
   constructor(readonly client: MongoClient) {}
-
-  /** Result of {@link Connection.probe}, absent until it has run. */
-  get capabilities(): Capabilities | undefined {
-    return this._capabilities
-  }
-
-  /** `db.coll` namespaces whose default collation was read and found binary. */
-  get binaryKeys(): ReadonlySet<string> {
-    return this._binaryKeys
-  }
 
   /**
    * Runs `fn` once every earlier call has settled, guarding one-time setup against concurrent stores.

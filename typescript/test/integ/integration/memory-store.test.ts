@@ -3,7 +3,7 @@ import { type MemoryEntry, StorageError } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
 import { type Collection, type Db, type Document, MongoClient, type MongoServerError } from 'mongodb'
 import { afterAll, beforeAll, expect, it } from 'vitest'
-import { close, resolve } from '../../../src/client.js'
+import { type Capabilities, close } from '../../../src/client.js'
 import { ensure } from '../../../src/ensure-indexes.js'
 import { CONTENT_FIELD, DEFAULT_VECTOR_INDEX_NAME, memorySearchSpecs, VECTOR_FIELD } from '../../../src/index-specs.js'
 import { MongoDBMemoryStore, UNSCOPED } from '../../../src/memory-store.js'
@@ -16,6 +16,7 @@ import {
   type VectorSimilarity,
 } from '../../../src/types.js'
 import { tierUri } from '../../env.js'
+import { capabilitiesOf } from '../deployment.js'
 import { describeTier } from '../../tiers.js'
 import { rejectionOf } from '../../../src/__fixtures__/errors.js'
 import { RecordingLogger } from '../../../src/__fixtures__/logger.js'
@@ -34,6 +35,8 @@ const QUERY_VECTOR = [1, 0, 0, 0]
 const QUERY_TEXT = 'dark mode'
 
 const CONTENT = 'the user prefers dark mode'
+
+const NO_RANK_FUSION = 'this deployment has no $rankFusion'
 
 // How long a write is waited on before it counts as never having become searchable, polling twice a second.
 const SEARCHABLE_BUDGET_MS = 180_000
@@ -161,6 +164,7 @@ describeTier('integration', 'memory store', () => {
   const builds = new Map<MongoDBMemoryStore, { config: MongoDBConfig; name: string }>()
   let client: MongoClient
   let db: Db
+  let capabilities: Capabilities
 
   function register(config: MongoDBConfig, name: string, options: Partial<MongoDBMemoryStoreConfig> = {}) {
     configs.push(config)
@@ -213,9 +217,10 @@ describeTier('integration', 'memory store', () => {
     )
   }
 
-  beforeAll(() => {
+  beforeAll(async () => {
     client = new MongoClient(tierUri('integration')!)
     db = client.db(DATABASE)
+    capabilities = await capabilitiesOf(db)
   })
 
   afterAll(async () => {
@@ -238,7 +243,6 @@ describeTier('integration', 'memory store', () => {
     const atOnce = reportedTiers(exporter)
     const tiers = await settled(sibling(facts, name))
 
-    const capabilities = resolve(builds.get(facts)!.config).capabilities!
     expect(capabilities.search).toBe(true)
     expect(tiers).toEqual(capabilities.rankFusion ? ['hybrid', 'vector', 'text'] : ['vector', 'text'])
     expect(await statuses(name)).toEqual({ vector_index: 'READY', text_index: 'READY' })
@@ -304,7 +308,7 @@ describeTier('integration', 'memory store', () => {
     expect(refusal).toBeInstanceOf(StorageError)
     expect(refusal.message).toContain("'vector_index'")
 
-    if (resolve(builds.get(manual)!.config).capabilities?.rankFusion ?? true) {
+    if (capabilities.rankFusion) {
       await manual.initialize()
       expect(reportedTiers(exporter)).toEqual(['hybrid'])
     } else {
@@ -313,12 +317,12 @@ describeTier('integration', 'memory store', () => {
     }
   })
 
-  it('AT-148: a score bound under auto declines the fusion on a deployment that offers it', async () => {
+  it('AT-148: a score bound under auto declines the fusion on a deployment that offers it', async (context) => {
+    if (!capabilities.rankFusion) context.skip(NO_RANK_FUSION)
     const { store: facts, logger } = store('bound', { connection: MANUAL_VECTOR, store: { minScore: 0.7 } })
 
     const tiers = await settled(facts)
 
-    if (!resolve(builds.get(facts)!.config).capabilities!.rankFusion) return
     expect(tiers).toEqual(['vector', 'text'])
     const declined = logger.lines('warn').filter((line) => line.includes('event=bound_declined_fusion'))
     expect(declined.length).toBeGreaterThanOrEqual(1)
@@ -367,18 +371,13 @@ describeTier('integration', 'memory store', () => {
     expect(embedder.calls).toEqual([CONTENT])
   })
 
-  it('AT-157, AT-243: a hybrid store fuses text with a caller vector, or with the vector its embedder computes', async () => {
+  it('AT-157, AT-243: a hybrid store fuses text with a caller vector, or with the vector its embedder computes', async (context) => {
+    if (!capabilities.rankFusion) context.skip(NO_RANK_FUSION)
     const embedder = new WordEmbedder()
     const { store: facts } = store('embedder_hybrid', {
       connection: { embeddingDimensions: 3, similarity: 'cosine', searchType: 'hybrid' },
       store: { writable: true, scope: 'tenant-a', embedder },
     })
-    try {
-      await facts.initialize()
-    } catch (error) {
-      if (error instanceof StorageError && error.message.includes('$rankFusion')) return
-      throw error
-    }
 
     await facts.add(CONTENT)
     await facts.add('the user drinks coffee')
@@ -529,7 +528,7 @@ describeTier('integration', 'memory store', () => {
     expect(contents(await answered(scoped, QUERY_TEXT))).toEqual(['dark mode for tenant b'])
   })
 
-  it('AT-053b, AT-054: the shipped default answers from the text tier where the vector index cannot build', async () => {
+  it('AT-053b, AT-054: the shipped default answers from the text tier where the vector index cannot build', async (context) => {
     const { store: facts, logger } = store('shipped_default', { store: { writable: true, scope: 'tenant-a' } })
 
     await facts.add(CONTENT)
@@ -537,7 +536,7 @@ describeTier('integration', 'memory store', () => {
 
     expect(contents(results)).toEqual([CONTENT])
     const tier = metadataOf(results[0]!)._searchType
-    if (tier === 'vector' || tier === 'hybrid') return
+    if (tier !== 'text') context.skip('this deployment built the AutoEmbeddings vector index, so nothing fell back')
     expect(tier).toBe('text')
     const warnings = logger.lines('warn').join(' ')
     expect(warnings).toContain('tier=vector')
@@ -571,7 +570,8 @@ describeTier('integration', 'memory store', () => {
     expect(applied.at(-1)).toContain(`namespace=${DATABASE}.${name}`)
   })
 
-  it('AT-143: the fused order is reciprocal rank fusion of the two tiers it composed', async () => {
+  it('AT-143: the fused order is reciprocal rank fusion of the two tiers it composed', async (context) => {
+    if (!capabilities.rankFusion) context.skip(NO_RANK_FUSION)
     const { store: vector, name } = store('fusion', {
       connection: { ...MANUAL_VECTOR, searchType: 'vector' },
       store: { scope: 'tenant-a' },
@@ -579,12 +579,7 @@ describeTier('integration', 'memory store', () => {
     const text = sibling(vector, name, { connection: { searchType: 'text' }, store: { scope: 'tenant-a' } })
     const hybrid = sibling(vector, name, { connection: { searchType: 'hybrid' }, store: { scope: 'tenant-a' } })
     await seedVectors(db.collection(name), { scope: 'tenant-a', storeName: 'facts' }, FUSION_CORPUS)
-    try {
-      await hybrid.initialize()
-    } catch (error) {
-      if (error instanceof StorageError && error.message.includes('$rankFusion')) return
-      throw error
-    }
+    await hybrid.initialize()
     const size = Object.keys(FUSION_CORPUS).length
 
     const byVector = contents(await answered(vector, { vector: QUERY_VECTOR, limit: size }, size))

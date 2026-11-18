@@ -107,17 +107,13 @@ export function declaredFilterFields(extra: Iterable<string>): string[] {
  * Builds the Atlas Vector Search index definition for the `memory` collection.
  *
  * @param mode - The resolved path, from {@link vectorMode}
- * @param options - Field names, and extra filter paths beyond `scope` and `store_name`
+ * @param filterFields - Filter paths beyond `scope` and `store_name`
  * @returns A definition with the vector field first and every filter path after it
  */
-export function vectorIndexDefinition(
-  mode: VectorMode,
-  options: { textField?: string; vectorField?: string; filterFields?: Iterable<string> } = {}
-): Document {
-  const { textField = CONTENT_FIELD, vectorField = VECTOR_FIELD, filterFields = [] } = options
+export function vectorIndexDefinition(mode: VectorMode, filterFields: Iterable<string> = []): Document {
   const first = mode.autoEmbed
-    ? { type: 'autoEmbed', path: textField, model: mode.model, modality: 'text' }
-    : { type: 'vector', path: vectorField, numDimensions: mode.dimensions, similarity: mode.similarity }
+    ? { type: 'autoEmbed', path: CONTENT_FIELD, model: mode.model, modality: 'text' }
+    : { type: 'vector', path: VECTOR_FIELD, numDimensions: mode.dimensions, similarity: mode.similarity }
   return {
     fields: [first, ...declaredFilterFields(filterFields).map((path) => ({ type: 'filter', path }))],
   }
@@ -126,12 +122,10 @@ export function vectorIndexDefinition(
 /**
  * Builds the Atlas Search full-text index definition. `dynamic: false` indexes only the text field.
  *
- * @param options - The field to map as a string
- * @returns A definition mapping that one field
+ * @returns A definition mapping `content` as a string
  */
-export function textIndexDefinition(options: { textField?: string } = {}): Document {
-  const { textField = CONTENT_FIELD } = options
-  return { mappings: { dynamic: false, fields: { [textField]: [{ type: 'string' }] } } }
+export function textIndexDefinition(): Document {
+  return { mappings: { dynamic: false, fields: { [CONTENT_FIELD]: [{ type: 'string' }] } } }
 }
 
 function runCommand(command: Document): string {
@@ -292,7 +286,7 @@ export function memorySearchSpecs(config: MongoDBConfig): [vector: SearchIndexSp
   return [
     new SearchIndexSpec({
       name: config.vectorIndexName || DEFAULT_VECTOR_INDEX_NAME,
-      definition: vectorIndexDefinition(mode, { filterFields: config.filterFields ?? [] }),
+      definition: vectorIndexDefinition(mode, config.filterFields),
       type: 'vectorSearch',
     }),
     new SearchIndexSpec({

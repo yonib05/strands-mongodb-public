@@ -78,12 +78,12 @@ export async function ensure(collection: Collection, options: EnsureOptions): Pr
   if (abandoned !== undefined) throw abandoned
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return isObject(value) && !Array.isArray(value)
 }
 
 function sameValue(a: unknown, b: unknown): boolean {

@@ -552,7 +552,7 @@ describe('MongoDBMemoryStore', () => {
     it('AT-053a: warns once per connection on a deployment without search, and initializes', async () => {
       const client = new FakeMongoClient()
       const logger = new RecordingLogger()
-      const { store, collection, config } = withoutSearch({ client, logger })
+      const { store, collection } = withoutSearch({ client, logger })
       const others = Array.from(
         { length: 9 },
         (_, index) => setup({ client, logger, store: { name: `facts${index}` } }).store
@@ -567,7 +567,6 @@ describe('MongoDBMemoryStore', () => {
       expect(createdSearchIndexes(collection)).toEqual([])
       expect(collection.indexes).toHaveLength(4)
       expect(reportedTiers(exporter)).toEqual([])
-      expect(resolve(config).capabilities).toEqual({ search: false, noSearchCode: NO_SEARCH_CODE, rankFusion: false })
     })
 
     it('neither takes the lock nor redoes the setup on a second call', async () => {
@@ -741,13 +740,12 @@ describe('MongoDBMemoryStore', () => {
 
   describe('AT-192: an absent collection is not a verified one', () => {
     it('reads the collation again once the indexes have created the collection', async () => {
-      const { store, collection, config } = setup()
+      const { store, collection } = setup()
       expect(collection.exists).toBe(false)
 
       await store.initialize()
 
       expect(collection.db.listCollectionsCalls).toHaveLength(2)
-      expect(resolve(config).binaryKeys.has('appdb.memory')).toBe(true)
     })
 
     it('caches the read that found something, so a second store adds no third read', async () => {
@@ -775,13 +773,12 @@ describe('MongoDBMemoryStore', () => {
 
   describe('AT-146, AT-147: the hybrid tier is a statement about two others', () => {
     it('prefers fusion under auto where the deployment and both tiers allow it', async () => {
-      const { store, collection, config } = setup()
+      const { store, collection } = setup()
 
       await store.initialize()
 
       expect(createdSearchIndexes(collection)).toEqual(['vector_index', 'text_index'])
       expect(reportedTiers(exporter)).toEqual(['hybrid', 'vector', 'text'])
-      expect(resolve(config).capabilities).toEqual({ search: true, rankFusion: true })
     })
 
     it('resolves vector first without the stage, after one version read', async () => {

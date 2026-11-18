@@ -292,16 +292,23 @@ describeTier('contract', 'storage', () => {
   })
 
   it('AT-192: an absent collection is asked about again until the first write creates it', async () => {
-    const storage = store('absent')
-    const target = `${DATABASE}.${created.at(-1)!}`
+    const monitored = { ...config, clientOptions: { monitorCommands: true } }
+    const storage = new MongoDBStorage(monitored, { collection: fresh('absent') })
+    const collationReads: string[] = []
+    resolve(monitored).client.on('commandStarted', (event) => {
+      if (event.commandName === 'listCollections') collationReads.push(event.commandName)
+    })
+    try {
+      expect(await storage.read('absent')).toBeNull()
+      await storage.write('k', bytes('v'))
+      expect(collationReads).toHaveLength(2)
 
-    expect(await storage.read('absent')).toBeNull()
-    expect(resolve(config).binaryKeys.has(target)).toBe(false)
-
-    await storage.write('k', bytes('v'))
-    expect(await storage.read('k')).toEqual(bytes('v'))
-
-    expect(resolve(config).binaryKeys.has(target)).toBe(true)
+      expect(await storage.read('k')).toEqual(bytes('v'))
+      expect(await storage.read('k')).toEqual(bytes('v'))
+      expect(collationReads).toHaveLength(3)
+    } finally {
+      await storage.close()
+    }
   })
 
   it('AT-029, AT-038b: an oversized payload is refused before the driver sees it, naming both sizes', async () => {

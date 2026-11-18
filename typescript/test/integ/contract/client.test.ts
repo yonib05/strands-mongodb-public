@@ -2,7 +2,7 @@ import { StorageError } from '@strands-agents/sdk'
 import { type Document, MongoClient, MongoServerSelectionError } from 'mongodb'
 import { expect, it, vi } from 'vitest'
 import { rejectionOf } from '../../../src/__fixtures__/errors.js'
-import { close, DRIVER_NAME, resolve } from '../../../src/client.js'
+import { close, resolve } from '../../../src/client.js'
 import { MongoDBStorage } from '../../../src/storage.js'
 import { PACKAGE_VERSION } from '../../../src/version.js'
 import { tierUri } from '../../env.js'
@@ -20,7 +20,7 @@ describeTier('contract', 'client', () => {
     const { client } = resolve(config)
     try {
       const driver = await driverOf(client)
-      expect(driver.name.split('|')).toContain(DRIVER_NAME)
+      expect(driver.name.split('|')).toContain('Strands-MongoDB')
       expect(driver.version.split('|')).toContain(PACKAGE_VERSION)
       await expect(client.db('admin').command({ ping: 1 })).resolves.toMatchObject({ ok: 1 })
     } finally {
@@ -37,7 +37,7 @@ describeTier('contract', 'client', () => {
       await close(config)
 
       expect(shut).not.toHaveBeenCalled()
-      expect((await driverOf(client)).name.split('|')).toContain(DRIVER_NAME)
+      expect((await driverOf(client)).name.split('|')).toContain('Strands-MongoDB')
       await expect(client.db('admin').command({ ping: 1 })).resolves.toMatchObject({ ok: 1 })
     } finally {
       shut.mockRestore()
