@@ -120,7 +120,7 @@ try {
 
 With a `connectionString`, the package builds the client and passes it your `clientOptions`. Stores share
 one client and pool when their configs hold the same `client`, or equal `connectionString` and
-`clientOptions`. The stores keep the config off their enumerable properties, so logging a store does not
+`clientOptions`. The stores keep the config in a private field, so logging a store does not
 print the connection string. Each client is registered once through the driver's `appendMetadata`, so
 server logs show the driver as `nodejs|Strands-MongoDB`. Your own `driverInfo` and `appName` are kept.
 

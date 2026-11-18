@@ -125,8 +125,8 @@ export class MongoDBMemoryStore implements MemoryStore {
   readonly minScore?: number
   readonly maxScore?: number
   readonly ttlSeconds?: number
-  // Non-enumerable, so `util.inspect` and `JSON.stringify` of a store never render the connection string.
-  declare private readonly _connectionConfig: MongoDBConfig
+  // Private by `#`, so `util.inspect` and `JSON.stringify` of a store never render the connection string.
+  readonly #connectionConfig: MongoDBConfig
   private readonly _databaseName: string
   private readonly _collectionName: string
   private readonly _ensureIndexes: boolean
@@ -212,7 +212,7 @@ export class MongoDBMemoryStore implements MemoryStore {
     this._indexNames = { vector: vector.name, text: text.name }
     this._fusionPossible = !this._mode.autoEmbed && (searchType === 'auto' || searchType === 'hybrid')
 
-    Object.defineProperty(this, '_connectionConfig', { value: connection, enumerable: false })
+    this.#connectionConfig = connection
     this._logger = connection.logger ?? defaultLogger
     this._tiers = new SearchTiers({
       namespace: this._target,
@@ -417,7 +417,7 @@ export class MongoDBMemoryStore implements MemoryStore {
    * probe the deployment or check its indexes again.
    */
   close(): Promise<void> {
-    return release(this._connectionConfig)
+    return release(this.#connectionConfig)
   }
 
   // Projects only `_id`, because the caller already has the content.
@@ -481,7 +481,7 @@ export class MongoDBMemoryStore implements MemoryStore {
   private async _initialize(): Promise<void> {
     annotate('strands_mongodb.search.requested', this._searchType)
     // Bound once, so the lock, the probe, the cache writes and the collection all use the same connection.
-    const connection = resolve(this._connectionConfig)
+    const connection = resolve(this.#connectionConfig)
     await connection.locked(async () => {
       const collection = this._collectionOn(connection)
       if (this._initialized) {
@@ -516,7 +516,7 @@ export class MongoDBMemoryStore implements MemoryStore {
   // The message names only the namespace: the subject of a memory operation is user content.
   private async _reporting<T>(verb: string, fn: () => Promise<T>): Promise<T> {
     try {
-      return await onLiveClient(this._connectionConfig, fn)
+      return await onLiveClient(this.#connectionConfig, fn)
     } catch (error) {
       if (!(error instanceof MongoError)) throw error
       throw new StorageError(`strands_mongodb: ${verb} ${this._target} failed: ${error.message}`, { cause: error })
@@ -537,7 +537,7 @@ export class MongoDBMemoryStore implements MemoryStore {
 
   // Resolved on each call, never stored: after `close()` the next operation opens a fresh pool.
   private _collection(): Collection<Document> {
-    return this._collectionOn(resolve(this._connectionConfig))
+    return this._collectionOn(resolve(this.#connectionConfig))
   }
 
   private _collectionOn(connection: Connection): Collection<Document> {

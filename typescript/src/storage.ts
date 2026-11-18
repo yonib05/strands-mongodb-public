@@ -84,8 +84,8 @@ type IndexedStrategy = SearchStrategy<MongoDBStorage> & { indexSpec?(): SearchIn
 export class MongoDBStorage implements Storage {
   // Declared only: the SDK tests `NAMESPACED in storage`, so the property must be absent until `namespace()` sets it.
   declare [NAMESPACED]?: true
-  // Non-enumerable, so `util.inspect` and `JSON.stringify` of a store never render the connection string.
-  declare private readonly _config: MongoDBConfig
+  // Private by `#`, so `util.inspect` and `JSON.stringify` of a store never render the connection string.
+  readonly #config: MongoDBConfig
   private readonly _databaseName: string
   private readonly _collectionName: string
   private readonly _prefix: string
@@ -120,7 +120,7 @@ export class MongoDBStorage implements Storage {
     this._ttlSeconds = ttlSeconds
     this._indexReadyTimeout = readyTimeout(config)
     this._searchStrategy = options.searchStrategy
-    Object.defineProperty(this, '_config', { value: config, enumerable: false })
+    this.#config = config
     this._logger = config.logger ?? defaultLogger
     // Called only to fail fast on a config with no client or connection string.
     resolve(config)
@@ -286,7 +286,7 @@ export class MongoDBStorage implements Storage {
    * @throws StorageError if `prefix` contains a backslash or a `..` segment
    */
   namespace(prefix: string): MongoDBStorage {
-    const scoped = new MongoDBStorage(this._config, {
+    const scoped = new MongoDBStorage(this.#config, {
       collection: this._collectionName,
       prefix: `${this._prefix}${prefix}`,
       ttlSeconds: this._ttlSeconds,
@@ -308,13 +308,13 @@ export class MongoDBStorage implements Storage {
    */
   ensureIndexes(): Promise<void> {
     return traced('storage', 'ensure_indexes', this._spanBase(), () =>
-      onLiveClient(this._config, async () => {
+      onLiveClient(this.#config, async () => {
         await this._requireBinaryKeys()
         const spec = this._searchStrategy?.indexSpec?.()
         await ensure(this._collection(), {
           ordinary: storageSpecs(),
           search: spec === undefined ? [] : [spec],
-          create: this._config.ensureIndexes ?? true,
+          create: this.#config.ensureIndexes ?? true,
           timeout: this._indexReadyTimeout,
           logger: this._logger,
         })
@@ -330,7 +330,7 @@ export class MongoDBStorage implements Storage {
    * Node.js process alive until `close()` is called again.
    */
   close(): Promise<void> {
-    return release(this._config)
+    return release(this.#config)
   }
 
   /**
@@ -349,7 +349,7 @@ export class MongoDBStorage implements Storage {
   // Wraps the whole operation, not one call: `list` fails while its cursor drains, after `find` returned.
   private async _reporting<T>(verb: string, subject: string, fn: () => Promise<T>): Promise<T> {
     try {
-      return await onLiveClient(this._config, fn)
+      return await onLiveClient(this.#config, fn)
     } catch (error) {
       if (!(error instanceof MongoError)) throw error
       throw new StorageError(
@@ -410,7 +410,7 @@ export class MongoDBStorage implements Storage {
 
   // Resolved on each access, never stored: after `close()` the next operation opens a fresh pool.
   private get _connection(): Connection {
-    return resolve(this._config)
+    return resolve(this.#config)
   }
 
   private _typed<TSchema extends Document = StoredDocument>(): Collection<TSchema> {
