@@ -28,6 +28,7 @@ export default [
     files: ['src/**/*.ts', 'test/**/*.ts', 'examples/**/*.ts'],
     languageOptions: {
       parser: tsparser,
+      parserOptions: { projectService: true },
       globals: nodeGlobals,
     },
     plugins: {
@@ -40,6 +41,10 @@ export default [
       '@typescript-eslint/explicit-function-return-type': 'error',
       '@typescript-eslint/explicit-module-boundary-types': 'error',
       'tsdoc/syntax': 'error',
+      // The type-aware rules a database library needs: a dropped promise is a write nobody waited for.
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-misused-promises': 'error',
+      '@typescript-eslint/await-thenable': 'error',
     },
   },
   {
