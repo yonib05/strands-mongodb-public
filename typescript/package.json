@@ -26,7 +26,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "build": "node scripts/write-version.mjs && node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "type-check": "tsc --noEmit",
     "lint": "eslint src test scripts examples",
     "lint:fix": "eslint src test scripts examples --fix",
@@ -43,7 +43,7 @@
     "test:docs": "vitest run --project docs",
     "test:gate": "vitest run --project gate",
     "test:gate:release": "tsx test/gate/release.ts",
-    "check": "rm -f .vitest-results.json && npm run format:check && npm run lint && npm run type-check && npm run test:coverage && npm run test:docs && npm run test:gate",
+    "check": "node -e \"fs.rmSync('.vitest-results.json',{force:true})\" && npm run format:check && npm run lint && npm run type-check && npm run test:coverage && npm run test:docs && npm run test:gate",
     "prepack": "npm run build"
   },
   "keywords": [
