@@ -2,19 +2,16 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MemoryStoreConfig } from '@strands-agents/sdk'
 import { AuthMechanism } from 'mongodb'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   blocks,
   EXECUTABLE_LANGUAGES,
   PACKAGE_README,
   PACKAGE_ROOT,
-  prepare,
   ROOT_README,
   RUN_TIERS,
   runCommandLines,
   selected,
-  type Snippets,
-  unconfigured,
   where,
 } from '../../test/readme.js'
 import * as root from '../index.js'
@@ -259,17 +256,6 @@ describe('AT-097: every block declares what happens to it', () => {
 })
 
 describe('AT-092: the quickstarts are executed from the README text', () => {
-  const unit = selected('unit', PACKAGE_BLOCKS)
-  let snippets: Snippets
-
-  beforeAll(() => {
-    snippets = prepare(unit)
-  })
-
-  afterAll(() => {
-    snippets?.dispose()
-  })
-
   it('has an executed snippet constructing each backend', () => {
     const bodies = PACKAGE_BLOCKS.filter((block) => block.kind === 'run')
       .map((block) => block.body)
@@ -277,19 +263,6 @@ describe('AT-092: the quickstarts are executed from the README text', () => {
     expect(bodies).toContain('new MongoDBStorage(')
     expect(bodies).toContain('new MongoDBMemoryStore(')
   })
-
-  it('type-checks every unit snippet against the package', { timeout: 120_000 }, () => {
-    expect(unit.length).toBeGreaterThan(0)
-    expect(() => snippets.typeCheck()).not.toThrow()
-  })
-
-  it.each(unit.map((block) => [where(block), block] as const))(
-    'runs %s with nothing reachable',
-    (_location, block) => {
-      expect(() => snippets.run(block, unconfigured())).not.toThrow()
-    },
-    60_000
-  )
 })
 
 describe('AT-093: the landing page and the reference agree', () => {

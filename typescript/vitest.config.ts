@@ -34,6 +34,11 @@ export default defineConfig({
         test: { name: 'build', include: ['test/build/**/*.test.ts'], testTimeout: 600_000, hookTimeout: 600_000 },
       },
       { extends: true, test: { name: 'compat', include: ['test/compat/**/*.test.ts'] } },
+      // Subprocess tests of the examples and the README snippets, kept out of `unit` so that stays fast.
+      {
+        extends: true,
+        test: { name: 'docs', include: ['test/docs/**/*.test.ts'], testTimeout: 120_000, hookTimeout: 120_000 },
+      },
       { extends: true, test: { name: 'gate', include: ['test/gate/**/*.test.ts'] } },
     ],
     coverage: {

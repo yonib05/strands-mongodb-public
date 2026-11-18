@@ -40,7 +40,7 @@ describeTier('autoembed', 'AT-086: examples/memory-recall.ts across two processe
   async function recallUntilEmbedded(stored: string[]): Promise<[ExampleRun, Record<string, unknown>, Hit[]]> {
     const deadline = Date.now() + EMBEDDING_BUDGET_MS
     for (let attempt = 1; ; attempt++) {
-      const recall = runExample('memory-recall.ts', ['recall', ...args], env)
+      const recall = await runExample('memory-recall.ts', ['recall', ...args], env)
       expect(recall.status, streams(recall)).toBe(0)
       expectNoCredentials(recall, uri)
       const found = summaryOf(recall)
@@ -54,7 +54,7 @@ describeTier('autoembed', 'AT-086: examples/memory-recall.ts across two processe
   }
 
   it('recalls in a second process what the first stored, from a query sharing no word with it', async () => {
-    const write = runExample('memory-recall.ts', ['write', ...args], env)
+    const write = await runExample('memory-recall.ts', ['write', ...args], env)
     expect(write.status, streams(write)).toBe(0)
     expectNoCredentials(write, uri)
     expect(write.stdout).toContain(`npx tsx examples/memory-recall.ts recall --scope ${scope}`)

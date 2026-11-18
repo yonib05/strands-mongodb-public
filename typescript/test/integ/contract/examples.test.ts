@@ -23,7 +23,7 @@ describeTier('contract', 'AT-089: examples/unified-storage.ts across two process
   })
 
   it('writes three prefixes to one collection, and a new process restores the session', async () => {
-    const first = runExample('unified-storage.ts', ['run', ...args], env)
+    const first = await runExample('unified-storage.ts', ['run', ...args], env)
     expect(first.status, streams(first)).toBe(0)
     expectNoCredentials(first, uri)
     expect(first.stdout).toContain(`npx tsx examples/unified-storage.ts resume --session-id at089-${run}`)
@@ -48,7 +48,7 @@ describeTier('contract', 'AT-089: examples/unified-storage.ts across two process
       ).toBe(true)
     }
 
-    const second = runExample('unified-storage.ts', ['resume', ...args], env)
+    const second = await runExample('unified-storage.ts', ['resume', ...args], env)
     expect(second.status, streams(second)).toBe(0)
     expectNoCredentials(second, uri)
     const resumed = summaryOf(second)
