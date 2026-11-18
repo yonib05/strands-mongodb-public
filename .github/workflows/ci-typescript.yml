@@ -238,10 +238,18 @@ jobs:
         run: hatch env create
 
       # File paths, not the directory: `tool.ruff.include` filters out anything outside python/.
-      - name: Lint the interop scripts
+      - name: Lint the interop scripts and the fixture exporter
         if: matrix.deployment.expect_search == '1'
         working-directory: python
-        run: hatch run ruff check ../typescript/scripts/interop/*.py
+        run: hatch run ruff check ../typescript/scripts/interop/*.py ../typescript/scripts/export-python-fixtures.py
+
+      # The parity tests compare TypeScript against this JSON, so it must be what the Python builders produce now.
+      - name: Regenerate the parity fixtures and assert they are unchanged
+        if: matrix.deployment.expect_search == '1'
+        working-directory: python
+        run: |
+          hatch run python ../typescript/scripts/export-python-fixtures.py
+          git diff --exit-code -- ../typescript/src/__fixtures__/*.json
 
       - name: Run the interop tier
         if: matrix.deployment.expect_search == '1'
