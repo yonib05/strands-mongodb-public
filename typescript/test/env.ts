@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseEnv } from 'node:util'
 
 export const TIER_VARIABLES = {
   contract: 'MONGODB_URI',
@@ -23,21 +24,6 @@ const DOTENV_VARIABLES: ReadonlySet<string> = new Set([
 
 export const ENV_FILE_LOCATIONS: readonly string[] = [join(PACKAGE_ROOT, '.env'), join(PACKAGE_ROOT, '..', '.env')]
 
-function parseEnvFile(text: string): Map<string, string> {
-  const values = new Map<string, string>()
-  for (const line of text.split(/\r?\n/)) {
-    const stripped = line.trim()
-    const eq = stripped.indexOf('=')
-    if (!stripped || stripped.startsWith('#') || eq === -1) continue
-    let value = stripped.slice(eq + 1).trim()
-    if (value.length > 1 && value[0] === value.at(-1) && (value[0] === '"' || value[0] === "'")) {
-      value = value.slice(1, -1)
-    }
-    values.set(stripped.slice(0, eq).trim(), value)
-  }
-  return values
-}
-
 /**
  * Fills unset connection-string variables from the first `.env` file that exists, as `python/tests/conftest.py` does.
  *
@@ -46,9 +32,9 @@ function parseEnvFile(text: string): Map<string, string> {
 export function loadDotEnv(locations: readonly string[] = ENV_FILE_LOCATIONS): void {
   const path = locations.find((candidate) => existsSync(candidate))
   if (path === undefined) return
-  for (const [name, value] of parseEnvFile(readFileSync(path, 'utf8'))) {
+  for (const [name, value] of Object.entries(parseEnv(readFileSync(path, 'utf8')))) {
     // Presence, not truthiness: `MONGODB_URI=` on the command line keeps a tier off.
-    if (DOTENV_VARIABLES.has(name) && process.env[name] === undefined) process.env[name] = value
+    if (DOTENV_VARIABLES.has(name) && process.env[name] === undefined && value !== undefined) process.env[name] = value
   }
 }
 

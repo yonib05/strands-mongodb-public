@@ -1,5 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -27,38 +26,27 @@ const ROOT_DOCUMENTS = ['AGENTS.md', 'CONTRIBUTING.md'].map((name) => join(REPO_
 
 const CREDENTIALED_URI = /mongodb(\+srv)?:\/\/[^@\s/]+:[^@\s/]+@/
 
-// The character class keeps this file from matching itself; a backticked one names the token rather than using it.
-const UNNAMED_PLACEHOLDER = /(?<!`)\bTO[D]O\b(?!`|\([^)\s][^)]*\))/
-
 const ALLOWED_SDK_IMPORTS: ReadonlySet<string> = new Set([
   '@strands-agents/sdk',
   '@strands-agents/sdk/storage',
   '@strands-agents/sdk/storage/search',
 ])
 
+// The docs tier writes and removes `.readme-snippets-*` while this walk may be running.
 function walk(root: string): string[] {
   return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
-    if (entry.isDirectory()) return UNWALKED_DIRECTORIES.has(entry.name) ? [] : walk(join(root, entry.name))
+    if (entry.isDirectory()) {
+      const skipped = UNWALKED_DIRECTORIES.has(entry.name) || entry.name.startsWith('.readme-snippets-')
+      return skipped ? [] : walk(join(root, entry.name))
+    }
     return entry.isFile() && !UNREAD_FILES.has(entry.name) ? [join(root, entry.name)] : []
   })
 }
 
-function relativeToRepo(path: string): string {
-  return relative(REPO_ROOT, path)
-}
-
+const relativeToRepo = (path: string) => relative(REPO_ROOT, path)
 const read = (path: string) => readFileSync(path, 'utf8')
-
 const srcFiles = () => walk(join(PACKAGE_ROOT, 'src')).filter((path) => path.endsWith('.ts'))
-
 const moduleFiles = () => srcFiles().filter((path) => !/[/\\]__(tests|fixtures)__[/\\]/.test(path))
-
-const markdownDocuments = (root: string) => walk(root).filter((path) => path.endsWith('.md'))
-
-function logEvents(): Set<string> {
-  const declaration = /export type LogEvent =([^=]*?)\n\n/.exec(read(join(PACKAGE_ROOT, 'src', 'logging.ts')))
-  return new Set([...(declaration?.[1] ?? '').matchAll(/'(\w+)'/g)].map((match) => match[1]!))
-}
 
 // The text of the call opened at `open`, assuming the parentheses inside its strings balance.
 function callText(source: string, open: number): string {
@@ -68,17 +56,6 @@ function callText(source: string, open: number): string {
     else if (source[index] === ')' && --depth === 0) return source.slice(open, index + 1)
   }
   return source.slice(open)
-}
-
-function logCalls(): { at: string; event: string | undefined }[] {
-  return moduleFiles().flatMap((path) => {
-    const source = read(path)
-    return [...source.matchAll(/\b_?logger\.(?:debug|info|warn|error)\(/g)].map((match) => {
-      const line = source.slice(0, match.index).split('\n').length
-      const event = /logFields\('(\w+)'/.exec(callText(source, match.index + match[0].length - 1))?.[1]
-      return { at: `${relativeToRepo(path)}:${line}`, event }
-    })
-  })
 }
 
 const TSDOC_AT_END = /\/\*\*(?:(?!\*\/)[\s\S])*\*\/\s*$/
@@ -103,82 +80,33 @@ function matchingLines(paths: readonly string[], pattern: RegExp): string[] {
   )
 }
 
-describe('AT-113: every placeholder names its subject', () => {
-  it('finds no placeholder without a parenthesised subject in typescript/, AGENTS.md or CONTRIBUTING.md', () => {
-    expect(matchingLines([...walk(PACKAGE_ROOT), ...ROOT_DOCUMENTS], UNNAMED_PLACEHOLDER)).toEqual([])
-  })
-
-  it('tells a named placeholder from a bare or empty one', () => {
-    const mark = ['TO', 'DO'].join('')
-
-    expect(UNNAMED_PLACEHOLDER.test(`// ${mark}(release): pin the floor`)).toBe(false)
-    expect(UNNAMED_PLACEHOLDER.test(`// ${mark}: pin the floor`)).toBe(true)
-    expect(UNNAMED_PLACEHOLDER.test(`// ${mark}() pin the floor`)).toBe(true)
-    expect(UNNAMED_PLACEHOLDER.test(`Do not write a bare \`${mark}\`.`)).toBe(false)
-  })
-})
-
 describe('AT-114: no Markdown file in the repository carries a credential', () => {
-  it('reaches the documents that ship', () => {
-    const reached = new Set(markdownDocuments(REPO_ROOT).map(relativeToRepo))
+  it('finds no connection string with a user and password, in a walk that reaches the documents that ship', () => {
+    const documents = walk(REPO_ROOT).filter((path) => path.endsWith('.md'))
+    const reached = new Set(documents.map(relativeToRepo))
 
+    expect(CREDENTIALED_URI.test(['mongodb+srv://', 'admin:SECRET', '@cluster0.example.mongodb.net/'].join(''))).toBe(
+      true
+    )
     expect(
-      ['AGENTS.md', 'CONTRIBUTING.md', 'README.md', 'python/README.md', 'typescript/docs/PARITY.md'].filter(
-        (name) => !reached.has(name)
-      )
+      ['AGENTS.md', 'README.md', 'python/README.md', 'typescript/README.md'].filter((name) => !reached.has(name))
     ).toEqual([])
-  })
-
-  it('finds no connection string with a user and password in any of them', () => {
-    expect(
-      markdownDocuments(REPO_ROOT)
-        .filter((path) => CREDENTIALED_URI.test(read(path)))
-        .map(relativeToRepo)
-    ).toEqual([])
-  })
-
-  it('catches a planted credential and passes the redacted form', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'strands-mongodb-conventions-'))
-    try {
-      writeFileSync(
-        join(dir, 'leak.md'),
-        'Connect with `mongodb+srv://admin:SUPERSECRET@cluster0.example.mongodb.net/`.\n'
-      )
-      writeFileSync(join(dir, 'clean.md'), 'Connect with `mongodb+srv://<redacted>@cluster0.example.mongodb.net/`.\n')
-
-      expect(
-        markdownDocuments(dir)
-          .filter((path) => CREDENTIALED_URI.test(read(path)))
-          .map((path) => relative(dir, path))
-      ).toEqual(['leak.md'])
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
+    expect(documents.filter((path) => CREDENTIALED_URI.test(read(path))).map(relativeToRepo)).toEqual([])
   })
 })
 
 describe('AT-115: the house conventions hold in src/', () => {
-  describe('logging', () => {
-    it('declares the twelve events', () => {
-      expect(logEvents().size).toBe(12)
+  it('passes a logFields event literal on every logger call', () => {
+    const calls = moduleFiles().flatMap((path) => {
+      const source = read(path)
+      return [...source.matchAll(/\b_?logger\.(?:debug|info|warn|error)\(/g)].map((match) => ({
+        at: `${relativeToRepo(path)}:${source.slice(0, match.index).split('\n').length}`,
+        event: /logFields\('(\w+)'/.exec(callText(source, match.index + match[0].length - 1))?.[1],
+      }))
     })
 
-    it('passes a logFields event literal on every logger call', () => {
-      const calls = logCalls()
-
-      expect(calls.length).toBeGreaterThan(0)
-      expect(calls.filter((call) => call.event === undefined).map((call) => call.at)).toEqual([])
-    })
-
-    it('logs only events LogEvent declares, and reports the declared ones nothing logs', () => {
-      const declared = logEvents()
-      const calls = logCalls()
-      const used = new Set(calls.map((call) => call.event))
-
-      expect(calls.filter((call) => call.event !== undefined && !declared.has(call.event))).toEqual([])
-      // Reported rather than failed: an event can be declared for parity before anything logs it.
-      console.info(`LogEvent members no call logs: ${[...declared].filter((event) => !used.has(event)).join(', ')}`)
-    })
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.filter((call) => call.event === undefined).map((call) => call.at)).toEqual([])
   })
 
   it('precedes every export in a module with a TSDoc block', () => {

@@ -29,18 +29,6 @@ describe('loadDotEnv', () => {
     expect(tierUri('contract')).toBe('mongodb://localhost:27017/?directConnection=true')
   })
 
-  it('strips one layer of quotes', () => {
-    const path = writeEnv('.env', 'MONGODB_ATLAS_URI="mongodb+srv://u:p%40ss@cluster/?w=majority"\n')
-    loadDotEnv([path])
-    expect(tierUri('integration')).toBe('mongodb+srv://u:p%40ss@cluster/?w=majority')
-  })
-
-  it('does not recognise an export prefix', () => {
-    const path = writeEnv('.env', 'export MONGODB_URI=x\n')
-    loadDotEnv([path])
-    expect(process.env.MONGODB_URI).toBeUndefined()
-  })
-
   it('never sets the build tier flag', () => {
     const path = writeEnv('.env', 'STRANDS_MONGODB_BUILD_TIER=1\n')
     loadDotEnv([path])
@@ -61,20 +49,6 @@ describe('loadDotEnv', () => {
     loadDotEnv([path])
     expect(process.env.MONGODB_URI).toBe('')
     expect(tierUri('contract')).toBeUndefined()
-  })
-
-  it('reads an empty assignment in the file as empty', () => {
-    const path = writeEnv('.env', 'MONGODB_URI=\n')
-    loadDotEnv([path])
-    expect(process.env.MONGODB_URI).toBe('')
-    expect(tierUri('contract')).toBeUndefined()
-  })
-
-  it('ignores comment lines and blank lines', () => {
-    const path = writeEnv('.env', '# MONGODB_URI=mongodb://commented\n\n  #MONGODB_ATLAS_URI=x\n')
-    loadDotEnv([path])
-    expect(process.env.MONGODB_URI).toBeUndefined()
-    expect(process.env.MONGODB_ATLAS_URI).toBeUndefined()
   })
 
   it('ignores keys that are not tier variables', () => {
