@@ -151,6 +151,7 @@ export class MongoDBMemoryStore implements MemoryStore {
    * @throws RangeError if `minScore` or `maxScore` is not a finite number, `ttlSeconds` or `indexReadyTimeout` is not
    * a finite number of at least `0`, `ttlSeconds` puts the expiry past the last date JavaScript can represent, or
    * `maxSearchResults` or `embeddingDimensions` is not an integer within its bounds
+   * @throws MongoParseError if the driver cannot parse `connectionString` or `clientOptions`
    */
   constructor(config: MongoDBMemoryStoreConfig) {
     // Every check runs before `resolve`, so a config that fails leaves no connection pool behind.

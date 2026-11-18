@@ -102,6 +102,7 @@ export class MongoDBStorage implements Storage {
    * @throws RangeError if `ttlSeconds` or `indexReadyTimeout` is not a finite number of at least `0`, or `ttlSeconds`
    * puts the expiry past the last date JavaScript can represent
    * @throws StorageError if `prefix` contains a backslash or a `..` segment
+   * @throws MongoParseError if the driver cannot parse `connectionString` or `clientOptions`
    */
   constructor(config: MongoDBConfig, options: MongoDBStorageOptions = {}) {
     // Validated before `resolve`, which registers a pool nothing could close if this threw afterwards.
