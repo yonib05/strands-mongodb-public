@@ -1,6 +1,14 @@
+import { Buffer } from 'node:buffer'
 import { describe, expect, it } from 'vitest'
 import { errorOf } from '../__fixtures__/errors.js'
-import { requireBoolean, requireEmbedder, requireNumber, requireObject, requireString } from '../checks.js'
+import {
+  requireBoolean,
+  requireBytes,
+  requireEmbedder,
+  requireNumber,
+  requireObject,
+  requireString,
+} from '../checks.js'
 
 describe('requireNumber', () => {
   it.each([0, 0.5, 60])('accepts %d within the bounds', (value) => {
@@ -27,6 +35,18 @@ describe('requireString', () => {
 
     expect(error).toBeInstanceOf(TypeError)
     expect(error.message).toContain("'collection'")
+  })
+
+  it.each(['a\uD800', '\uDC00b', 'a\uD800b'])('rejects an unpaired surrogate, which bson stores as U+FFFD', (value) => {
+    const error = errorOf(() => requireString('scope', value))
+
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toContain("'scope'")
+    expect(error.message).toContain('unpaired surrogate')
+  })
+
+  it('accepts a surrogate pair', () => {
+    expect(() => requireString('scope', 'tenant-\u{1F600}')).not.toThrow()
   })
 
   it('accepts a string', () => {
@@ -70,5 +90,19 @@ describe('requireEmbedder', () => {
 
   it('accepts an object with an embed method', () => {
     expect(() => requireEmbedder({ embed: async () => [1] })).not.toThrow()
+  })
+})
+
+describe('requireBytes', () => {
+  it.each([undefined, null, 'text', [1, 2], 7])('rejects %j with a TypeError naming the argument', (value) => {
+    const error = errorOf(() => requireBytes('data', value))
+
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toContain("'data'")
+  })
+
+  it('accepts a Uint8Array and a Buffer', () => {
+    expect(() => requireBytes('data', new Uint8Array(0))).not.toThrow()
+    expect(() => requireBytes('data', Buffer.from('v'))).not.toThrow()
   })
 })

@@ -411,6 +411,16 @@ describe('MongoDBStorage', () => {
       }
     })
 
+    it.each([undefined, null, 'text', [1, 2]])('rejects data of %j with a TypeError, storing nothing', async (data) => {
+      const { storage, collection } = setup()
+
+      const error = await rejectionOf(storage.write('k', data as unknown as Uint8Array))
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain("'data'")
+      expect(collection.calls).toEqual([])
+    })
+
     it('throws a TypeError naming prefix from namespace', () => {
       const error = errorOf(() => setup().storage.namespace(5 as unknown as string))
 

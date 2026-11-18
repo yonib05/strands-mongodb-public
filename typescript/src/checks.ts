@@ -1,14 +1,31 @@
 import type { Embedder } from '@strands-agents/sdk/storage/search'
 
+const UNPAIRED_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+
 /**
- * Rejects a setting that is not a string, since an operator object from a JavaScript caller would join a query.
+ * Rejects a setting that is not a well-formed string, since an operator object from a JavaScript caller would join a query.
  *
  * @param key - The setting's name, for the message
  * @param value - What the caller supplied
- * @throws TypeError if `value` is not a string
+ * @throws TypeError if `value` is not a string, or holds an unpaired surrogate
  */
 export function requireString(key: string, value: unknown): asserts value is string {
   if (typeof value !== 'string') throw wrongType(key, 'a string', value)
+  // bson encodes an unpaired surrogate as U+FFFD, so two distinct strings would become one stored value.
+  if (UNPAIRED_SURROGATE.test(value)) {
+    throw new TypeError(`strands_mongodb: '${key}' holds an unpaired surrogate, which cannot be stored as UTF-8.`)
+  }
+}
+
+/**
+ * Rejects a payload that is not bytes, since the driver would store `undefined` or `null` as an empty value.
+ *
+ * @param key - The argument's name, for the message
+ * @param value - What the caller supplied
+ * @throws TypeError if `value` is not a `Uint8Array`
+ */
+export function requireBytes(key: string, value: unknown): asserts value is Uint8Array {
+  if (!(value instanceof Uint8Array)) throw wrongType(key, 'a Uint8Array', value)
 }
 
 /**

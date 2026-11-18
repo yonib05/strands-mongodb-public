@@ -3,7 +3,7 @@ import { type Logger, StorageError } from '@strands-agents/sdk'
 import type { Storage } from '@strands-agents/sdk/storage'
 import type { SearchStrategy, StorageSearchResult } from '@strands-agents/sdk/storage/search'
 import { Binary, BSON, type Collection, type Document, type Filter, MongoError } from 'mongodb'
-import { requireBoolean, requireObject, requireString, requireTtlSeconds } from './checks.js'
+import { requireBoolean, requireBytes, requireObject, requireString, requireTtlSeconds } from './checks.js'
 import { close as release, type Connection, onLiveClient, resolve } from './client.js'
 import { guard } from './driver-errors.js'
 import { ensure } from './ensure-indexes.js'
@@ -140,13 +140,14 @@ export class MongoDBStorage implements Storage {
    *
    * @param key - The key to write under; `a//b` and `a/b` are one key
    * @param data - The bytes to store, round-tripped unchanged including an empty payload
-   * @throws TypeError if `key` is not a string
+   * @throws TypeError if `key` is not a string or `data` is not a `Uint8Array`
    * @throws StorageError if the key is invalid or too long, the document exceeds {@link MAX_DOCUMENT_BYTES}, the
    * collation is not binary, the write fails, or the search strategy fails to index the already stored value
    */
   write(key: string, data: Uint8Array): Promise<void> {
     return this._run('write', 'writing', key, async () => {
       const id = this._idFor(key)
+      requireBytes('data', data)
       await this._requireBinaryKeys()
       const now = new Date()
       const document: StoredDocument = { _id: id, data: new Binary(data), updated_at: now }

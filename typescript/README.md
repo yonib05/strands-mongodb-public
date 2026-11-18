@@ -238,7 +238,8 @@ stored. `maxResults` and `oversamplingFactor` both default to 10.
 order. `write()` and `delete()` return nothing. `deletePrefix()` returns the number of documents removed.
 `namespace(prefix)` returns a `MongoDBStorage` over the same collection, scoped under the prefix. An
 invalid key or prefix throws `StorageError` before any round trip: from the constructor and
-`namespace()`, and as a rejected promise from an operation.
+`namespace()`, and as a rejected promise from an operation. `write()` given anything but a `Uint8Array`
+throws `TypeError` and stores nothing.
 
 `MongoDBMemoryStore`: `delete()` and `deleteAll()` return the number of documents removed. `add()`
 returns a `MongoDBAddResult` with `ids`, `inserted` and `duplicates`: content already stored is a
