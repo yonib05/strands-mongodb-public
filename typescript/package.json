@@ -39,7 +39,7 @@
     "test:integration": "vitest run --project integration",
     "test:autoembed": "vitest run --project autoembed",
     "test:build": "vitest run --project build",
-    "test:compat": "vitest run --project compat",
+    "test:compat": "npm run type-check && vitest run --project compat",
     "test:interop": "vitest run --project interop",
     "test:coverage": "vitest run --project unit --coverage && node scripts/check-file-coverage.mjs",
     "test:docs": "vitest run --project docs",

@@ -40,6 +40,7 @@ describe('AT-034, AT-052: the installed SDK still carries what this package is b
     expect(Embedder).toBeTypeOf('function')
   })
 
+  // Decided by the type-check `npm run test:compat` runs first: vitest does not evaluate type assertions.
   it('accepts MongoDBMemoryStore as a MemoryStore and MongoDBStorage as a Storage', () => {
     expectTypeOf<MongoDBMemoryStore>().toExtend<MemoryStore>()
     expectTypeOf<MongoDBStorage>().toExtend<Storage>()
