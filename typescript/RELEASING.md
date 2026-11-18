@@ -16,25 +16,32 @@ handshake and the tracer scope. Nothing is committed back.
 ## The first release
 
 The first version goes through the same workflow as every later one, so the tarball that is published
-is the one the jobs tested. Three things have to exist first, in this order.
+is the one the jobs tested. Three things have to happen first, in this order. Push no `typescript-v`
+tag until the first two are done.
 
-1. The name. `strands-mongodb` is unclaimed on npm today (`npm view strands-mongodb` answers E404), and
-   three documents already tell readers to `npm install` it. Anyone can take it until the first publish
-   claims it for the token's owner, so claim it before this repository or its documentation is public:
-   tag a prerelease such as `typescript-v0.1.0-rc.1`, which runs the same workflow and lands on the
-   `next` dist-tag. Items 2 and 3 are what that tag needs.
-2. The `npm` environment in the repository settings, with required reviewers. A job that names a missing
-   environment makes GitHub create one with no reviewers.
-3. `NPM_TOKEN` in that environment. A granular token cannot be scoped to a package that does not exist,
-   so create a short-lived one with read and write access to all packages of the account or
+1. Create the `npm` environment in the repository settings, with required reviewers. A job that names a
+   missing environment makes GitHub create one with no reviewers, so a tag pushed before this step
+   publishes without approval as soon as the token exists.
+2. Set `NPM_TOKEN` in that environment. A granular token cannot be scoped to a package that does not
+   exist, so create a short-lived one with read and write access to all packages of the account or
    organisation that is to own `strands-mongodb`. After the first publish, replace it with one scoped to
    the package. npm limits the lifetime of a write token, so check its expiry before each later tag.
+3. Claim the name. `strands-mongodb` is unclaimed on npm today (`npm view strands-mongodb` answers
+   E404), and three documents already tell readers to `npm install` it. Anyone can take it until the
+   first publish claims it for the token's owner, so claim it before this repository or its
+   documentation is public: tag a prerelease such as `typescript-v0.1.0-rc.1` on `main`, which runs the
+   same workflow and publishes with `--tag next`.
 
-The pull request of [Before you tag](#before-you-tag) also deletes what describes the package as
-unpublished: the "Installing the TypeScript package before its first release" section of the root
-`CONTRIBUTING.md`, the sentence in the root `README.md` that links to it, and the words "is unreleased
-too, and" in the root `README.md`, leaving "It releases on its own `typescript-v` tag". `npm run check`
-stays green.
+npm documents that `--tag` leaves `latest` alone, but not what the registry does for the first version
+of a name, so run `npm dist-tag ls strands-mongodb` after the prerelease. If `latest` points at the
+prerelease, `npm install strands-mongodb` installs it until `0.1.0` is published, which moves `latest`.
+
+The prerelease skips step 1 of [Before you tag](#before-you-tag): the changelog keeps
+`## [Unreleased]`. The pull request of that step for `0.1.0` renames it, and also deletes what
+describes the package as unpublished: the "Installing the TypeScript package before its first release"
+section of the root `CONTRIBUTING.md`, the sentence in the root `README.md` that links to it, and the
+words "is unreleased too, and" in the root `README.md`, leaving "It releases on its own `typescript-v`
+tag". `npm run check` stays green.
 
 While the repository is private, the links in `README.md` and the `repository`, `homepage` and `bugs`
 URLs in `package.json` do not resolve for npm users. Nothing in the package depends on them.
@@ -79,10 +86,11 @@ The publish job reads `NPM_TOKEN` as `NODE_AUTH_TOKEN`. No other job sees a secr
 `--provenance` is off. Provenance needs a public source repository, and this one is private, so the
 flag would make the publish fail. Turning it on when the repository is public takes `--provenance` on
 both `npm publish` lines and `permissions: id-token: write` beside `contents: read` on the publish job.
-Two assertions in `test/__tests__/ci.test.ts` forbid exactly that: "grants read access only, and raises
-no permission on any job", and the `--provenance` line of "publishes only from the npm environment,
-after the gated tiers, without provenance". Change both in the same commit as the workflow, so they
-allow `id-token: write` on the publish job and nowhere else. Trusted publishing over OIDC, which can
+Two assertions in `test/__tests__/ci.test.ts` forbid exactly that today, and stay as they are until
+then: "grants read access only, and raises no permission on any job", and the `--provenance` line of
+"publishes only from the npm environment, after the gated tiers, without provenance". The commit that
+changes the workflow changes both, so they allow `id-token: write` on the publish job and nowhere else,
+and require `--provenance`. Trusted publishing over OIDC, which can
 replace the token once the package exists on npm, needs the same permission and the same two changes.
 
 ## When it goes wrong
