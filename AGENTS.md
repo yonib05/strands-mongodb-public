@@ -70,7 +70,9 @@ documentation describe the behaviour in words.
 
 In TypeScript the tag leads the test title, `it('AT-045a: initialize is idempotent', ...)`, or the title
 of an enclosing `describe`. The gate in `typescript/test/gate/` reads the ids a string literal starts
-with, on any line that is not a `//` comment, so a tag anywhere else is not evidence.
+with, on any line that is not a `//` comment, so a tag anywhere else is not evidence. The ids are the
+Python tests' ids, so one behaviour can be traced across both languages, and
+`typescript/test/gate/checklist.ts` lists the ones the release gate reads.
 
 A `TODO(...)` in a file names the thing that has to be settled before the placeholder can go, and the test
 suite asserts that every placeholder in this file and in `CONTRIBUTING.md` names something. Do not write a
@@ -116,7 +118,7 @@ Every command runs from `typescript/`, on Node.js 22 or newer, after `npm ci`.
 | `npm run lint` | ESLint, over `typescript/src/`, `typescript/test/`, `typescript/scripts/` and `typescript/examples/` |
 | `npm run format` | Prettier, in place. `npm run format:check` is the read-only form CI runs |
 | `npm run type-check` | `tsc --noEmit` over `typescript/src/`, `typescript/test/`, `typescript/examples/` and `typescript/vitest.config.ts` |
-| `npm run build` | Empties `dist`, then `tsc` into it. `dist` is what the package ships |
+| `npm run build` | Writes `src/version.ts` from `package.json`, empties `dist`, then `tsc` into it. `dist` is what the package ships |
 | `npm run check` | `format:check`, `lint`, `type-check`, `test:coverage`, `test:docs`, `test:gate`, in that order. Run this before pushing |
 
 The coverage floors are not part of `test`, for the same reason `cov` is not part of `hatch run test`.
