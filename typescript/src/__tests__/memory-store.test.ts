@@ -1911,6 +1911,22 @@ describe('MongoDBMemoryStore', () => {
       await close(connection)
     })
 
+    it('names the operation and the namespace when reconnecting fails', async () => {
+      const connection = { database: 'appdb', connectionString: freshUri(), logger: new RecordingLogger() }
+      const store = new MongoDBMemoryStore({ name: 'facts', config: connection })
+      const dead = ConstructedMongoClient.built[0]!
+      dead.db('appdb').collection('memory').db.listCollectionsError = new MongoTopologyClosedError()
+      dead.connectError = new MongoNetworkTimeoutError('still unreachable')
+
+      const error = await rejectionOf(store.search('dark mode'))
+
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain('appdb.memory failed: still unreachable')
+      expect(error.message).not.toContain('reconnecting')
+      expect(error.cause).toBe(dead.connectError)
+      await close(connection)
+    })
+
     it('says an injected client is closed', async () => {
       const { store, collection } = setup()
       collection.db.listCollectionsError = new MongoTopologyClosedError()

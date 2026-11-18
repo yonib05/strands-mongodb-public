@@ -1526,6 +1526,24 @@ describe('MongoDBStorage', () => {
       await close(config)
     })
 
+    it('names the operation, the key and the namespace when reconnecting fails', async () => {
+      const config = { database: 'appdb', connectionString: freshUri() }
+      const storage = new MongoDBStorage(config)
+      const dead = ConstructedMongoClient.built[0]!
+      dead.db('appdb').collection('storage').failure = new MongoTopologyClosedError()
+      dead.db('appdb').collection('storage').db.listCollectionsError = new MongoTopologyClosedError()
+      dead.connectError = networkFailure('still unreachable')
+
+      const reading = await rejectionOf(storage.read('a/b'))
+      const ensuring = await rejectionOf(storage.ensureIndexes())
+
+      expect(reading.message).toContain("reading 'a/b' in appdb.storage failed: still unreachable")
+      expect(ensuring).toBeInstanceOf(StorageError)
+      expect(ensuring.message).toContain('appdb.storage failed: still unreachable')
+      expect(ensuring.cause).toBe(dead.connectError)
+      await close(config)
+    })
+
     it('does not reopen a pool the caller closed while the operation ran', async () => {
       const config = { database: 'appdb', connectionString: freshUri() }
       const storage = new MongoDBStorage(config)

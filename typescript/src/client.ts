@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { type Logger, StorageError } from '@strands-agents/sdk'
 import { type Collection, MongoClient, type MongoClientOptions } from 'mongodb'
-import { clientClosed, guard, namespaceOf } from './driver-errors.js'
+import { clientClosed, namespaceOf } from './driver-errors.js'
 import { defaultLogger, logFields } from './logging.js'
 import { rankFusionSupport, requireBinaryComparison, searchSupport } from './probes.js'
 import { event } from './telemetry.js'
@@ -162,7 +162,8 @@ export async function close(config: MongoDBConfig): Promise<void> {
  * @param config - The configuration `work` resolves its connection from, on every run
  * @param work - The operation
  * @returns Whatever `work` resolves to
- * @throws StorageError if reconnecting fails, or the closed client was injected, since only its owner can reopen it
+ * @throws StorageError if the closed client was injected, since only its owner can reopen it
+ * @throws The driver's own error if reconnecting fails, for the caller to report with its operation and namespace
  */
 export async function onLiveClient<T>(config: MongoDBConfig, work: () => Promise<T>): Promise<T> {
   const connection = resolve(config)
@@ -174,7 +175,7 @@ export async function onLiveClient<T>(config: MongoDBConfig, work: () => Promise
     // No longer registered after `close()`: the caller released the pool, so nothing reopens it here.
     if (constructed.get(identity(config.connectionString ?? '', config.clientOptions)) !== connection) throw error
     // Concurrent callers share one attempt, and each sees why it failed.
-    await guard(connection.client.connect(), 'reconnecting')
+    await connection.client.connect()
     return work()
   }
 }
