@@ -255,7 +255,9 @@ describeTier('integration', 'memory store', () => {
   })
 
   it('AT-242: the first search waits until a tier is ready and then answers', async () => {
-    const { store: facts } = store('wait', { connection: MANUAL_VECTOR })
+    // The default config, whose vector index atlas-local refuses: only the text tier can come up, so the wait
+    // cannot end on a tier this text query does not fit.
+    const { store: facts } = store('wait')
 
     await facts.initialize()
     await expect(facts.search(QUERY_TEXT)).resolves.toEqual([])
