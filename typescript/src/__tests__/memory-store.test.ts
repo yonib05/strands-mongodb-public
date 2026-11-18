@@ -258,6 +258,29 @@ describe('MongoDBMemoryStore', () => {
       expect(ConstructedMongoClient.built).toEqual([])
     })
 
+    it.each([
+      ['name', { name: 7 }],
+      ['name', { name: { $ne: '' } }],
+      ['scope', { scope: { $ne: '' } }],
+      ['scope', { scope: 7 }],
+      ['scope', { scope: null }],
+      ['collection', { collection: ['memory'] }],
+    ])('throws a TypeError naming %s when it is %j, which is not a string', (key, fields) => {
+      const error = errorOf(
+        () =>
+          new MongoDBMemoryStore({
+            name: 'facts',
+            config: { database: 'appdb', connectionString: uri() },
+            ...fields,
+          } as unknown as MongoDBMemoryStoreConfig)
+      )
+
+      expect(error).toBeInstanceOf(TypeError)
+      expect(error.message).toContain(`'${key}'`)
+      expect(error.message).toContain('string')
+      expect(ConstructedMongoClient.built).toEqual([])
+    })
+
     it('throws a TypeError for a connection config with no database', () => {
       const error = errorOf(
         () =>
@@ -1445,7 +1468,12 @@ describe('MongoDBMemoryStore', () => {
       const result = await store.add(CONTENT, { source: 'chat' })
 
       const [selector, update, options] = argsOf(collection, 'updateOne')
-      expect(selector).toEqual({ scope: 'tenant-a', store_name: 'facts', content_hash: sha256(CONTENT) })
+      expect(selector).toEqual({
+        scope: { $eq: 'tenant-a' },
+        store_name: { $eq: 'facts' },
+        content_hash: sha256(CONTENT),
+      })
+      expect(collection.docs[0]).toMatchObject({ scope: 'tenant-a', store_name: 'facts' })
       expect(Object.keys(update as Document)).toEqual(['$setOnInsert'])
       expect(options).toEqual({ upsert: true })
       const insert = insertOf(collection)
@@ -1468,7 +1496,7 @@ describe('MongoDBMemoryStore', () => {
       expect(collection.docs).toHaveLength(1)
       expect(collection.docs[0]!.created_at).toBe(createdAt)
       expect(argsOf(collection, 'findOne')).toEqual([
-        { scope: UNSCOPED, store_name: 'facts', content_hash: sha256(CONTENT) },
+        { scope: { $eq: UNSCOPED }, store_name: { $eq: 'facts' }, content_hash: sha256(CONTENT) },
         { projection: { _id: 1 } },
       ])
     })

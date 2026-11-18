@@ -49,9 +49,6 @@ export const UNSCOPED = '__unscoped__'
 const MISSING_CONFIG =
   "strands_mongodb: the memory store configuration has no 'config'. Set it to the MongoDBConfig naming the 'database' and a 'connectionString' or 'client'."
 
-const MISSING_NAME =
-  "strands_mongodb: the memory store configuration has no 'name'. The SDK's MemoryManager targets stores by name, so set it to a name unique among the stores an agent holds."
-
 const MISSING_DATABASE =
   "strands_mongodb: the connection config has no 'database'. Set it to the name of the database holding this store's collection."
 
@@ -63,6 +60,15 @@ const DUPLICATE_KEY = 11000
 
 function notWritable(name: string, call: string): string {
   return `strands_mongodb: the memory store '${name}' is not writable, so it does not accept ${call}. Set 'writable': true in its configuration to enable writes. It defaults to false so that a store built for retrieval does not start accepting model-distilled extraction writes, or deletions, that nobody asked for.`
+}
+
+// TypeScript's types do not reach a JavaScript caller, and an operator object here would become part of a query.
+function requireString(key: string, value: unknown): void {
+  if (typeof value !== 'string') {
+    throw new TypeError(
+      `strands_mongodb: '${key}' must be a string, but it is ${value === null ? 'null' : typeof value}.`
+    )
+  }
 }
 
 function contentHash(content: string): string {
@@ -191,7 +197,9 @@ export class MongoDBMemoryStore implements MemoryStore {
     // Every check runs before `resolve`, so a config that fails leaves no connection pool behind.
     const connection = config.config
     if (connection === undefined) throw new TypeError(MISSING_CONFIG)
-    if (config.name === undefined) throw new TypeError(MISSING_NAME)
+    requireString('name', config.name)
+    if (config.scope !== undefined) requireString('scope', config.scope)
+    if (config.collection !== undefined) requireString('collection', config.collection)
     if (connection.database === undefined) throw new TypeError(MISSING_DATABASE)
     this.name = config.name
     if (config.description !== undefined) this.description = config.description
@@ -289,8 +297,13 @@ export class MongoDBMemoryStore implements MemoryStore {
       // Before the upsert, so a failed embedding stores nothing rather than a memory no vector search finds.
       const vector = this._embedder === undefined ? undefined : await this._embed(content)
 
-      // The server copies a selector's equality fields onto an inserted document; they are also the unique index's key.
-      const selector = { scope: this.scope, store_name: this.name, content_hash: contentHash(content) }
+      // The server copies a selector's equality fields, `$eq` included, onto an inserted document; they are also the
+      // unique index's key.
+      const selector = {
+        scope: { $eq: this.scope },
+        store_name: { $eq: this.name },
+        content_hash: contentHash(content),
+      }
       // `$setOnInsert`, not `$set`: a duplicate keeps its first-seen timestamp and expiry.
       const createdAt = new Date()
       const insert: Document = { [CONTENT_FIELD]: content, created_at: createdAt }

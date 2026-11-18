@@ -424,7 +424,7 @@ describeTier('contract', 'memory store', () => {
     expect(await db.collection(name).countDocuments({})).toBe(1)
   })
 
-  it('AT-046, AT-048a: the stored document carries the scope the store stamps, never one from metadata or the filter', async () => {
+  it('AT-046, AT-048a: the server copies the scope and store name the store stamps onto the stored document, never one from metadata or the filter', async () => {
     const { store: scoped, name, config } = store('stamps', { store: { writable: true, scope: 'tenant-a' } })
     const filtered = new MongoDBMemoryStore({
       name: 'filtered',
@@ -446,7 +446,17 @@ describeTier('contract', 'memory store', () => {
     await unscoped.add('a fact from a store nobody scoped')
 
     const document = (await db.collection(name).findOne({ store_name: 'facts' }))!
+    expect(Object.keys(document).sort()).toEqual([
+      '_id',
+      'content',
+      'content_hash',
+      'created_at',
+      'metadata',
+      'scope',
+      'store_name',
+    ])
     expect(document.scope).toBe('tenant-a')
+    expect(document.store_name).toBe('facts')
     expect(document.content).toBe(CONTENT)
     expect(document.content_hash).toBe(sha256(CONTENT))
     expect(document.created_at).toBeInstanceOf(Date)

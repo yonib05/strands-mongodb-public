@@ -64,7 +64,7 @@ export interface MongoDBMemoryStoreConfig extends MemoryStoreConfig {
   readonly config: MongoDBConfig
   /** Collection holding this store's documents. Defaults to `memory`. */
   readonly collection?: string
-  /** Namespace stamped on every write and filtered on every read. Absent means a sentinel scope, never unfiltered. */
+  /** Namespace stamped on every write and filtered on every read. Absent or `''` means the shared `__unscoped__` scope, never unfiltered. */
   readonly scope?: string
   /** Extra predicate ANDed with the scope on search and delete, so it can only narrow. */
   readonly filter?: Record<string, unknown>

@@ -149,9 +149,14 @@ function evaluate(expression: unknown, doc: Document, vars: Document): unknown {
   }
 }
 
-// The server copies a filter's equality fields onto an upserted document.
+// The server copies a filter's equality fields, bare or under a lone `$eq`, onto an upserted document.
 function equalityFields(filter: Filter): Document {
-  return Object.fromEntries(Object.entries(filter).filter(([, condition]) => !isOperatorObject(condition)))
+  return Object.fromEntries(
+    Object.entries(filter).flatMap(([field, condition]) => {
+      if (!isOperatorObject(condition)) return [[field, condition]]
+      return Object.keys(condition).join() === '$eq' ? [[field, condition.$eq]] : []
+    })
+  )
 }
 
 const SEARCH_STAGES: ReadonlySet<string> = new Set(['$vectorSearch', '$search', '$rankFusion'])
