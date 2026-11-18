@@ -1,30 +1,31 @@
 name: CI - TypeScript
 
-# Four gates on a change and two jobs on the weekly cron or on demand. typescript/test/__tests__/ci.test.ts
-# reads this file as YAML and checks its permissions, its secrets and where the release gate runs.
+# Four gates on a change, two jobs on the weekly cron or on demand. typescript/test/__tests__/ci.test.ts checks
+# this file's permissions, its secrets and where the release gate runs.
 
 on:
   pull_request:
     paths:
-      # Every file a test in typescript/ reads or runs, the interop tier running the whole Python package; the
-      # conventions test sweeps every Markdown file for credentials.
+      # Every file a test in typescript/ reads or runs. The interop tier runs the Python package.
       - 'typescript/**'
       - '.github/workflows/ci-typescript.yml'
       - '.github/workflows/release-typescript.yml'
-      - '.github/dependabot.yml'
       - 'python/src/strands_mongodb/**'
       - 'python/pyproject.toml'
-      - '**.md'
+      - 'README.md'
+      - 'AGENTS.md'
+      - 'CONTRIBUTING.md'
   push:
     branches: [ main ]
     paths:
       - 'typescript/**'
       - '.github/workflows/ci-typescript.yml'
       - '.github/workflows/release-typescript.yml'
-      - '.github/dependabot.yml'
       - 'python/src/strands_mongodb/**'
       - 'python/pyproject.toml'
-      - '**.md'
+      - 'README.md'
+      - 'AGENTS.md'
+      - 'CONTRIBUTING.md'
   schedule:
     - cron: '0 6 * * 1'
   workflow_dispatch:
@@ -72,9 +73,6 @@ jobs:
       - name: Type check
         run: npm run type-check
 
-      - name: Build
-        run: npm run build
-
   test:
     name: Test - Node ${{ matrix.node-version }}
     if: github.event_name != 'schedule'
@@ -105,12 +103,18 @@ jobs:
       - name: Run tests with coverage
         run: npm run test:coverage
 
-      # The example dry runs and the README snippets, each in its own process.
-      - name: Run the docs tier
+      - name: Run the examples and the README snippets
         run: npm run test:docs
 
       - name: Check every checklist id resolves to a test
         run: npm run test:gate
+
+      # Once is enough: the tarball does not depend on the Node version that packs it.
+      - name: Pack the tarball and install it into empty projects
+        if: matrix.node-version == '24'
+        env:
+          STRANDS_MONGODB_BUILD_TIER: '1'
+        run: npm run test:build
 
   floors:
     name: Dependency floors
@@ -151,8 +155,7 @@ jobs:
   contract:
     name: Contract tier (${{ matrix.deployment.label }})
     if: github.event_name != 'schedule'
-    # Not ubuntu-latest: from runner image 20261025 its kernel is 6.19 or newer, where MongoDB 8.x refuses to
-    # start (log id 12257600, SERVER-125742). ubuntu-22.04 runs kernel 6.8. Move back once MongoDB lifts the guard.
+    # Not ubuntu-latest: MongoDB 8.x refuses to start on its 6.19 kernel (SERVER-125742).
     runs-on: ubuntu-22.04
     timeout-minutes: 20
 
@@ -212,7 +215,7 @@ jobs:
           MONGODB_ATLAS_URI: ${{ matrix.deployment.uri }}
         run: npm run test:integration
 
-      # Fails unless every release-gate item passed in the two tiers above; the mongod-alone leg cannot run them all.
+      # Fails unless every release-gate item passed in the two tiers above.
       - name: Run the release gate over both tiers
         if: matrix.deployment.expect_search == '1'
         run: npm run test:gate:release
@@ -258,8 +261,7 @@ jobs:
   sdk-compat:
     name: Latest SDK compatibility
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    # Not ubuntu-latest: from runner image 20261025 its kernel is 6.19 or newer, where MongoDB 8.x refuses to
-    # start (log id 12257600, SERVER-125742). ubuntu-22.04 runs kernel 6.8. Move back once MongoDB lifts the guard.
+    # Not ubuntu-latest: MongoDB 8.x refuses to start on its 6.19 kernel (SERVER-125742).
     runs-on: ubuntu-22.04
     timeout-minutes: 20
 

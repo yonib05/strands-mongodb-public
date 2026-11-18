@@ -1,4 +1,4 @@
-# Actions only.
+# Actions, and the development dependencies of the TypeScript package.
 #
 # Every `uses:` in `.github/workflows/` is third-party code running with its job's permissions. The
 # publishing job pins its actions to a digest, and a digest never moves, including away from a
