@@ -23,8 +23,13 @@ function isScalar(value: object): boolean {
   return value instanceof Date || value instanceof Uint8Array || isBsonValue(value)
 }
 
+// By tag as well, as bson detects one, so a `Map` from another realm counts.
+function isMap(value: object): value is Map<unknown, unknown> {
+  return value instanceof Map || Object.prototype.toString.call(value) === '[object Map]'
+}
+
 function entriesOf(value: object): [unknown, unknown][] {
-  return value instanceof Map ? [...value.entries()] : Object.entries(value)
+  return isMap(value) ? [...value.entries()] : Object.entries(value)
 }
 
 function quote(key: unknown): string {
@@ -40,7 +45,7 @@ function requireDocument(callerFilter: unknown): asserts callerFilter is Record<
     typeof callerFilter === 'object' &&
     callerFilter !== null &&
     !Array.isArray(callerFilter) &&
-    !(callerFilter instanceof Map) &&
+    !isMap(callerFilter) &&
     !isRegex(callerFilter) &&
     !isScalar(callerFilter)
   if (!plain) {

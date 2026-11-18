@@ -267,6 +267,19 @@ describe('validate', () => {
       expect(() => validate({ tier: foreign }, { declaredFields: DECLARED })).toThrow(/regular expression/)
     })
 
+    it.each([
+      ['a Map from another realm', runInNewContext('new Map([["$ne", "gold"]])') as unknown],
+      ['an object tagged as a Map', { [Symbol.toStringTag]: 'Map', entries: () => [['$ne', 'gold']] }],
+    ])('rejects an operator key inside %s, which the driver still encodes as a document', (_what, smuggled) => {
+      expect(() => validate({ tier: smuggled }, { declaredFields: DECLARED })).toThrow(/invalid filter key '\$ne'/)
+    })
+
+    it('rejects a Map from another realm as the filter itself', () => {
+      const foreign = runInNewContext('new Map([["tier", "gold"]])') as Record<string, unknown>
+
+      expect(() => validate(foreign, { declaredFields: DECLARED })).toThrow(/not a plain object/)
+    })
+
     it('allows a string that looks like a pattern', () => {
       expect(() => validate({ tier: '^gol.*$' }, { declaredFields: DECLARED })).not.toThrow()
       expect(() => validate({ tier: ['^gol', 'silver'] }, { declaredFields: DECLARED })).not.toThrow()
