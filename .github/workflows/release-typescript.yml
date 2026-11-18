@@ -1,7 +1,7 @@
 name: Release - TypeScript
 
 # typescript/RELEASING.md is the procedure; typescript/test/__tests__/ci.test.ts reads this file as YAML
-# and checks its structure. Every action is pinned to a digest, because the publish job holds a token.
+# and checks its trigger, its permissions and what must pass before a publish. Every action is pinned to a digest, because the publish job holds a token.
 
 on:
   push:
@@ -45,21 +45,25 @@ jobs:
     # Not ubuntu-latest: from runner image 20261025 its kernel is 6.19 or newer, where MongoDB 8.x refuses to
     # start (log id 12257600, SERVER-125742). ubuntu-22.04 runs kernel 6.8. Move back once MongoDB lifts the guard.
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 20
 
+    # With a search process, so the release-gate item only the integration tier can prove runs too.
     services:
       mongodb:
-        image: mongo:8
+        image: mongodb/mongodb-atlas-local:8
         ports:
           - 27017:27017
+        # The image's own HEALTHCHECK: a ping answers before mongot is up.
         options: >-
-          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
+          --health-cmd "/usr/local/bin/runner healthcheck"
           --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
+          --health-timeout 60s
+          --health-retries 20
 
     env:
-      MONGODB_URI: mongodb://localhost:27017
+      MONGODB_URI: mongodb://localhost:27017/?directConnection=true
+      MONGODB_ATLAS_URI: mongodb://localhost:27017/?directConnection=true
+      STRANDS_MONGODB_EXPECT_SEARCH: '1'
 
     steps:
       - name: Checkout code
@@ -80,14 +84,18 @@ jobs:
       - name: Run the contract tier
         run: npm run test:contract
 
-      - name: Run the release gate over the contract tier
-        run: npm run test:gate
+      - name: Run the integration tier
+        run: npm run test:integration
 
-      - name: Assert the tier left the working tree clean
+      # Fails unless every release-gate item passed in the two tiers above.
+      - name: Run the release gate over both tiers
+        run: npm run test:gate:release
+
+      - name: Assert the tiers left the working tree clean
         run: |
           dirty="$(git status --porcelain)"
           if [ -n "$dirty" ]; then
-            echo "The contract tier left files behind:"
+            echo "The tiers left files behind:"
             echo "$dirty"
             exit 1
           fi

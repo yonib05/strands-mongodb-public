@@ -1,7 +1,7 @@
 name: CI - TypeScript
 
 # Four gates on a change and two jobs on the weekly cron or on demand. typescript/test/__tests__/ci.test.ts
-# reads this file as YAML and checks its structure.
+# reads this file as YAML and checks its permissions, its secrets and where the release gate runs.
 
 on:
   pull_request:
@@ -105,7 +105,11 @@ jobs:
       - name: Run tests with coverage
         run: npm run test:coverage
 
-      - name: Run the release gate over that run
+      # The example dry runs and the README snippets, each in its own process.
+      - name: Run the docs tier
+        run: npm run test:docs
+
+      - name: Check every checklist id resolves to a test
         run: npm run test:gate
 
   floors:
@@ -202,19 +206,16 @@ jobs:
       - name: Run the contract tier
         run: npm run test:contract
 
-      # Each tier run replaces .vitest-results.json, so the gate reads it before the next tier starts.
-      - name: Run the release gate over the contract tier
-        run: npm run test:gate
-
       - name: Run the integration tier
         if: matrix.deployment.expect_search == '1'
         env:
           MONGODB_ATLAS_URI: ${{ matrix.deployment.uri }}
         run: npm run test:integration
 
-      - name: Run the release gate over the integration tier
+      # Fails unless every release-gate item passed in the two tiers above; the mongod-alone leg cannot run them all.
+      - name: Run the release gate over both tiers
         if: matrix.deployment.expect_search == '1'
-        run: npm run test:gate
+        run: npm run test:gate:release
 
       - name: Set up Python
         if: matrix.deployment.expect_search == '1'
@@ -244,10 +245,6 @@ jobs:
         env:
           MONGODB_ATLAS_URI: ${{ matrix.deployment.uri }}
         run: npm run test:interop
-
-      - name: Run the release gate over the interop tier
-        if: matrix.deployment.expect_search == '1'
-        run: npm run test:gate
 
       - name: Assert the tiers left the working tree clean
         run: |
