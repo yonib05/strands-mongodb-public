@@ -157,9 +157,12 @@ the options of an injected client. `GSSAPI` needs the `kerberos` package and `MO
 
 ### `MongoDBMemoryStoreConfig`
 
-The first five keys are the SDK's `MemoryStoreConfig`. `name`, `scope`, `collection` and the connection's
-`database` must be strings, or the constructor throws `TypeError`. A number that is `NaN` or infinite
-throws `RangeError`.
+The first five keys are the SDK's `MemoryStoreConfig`. The constructor checks what TypeScript cannot
+check for a JavaScript caller. `name`, `scope`, `collection`, and the connection's `database`,
+`vectorIndexName`, `textIndexName`, `embeddingModel` and `filterFields` entries must be strings, and
+`searchType` and `similarity` one of their listed values, or it throws `TypeError`. A numeric setting that is
+not a number, or is `NaN` or infinite, throws `RangeError`. A `connectionString` or `clientOptions` the driver
+cannot parse throws the driver's `MongoParseError`, from either class.
 
 <!-- keys: MongoDBMemoryStoreConfig -->
 | Key | Type | Required | Default | What it does |
@@ -175,7 +178,7 @@ throws `RangeError`.
 | `filter` | `Record<string, unknown>` | no | | Field paths mapped to the exact values they must equal, applied to search and delete. It can only narrow. Paths must be in `filterFields`, and operators such as `$gte` throw `TypeError`. |
 | `minScore` | `number` | no | | Drops results scoring below it, after the search. |
 | `maxScore` | `number` | no | | Drops results scoring above it. Excludes `minScore`. |
-| `ttlSeconds` | `number` | no | | Seconds a memory lives from its first `add`. `0` expires at the next TTL sweep. Negative throws `RangeError`. |
+| `ttlSeconds` | `number` | no | | Seconds a memory lives from its first `add`. `0` expires at the next TTL sweep. Negative, or so large that the expiry is past the last date JavaScript can represent, throws `RangeError`. |
 | `embedder` | `Embedder` | no | | Embeds memories and string queries when you supply the vectors. |
 
 ### `MongoDBSearchQuery`
@@ -187,8 +190,8 @@ hybrid tier can use both: on a store that supplies its own vectors, with `search
 <!-- keys: MongoDBSearchQuery -->
 | Key | Type | Required | Default | What it does |
 |---|---|---|---|---|
-| `text` | `string` | no | | The query text. |
-| `vector` | `number[]` | no | | A query embedding you computed. |
+| `text` | `string` | no | | The query text. Anything but a string throws `TypeError`. |
+| `vector` | `number[]` | no | | A query embedding you computed. Anything but an array of finite numbers throws `TypeError`. |
 | `filter` | `Record<string, unknown>` | no | | Narrows this query. Same rules as the store's `filter`. |
 | `limit` | `number` | no | `10` | Result count for this query. Wins over both `maxSearchResults` settings. |
 | `oversamplingFactor` | `number` | no | `10` | Vector candidates considered per result. |
@@ -405,16 +408,16 @@ The collation check is required: a collection whose default collation is not bin
 | `search` without a strategy scores keys only | Values are not searched. Key letters are lowercased for ASCII only, so a key word with a non-ASCII capital such as `ÉCOLE` matches no query. Pass a `searchStrategy`. | `MongoDBStorage.search()` |
 | `ttlSeconds` on storage needs the TTL index | Call `await storage.ensureIndexes()` once at startup. The memory store creates its TTL index in `initialize()`. | `MongoDBStorage.ensureIndexes()` |
 | Key length | 1024 bytes of UTF-8, prefix included. Longer throws `StorageError` before the write. | `MAX_KEY_BYTES` |
-| Document size | 16 MB. Larger throws `StorageError` before the write. | `MAX_DOCUMENT_BYTES` |
+| Document size | 16 MiB. Larger throws `StorageError` before the write. | `MAX_DOCUMENT_BYTES` |
 | An empty result can hide a failure | `MemoryManager` logs a failed store search as a warning and returns the other stores' results. | `MongoDBMemoryStore.search()` |
-| Searches can fail after a slow index build | Under `auto`, if no tier is ready within `indexReadyTimeout` on the first search, searches throw `StorageError` until a retry finds one. Retries double from 60 seconds up to an hour. | `MongoDBMemoryStore.search()` |
+| Searches can fail after a slow index build | Under `auto`, if no tier is ready within `indexReadyTimeout` on the first search, searches throw `StorageError` until a retry finds one. The first retry is 120 seconds after that search, and the interval doubles up to an hour. | `MongoDBMemoryStore.search()` |
 | Vector candidates per query | 10000. A `limit` times `oversamplingFactor` above it, or not a whole number, throws `RangeError`. | `oversamplingFactor` |
 | Vector dimensions | 8192 when you supply the vectors. | `embeddingDimensions` |
 
 ## Observability
 
 <!-- observability -->
-Every public operation records an `INTERNAL` OpenTelemetry span through `@opentelemetry/api`, on the
+Every operation that reaches the database records an `INTERNAL` OpenTelemetry span through `@opentelemetry/api`, on the
 tracer provider your application registers. The package registers nothing. Without a provider the calls
 are no-ops.
 
@@ -474,7 +477,8 @@ No span or log line carries a key, a prefix, stored content, metadata, query tex
 scope, a memory id, a connection string or a credential. Error messages are not recorded on spans.
 
 Log lines go to the `logger` in `MongoDBConfig`, shaped
-`strands_mongodb: <sentence> | event=<name>, namespace=<database>.<collection>, tier=<tier>`.
+`strands_mongodb: <sentence> | event=<name>, namespace=<database>.<collection>, tier=<tier>`. The SDK's
+`configureLogging()` does not reach this package, so pass your logger here as well.
 
 | `event` | Level | Logged when |
 |---|---|---|

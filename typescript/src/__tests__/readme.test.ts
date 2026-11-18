@@ -173,7 +173,7 @@ const LOG_EVENTS = {
 // Limits rows that quote a value, by the name in their last column.
 const TRACEABLE_VALUES: Record<string, string[]> = {
   MAX_KEY_BYTES: [String(MAX_KEY_BYTES)],
-  MAX_DOCUMENT_BYTES: [`${MAX_DOCUMENT_BYTES / 1024 / 1024} MB`, String(MAX_DOCUMENT_BYTES)],
+  MAX_DOCUMENT_BYTES: [`${MAX_DOCUMENT_BYTES / 1024 / 1024} MiB`, String(MAX_DOCUMENT_BYTES)],
   embeddingDimensions: [String(MAX_DIMENSIONS)],
   oversamplingFactor: [String(MAX_NUM_CANDIDATES)],
 }

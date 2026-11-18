@@ -21,8 +21,11 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Vers
   `MongoDBStorage` needs `ensureIndexes()` called once.
 - `ensureIndexes: false`, which verifies the indexes and reports a missing or conflicting one with the
   `db.runCommand` lines that fix it.
-- Runtime validation for JavaScript callers: `name`, `scope`, `collection`, `database` and `prefix` must
-  be strings (`TypeError`), numeric settings must be finite, and counts must be integers (`RangeError`).
+- Runtime validation for JavaScript callers: names such as `name`, `scope`, `collection`, `database`,
+  `prefix` and the index names must be strings, and `searchType` and `similarity` a listed value
+  (`TypeError`). Numeric settings, the score bounds included, must be finite, counts must be integers,
+  and `ttlSeconds` must leave the expiry a valid date (`RangeError`). A query's `text` must be a string
+  and its `vector` an array of finite numbers (`TypeError`).
 - Recovery from a failed first connection: a client the package built is reconnected on the next operation.
 - `Strands-MongoDB` and the package version in each client's handshake metadata. `appName` and
   `driverInfo` are left to the application.

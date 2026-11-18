@@ -67,17 +67,19 @@ without a deployment. `npm test` alone is the unit project.
 
 ### Installing the TypeScript package before its first release
 
-The package is not on npm yet. To use it in another project, build a clone and install the folder:
+The package is not on npm yet. To use it in another project, pack a clone and install the tarball:
 
 ```bash
 git clone git@github.com:mongodb/strands-mongodb.git
-cd strands-mongodb/typescript && npm ci && npm run build
-cd /path/to/your/app && npm install /path/to/strands-mongodb/typescript
+cd strands-mongodb/typescript && npm ci && npm pack
+cd /path/to/your/app && npm install /path/to/strands-mongodb/typescript/strands-mongodb-0.0.1-development.tgz
 ```
 
-`npm install <folder>` links the folder, so the clone has to stay built. For a copy, run `npm pack` in
-`typescript/` and install the `.tgz` it writes. Either way the version is `0.0.1-development`: the real
-version is written at publish time, as [`typescript/RELEASING.md`](typescript/RELEASING.md) describes.
+`npm pack` builds first. The tarball installs as a copy, so your application loads one `mongodb` and one
+`@strands-agents/sdk`. Do not install the folder itself: npm links it, the package then loads its own
+copies of both from the clone, and a `client` you inject is no longer its `MongoClient`. The version is
+`0.0.1-development`: the real version is written at publish time, as
+[`typescript/RELEASING.md`](typescript/RELEASING.md) describes.
 
 ## Running the tests
 
