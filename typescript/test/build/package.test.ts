@@ -61,14 +61,18 @@ describeTier('build', 'package', () => {
   }
 
   describe('contents', () => {
-    it('ships only the build output and the legal files', () => {
+    it('ships only the build output, the changelog and the legal files', () => {
       const paths = pack(['--dry-run', '--ignore-scripts']).files.map((file) => file.path)
       const extra = paths.filter(
-        (path) => !path.startsWith('dist/') && !['README.md', 'LICENSE', 'NOTICE', 'package.json'].includes(path)
+        (path) =>
+          !path.startsWith('dist/') &&
+          !['README.md', 'CHANGELOG.md', 'LICENSE', 'NOTICE', 'package.json'].includes(path)
       )
 
       expect(extra).toEqual([])
-      expect(paths).toEqual(expect.arrayContaining(['LICENSE', 'NOTICE', 'package.json', 'dist/index.js']))
+      expect(paths).toEqual(
+        expect.arrayContaining(['CHANGELOG.md', 'LICENSE', 'NOTICE', 'package.json', 'dist/index.js'])
+      )
       expect(paths.filter((path) => /__tests__|__fixtures__|\.test\.|\.map$/.test(path))).toEqual([])
     })
   })

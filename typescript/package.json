@@ -22,6 +22,7 @@
   },
   "files": [
     "dist",
+    "CHANGELOG.md",
     "LICENSE",
     "NOTICE"
   ],
