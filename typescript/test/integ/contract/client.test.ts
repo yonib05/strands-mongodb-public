@@ -1,5 +1,5 @@
 import { StorageError } from '@strands-agents/sdk'
-import { type Document, MongoClient, MongoServerSelectionError } from 'mongodb'
+import { type Document, MongoClient, MongoNotConnectedError, MongoServerSelectionError } from 'mongodb'
 import { expect, it, vi } from 'vitest'
 import { rejectionOf } from '../../../src/__fixtures__/errors.js'
 import { close, resolve } from '../../../src/client.js'
@@ -78,6 +78,25 @@ describeTier('contract', 'client', () => {
       }
     } finally {
       await Promise.all([storage.close(), reachable.close()])
+    }
+  })
+
+  it('reconnects the client this package built after it is closed underneath it, and reads on that same client', async () => {
+    const config = { database: 'strands_mongodb_contract', connectionString: tierUri('contract')! }
+    const storage = new MongoDBStorage(config, { collection: 'reconnect' })
+    const { client } = resolve(config)
+    const payload = new Uint8Array([1, 2, 3])
+    try {
+      await storage.write('a', payload)
+      // Closed directly, so it stays registered: `storage.close()` would have the next operation build a new client.
+      await client.close()
+      await expect(client.db('admin').command({ ping: 1 })).rejects.toBeInstanceOf(MongoNotConnectedError)
+
+      await expect(storage.read('a')).resolves.toEqual(payload)
+      expect(resolve(config).client).toBe(client)
+    } finally {
+      await client.db(config.database).collection('reconnect').drop()
+      await close(config)
     }
   })
 })
