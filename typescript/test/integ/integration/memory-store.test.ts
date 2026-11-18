@@ -16,7 +16,7 @@ import {
   type VectorSimilarity,
 } from '../../../src/types.js'
 import { tierUri } from '../../env.js'
-import { capabilitiesOf } from '../deployment.js'
+import { capabilitiesOf, EMBEDS, refusesAutoEmbed } from '../deployment.js'
 import { describeTier } from '../../tiers.js'
 import { rejectionOf } from '../../../src/__fixtures__/errors.js'
 import { RecordingLogger } from '../../../src/__fixtures__/logger.js'
@@ -165,6 +165,7 @@ describeTier('integration', 'memory store', () => {
   let client: MongoClient
   let db: Db
   let capabilities: Capabilities
+  let refuses: boolean
 
   function register(config: MongoDBConfig, name: string, options: Partial<MongoDBMemoryStoreConfig> = {}) {
     configs.push(config)
@@ -221,6 +222,7 @@ describeTier('integration', 'memory store', () => {
     client = new MongoClient(tierUri('integration')!)
     db = client.db(DATABASE)
     capabilities = await capabilitiesOf(db)
+    refuses = await refusesAutoEmbed(db)
   })
 
   afterAll(async () => {
@@ -265,7 +267,8 @@ describeTier('integration', 'memory store', () => {
     expect(reportedTiers(exporter).length).toBeGreaterThan(0)
   })
 
-  it('AT-053c, AT-147: an AutoEmbeddings auto store skips the vector tier with the server reason and answers from text', async () => {
+  it('AT-053c, AT-147: an AutoEmbeddings auto store skips the vector tier with the server reason and answers from text', async (context) => {
+    if (!refuses) context.skip(EMBEDS)
     const { store: facts, logger, name } = store('autoembed_auto')
 
     await facts.initialize()
@@ -282,7 +285,8 @@ describeTier('integration', 'memory store', () => {
     expect(below[0]).toMatch(/tier=text$/)
   })
 
-  it('AT-078: a named vector tier on the AutoEmbeddings path fails with the server reason, creating no tier', async () => {
+  it('AT-078: a named vector tier on the AutoEmbeddings path fails with the server reason, creating no tier', async (context) => {
+    if (!refuses) context.skip(EMBEDS)
     const { store: facts, name } = store('autoembed_vector', { connection: { searchType: 'vector' } })
 
     const error = await rejectionOf(facts.initialize())

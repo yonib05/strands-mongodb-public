@@ -8,6 +8,7 @@ import { defaultLogger } from '../../../src/logging.js'
 import type { MongoDBConfig } from '../../../src/types.js'
 import { tierUri } from '../../env.js'
 import { describeTier } from '../../tiers.js'
+import { EMBEDS, refusesAutoEmbed } from '../deployment.js'
 import { rejectionOf } from '../../../src/__fixtures__/errors.js'
 
 // The manual-vector path: an `autoEmbed` index is rejected at creation on atlas-local (PARITY.md section 4).
@@ -150,7 +151,8 @@ describeTier('integration', 'indexes', () => {
     context.skip('the vector index reached READY before the first read on all 3 attempts')
   })
 
-  it('PARITY.md section 4: an autoEmbed index fails at creation with code 8, and the error names the namespace', async () => {
+  it('PARITY.md section 4: an autoEmbed index fails at creation with code 8, and the error names the namespace', async (context) => {
+    if (!(await refusesAutoEmbed(db))) context.skip(EMBEDS)
     const collection = fresh('autoembed')
     const spec = memorySearchSpecs({ database: 'd' })[0]!
 
