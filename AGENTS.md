@@ -38,12 +38,13 @@ The modules under `typescript/src/`:
 | `probes.ts` | What the deployment supports: Atlas Search, `$rankFusion`, and the collection's collation |
 | `pipeline.ts` | The aggregation stages of each search tier |
 | `filter.ts` | Validating a caller's filter and composing it with the scope |
+| `checks.ts` | The string and number checks every configuration key goes through |
 | `embedding.ts` | Calling an `Embedder` and checking the vector's length |
 | `keys.ts` | Key normalization and the tokenizer, copied from the SDK |
-| `client.ts` | The shared connections, keyed by connection identity |
+| `client.ts` | The shared connections, keyed by connection identity, and the replacement of one the driver closed |
 | `driver-errors.ts` | Turning a driver error into a `StorageError` |
 | `telemetry.ts`, `logging.ts` | Spans and attributes, and the log line's fields |
-| `types.ts`, `version.ts` | The public types and constants, and the package version |
+| `types.ts`, `version.ts` | The public types and constants, and the package version, which `npm run build` writes from `package.json` |
 | `index.ts`, `typescript/src/storage/index.ts`, `typescript/src/memory/index.ts` | The three entry points |
 
 `typescript/docs/PARITY.md` records what the port measured, the behaviours it shares with Python on purpose, and
