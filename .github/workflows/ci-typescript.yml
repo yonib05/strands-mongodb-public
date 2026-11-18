@@ -1,6 +1,6 @@
 name: CI - TypeScript
 
-# Four gates on a change, two jobs on the weekly cron or on demand. typescript/test/__tests__/ci.test.ts checks
+# Six jobs on a change, two on the weekly cron or on demand. typescript/test/__tests__/ci.test.ts checks
 # this file's permissions, its secrets and where the release gate runs.
 
 on:
@@ -153,42 +153,77 @@ jobs:
         run: npm run type-check
 
   contract:
-    name: Contract tier (${{ matrix.deployment.label }})
+    name: Contract tier - mongod alone
     if: github.event_name != 'schedule'
     # Not ubuntu-latest: MongoDB 8.x refuses to start on its 6.19 kernel (SERVER-125742).
     runs-on: ubuntu-22.04
     timeout-minutes: 20
 
-    strategy:
-      fail-fast: false
-      matrix:
-        deployment:
-          - label: mongod alone
-            image: mongo:8
-            health: "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
-            uri: mongodb://localhost:27017
-            expect_search: ''
-          - label: with a search process
-            image: mongodb/mongodb-atlas-local:8
-            # The image's own HEALTHCHECK: a ping answers before mongot is up.
-            health: /usr/local/bin/runner healthcheck
-            uri: mongodb://localhost:27017/?directConnection=true
-            expect_search: '1'
-
     services:
       mongodb:
-        image: ${{ matrix.deployment.image }}
+        image: mongo:8
         ports:
           - 27017:27017
         options: >-
-          --health-cmd "${{ matrix.deployment.health }}"
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
           --health-interval 10s
           --health-timeout 60s
           --health-retries 20
 
     env:
-      MONGODB_URI: ${{ matrix.deployment.uri }}
-      STRANDS_MONGODB_EXPECT_SEARCH: ${{ matrix.deployment.expect_search }}
+      MONGODB_URI: mongodb://localhost:27017
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: typescript/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the contract tier
+        run: npm run test:contract
+
+      - name: Assert the tiers left the working tree clean
+        run: |
+          dirty="$(git status --porcelain)"
+          if [ -n "$dirty" ]; then
+            echo "The tiers left files behind:"
+            echo "$dirty"
+            exit 1
+          fi
+
+  gate:
+    name: Release gate tiers - Atlas local
+    if: github.event_name != 'schedule'
+    # Not ubuntu-latest: MongoDB 8.x refuses to start on its 6.19 kernel (SERVER-125742).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    services:
+      mongodb:
+        image: mongodb/mongodb-atlas-local:8
+        ports:
+          - 27017:27017
+        # The image's own HEALTHCHECK: a ping answers before mongot is up.
+        options: >-
+          --health-cmd "/usr/local/bin/runner healthcheck"
+          --health-interval 10s
+          --health-timeout 60s
+          --health-retries 20
+
+    env:
+      MONGODB_URI: mongodb://localhost:27017/?directConnection=true
+      MONGODB_ATLAS_URI: mongodb://localhost:27017/?directConnection=true
+      STRANDS_MONGODB_EXPECT_SEARCH: '1'
 
     steps:
       - name: Checkout code
@@ -210,51 +245,88 @@ jobs:
         run: npm run test:contract
 
       - name: Run the integration tier
-        if: matrix.deployment.expect_search == '1'
-        env:
-          MONGODB_ATLAS_URI: ${{ matrix.deployment.uri }}
         run: npm run test:integration
 
       # Fails unless every release-gate item passed in the two tiers above.
       - name: Run the release gate over both tiers
-        if: matrix.deployment.expect_search == '1'
         run: npm run test:gate:release
 
+      - name: Assert the tiers left the working tree clean
+        run: |
+          dirty="$(git status --porcelain)"
+          if [ -n "$dirty" ]; then
+            echo "The tiers left files behind:"
+            echo "$dirty"
+            exit 1
+          fi
+
+  interop:
+    name: Python interop - Atlas local
+    if: github.event_name != 'schedule'
+    # Not ubuntu-latest: MongoDB 8.x refuses to start on its 6.19 kernel (SERVER-125742).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    services:
+      mongodb:
+        image: mongodb/mongodb-atlas-local:8
+        ports:
+          - 27017:27017
+        # The image's own HEALTHCHECK: a ping answers before mongot is up.
+        options: >-
+          --health-cmd "/usr/local/bin/runner healthcheck"
+          --health-interval 10s
+          --health-timeout 60s
+          --health-retries 20
+
+    env:
+      MONGODB_URI: mongodb://localhost:27017/?directConnection=true
+      MONGODB_ATLAS_URI: mongodb://localhost:27017/?directConnection=true
+      STRANDS_MONGODB_EXPECT_SEARCH: '1'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: typescript/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Set up Python
-        if: matrix.deployment.expect_search == '1'
         uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.13'
           cache: 'pip'
 
       - name: Install hatch
-        if: matrix.deployment.expect_search == '1'
         run: pip install hatch
 
       # Built here, not on the first `hatch run`, which would spend most of a minute inside a test hook.
       - name: Build the hatch environment
-        if: matrix.deployment.expect_search == '1'
         working-directory: python
         run: hatch env create
 
       # File paths, not the directory: `tool.ruff.include` filters out anything outside python/.
       - name: Lint the interop scripts and the fixture exporter
-        if: matrix.deployment.expect_search == '1'
         working-directory: python
         run: hatch run ruff check ../typescript/scripts/interop/*.py ../typescript/scripts/export-python-fixtures.py
 
       # The parity tests compare TypeScript against this JSON, so it must be what the Python builders produce now.
       - name: Regenerate the parity fixtures and assert they are unchanged
-        if: matrix.deployment.expect_search == '1'
         working-directory: python
         run: |
           hatch run python ../typescript/scripts/export-python-fixtures.py
           git diff --exit-code -- ../typescript/src/__fixtures__/*.json
 
       - name: Run the interop tier
-        if: matrix.deployment.expect_search == '1'
-        env:
-          MONGODB_ATLAS_URI: ${{ matrix.deployment.uri }}
         run: npm run test:interop
 
       - name: Assert the tiers left the working tree clean

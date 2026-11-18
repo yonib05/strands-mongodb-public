@@ -129,8 +129,8 @@ starts the workflow by hand from the Actions tab:
 ![Where each test tier runs: the unit and contract tiers and the integration tier on every change, the Atlas tiers on a throwaway cluster weekly or on demand](docs/images/ci-tiers.png)
 
 The TypeScript package has its own workflow, `.github/workflows/ci-typescript.yml`, which runs on a change
-under `typescript/` or to a file its tests read. Four jobs gate a change, two of them twice over a matrix,
-and two more run on the weekly cron or on demand. `npm run check` from `typescript/` is the local form of
+under `typescript/` or to a file its tests read. Six jobs gate a change, one of them once per Node
+version, and two more run on the weekly cron or on demand. `npm run check` from `typescript/` is the local form of
 the first two, without the build tier:
 
 | Job | Runs |
@@ -138,7 +138,9 @@ the first two, without the build tier:
 | `Lint` | `npm run format:check`, `npm run lint`, `npm run type-check` |
 | `Test - Node <version>` | On Node 22 and 24: `npm run test:coverage`, which enforces both coverage floors (90% aggregate, 70% per file), then `npm run test:docs`, then `npm run test:gate`. On Node 24 also the build tier, `npm run test:build`, which packs the tarball and installs it into empty ESM and CommonJS projects. No deployment, so no secrets |
 | `Dependency floors` | `node scripts/pin-floors.mjs --install` puts the lowest version of every peer range in place, on Node 22, then `npm test` and `npm run type-check` run against them |
-| `Contract tier (<deployment>)` | `npm run test:contract` against a `mongo:8` service container and against a `mongodb/mongodb-atlas-local:8` one. The second leg also runs `npm run test:integration`, then `npm run test:gate:release` once over both tiers, then installs hatch and runs `npm run test:interop`. No secret either time |
+| `Contract tier - mongod alone` | `npm run test:contract` against a `mongo:8` service container, which has no search process. No secret |
+| `Release gate tiers - Atlas local` | Against a `mongodb/mongodb-atlas-local:8` service container: `npm run test:contract`, `npm run test:integration`, then `npm run test:gate:release` over both. No secret |
+| `Python interop - Atlas local` | Against the same image: installs hatch, lints the Python scripts under `typescript/scripts/`, regenerates the parity fixtures and fails if they changed, then runs `npm run test:interop`. No secret |
 | `Latest SDK compatibility` | Weekly or on demand, against the newest published `@strands-agents/sdk`. Type-checks, then runs `npm run test:compat`, then `npm run test:contract` against the Atlas local image |
 | `Atlas tiers` | Weekly, or on demand. Creates an Atlas cluster with `python/scripts/atlas_ci_cluster.py`, runs `npm run test:integration` and `npm run test:autoembed` against it, and deletes it |
 
