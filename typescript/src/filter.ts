@@ -4,8 +4,9 @@ import { BSON } from 'mongodb'
 const BSON_VERSION = Symbol.for('@@mdb.bson.version')
 const INSTALLED_BSON_VERSION: unknown = Reflect.get(BSON.BSONValue.prototype, BSON_VERSION)
 
+// By tag, as bson detects one, so a `RegExp` from another realm counts.
 function isRegex(value: object): boolean {
-  return value instanceof RegExp || Reflect.get(value, '_bsontype') === 'BSONRegExp'
+  return Object.prototype.toString.call(value) === '[object RegExp]' || Reflect.get(value, '_bsontype') === 'BSONRegExp'
 }
 
 // bson treats `_bsontype == null` as a plain document, so only a non-null marker claims to be a BSON value.
@@ -17,7 +18,7 @@ function isBsonValue(value: object): boolean {
   return INSTALLED_BSON_VERSION !== undefined && Reflect.get(value, BSON_VERSION) === INSTALLED_BSON_VERSION
 }
 
-// Every other object is encoded as a subdocument and walked. `toBSON`, `DBRef.fields` and `Code` scope are not read.
+// Every other object is encoded as a subdocument and walked. `DBRef.fields`, `Code` scope and getters are not read.
 function isScalar(value: object): boolean {
   return value instanceof Date || value instanceof Uint8Array || isBsonValue(value)
 }
@@ -49,29 +50,12 @@ function requireDocument(callerFilter: unknown): asserts callerFilter is Record<
   }
 }
 
-// Throws for an operator or non-string key at any depth. Returns the first bad value instead of throwing it, so
-// a key fault anywhere is reported before a value fault.
-function walk(value: unknown, path: string): TypeError | undefined {
-  if (typeof value !== 'object' || value === null) return undefined
-  if (isRegex(value)) {
-    return new TypeError(
-      `strands_mongodb: invalid filter value at ${where(path)}: a regular expression. Pass the literal value to match.`
-    )
-  }
-  if (isScalar(value)) return undefined
-  if (claimsBsonType(value)) {
-    return new TypeError(
-      `strands_mongodb: invalid filter value at ${where(path)}: it has a '_bsontype' but is not a BSON value the installed driver accepts. Pass a value built with the driver's own BSON classes.`
-    )
-  }
-
-  let first: TypeError | undefined
+function rejectOperatorKeys(value: unknown): void {
+  if (typeof value !== 'object' || value === null) return
+  if (isRegex(value) || isScalar(value) || claimsBsonType(value)) return
   if (Array.isArray(value)) {
-    value.forEach((item, index) => {
-      const found = walk(item, `${path}[${index}]`)
-      first ??= found
-    })
-    return first
+    value.forEach(rejectOperatorKeys)
+    return
   }
   for (const [key, nested] of entriesOf(value)) {
     if (typeof key !== 'string' || key.startsWith('$')) {
@@ -79,10 +63,39 @@ function walk(value: unknown, path: string): TypeError | undefined {
         `strands_mongodb: invalid filter key ${quote(key)}: operator keys and non-string keys are not allowed at any depth. Pass a mapping of field path to exact value, such as { 'metadata.tier': 'gold' }.`
       )
     }
-    const found = walk(nested, path === '' ? key : `${path}.${key}`)
-    first ??= found
+    rejectOperatorKeys(nested)
   }
-  return first
+}
+
+// Rejects what the driver would send differently from how it reads here, or not send at all.
+function rejectUnsendableValues(value: unknown, path: string): void {
+  const invalid = (what: string, advice: string): TypeError =>
+    new TypeError(`strands_mongodb: invalid filter value at ${where(path)}: ${what}. ${advice}`)
+  if (value === undefined || typeof value === 'function' || typeof value === 'symbol') {
+    throw invalid(
+      `${typeof value}, which the driver can leave out so the term matches everything`,
+      'Pass the literal value to match, or null.'
+    )
+  }
+  if (typeof value !== 'object' || value === null) return
+  if (typeof Reflect.get(value, 'toBSON') === 'function') {
+    throw invalid("it has a 'toBSON' method, whose result the driver would send in its place", 'Pass the plain value.')
+  }
+  if (isRegex(value)) throw invalid('a regular expression', 'Pass the literal value to match.')
+  if (isScalar(value)) return
+  if (claimsBsonType(value)) {
+    throw invalid(
+      "it has a '_bsontype' but is not a BSON value the installed driver accepts",
+      "Pass a value built with the driver's own BSON classes."
+    )
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => rejectUnsendableValues(item, `${path}[${index}]`))
+    return
+  }
+  for (const [key, nested] of entriesOf(value)) {
+    rejectUnsendableValues(nested, path === '' ? String(key) : `${path}.${String(key)}`)
+  }
 }
 
 function rejectUndeclaredFields(callerFilter: Record<string, unknown>, declared: ReadonlySet<string>): void {
@@ -103,12 +116,13 @@ function rejectUndeclaredFields(callerFilter: Record<string, unknown>, declared:
  * @param callerFilter - The filter as the caller supplied it. Not modified
  * @param options - `declaredFields`: every path the index declares filterable
  * @throws TypeError if the filter is not a plain object, a key at any depth starts with `$` or is not a string, a
- * value at any depth is a regex or a forged BSON value, or a top-level key is not declared
+ * value at any depth is `undefined`, a function, a symbol, a regex, a forged BSON value or carries `toBSON`, or a
+ * top-level key is not declared
  */
 export function validate(callerFilter: Record<string, unknown>, options: { declaredFields: Iterable<string> }): void {
   requireDocument(callerFilter)
-  const badValue = walk(callerFilter, '')
-  if (badValue !== undefined) throw badValue
+  rejectOperatorKeys(callerFilter)
+  rejectUnsendableValues(callerFilter, '')
   rejectUndeclaredFields(callerFilter, new Set(options.declaredFields))
 }
 

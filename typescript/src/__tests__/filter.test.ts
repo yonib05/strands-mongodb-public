@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer'
+import { runInNewContext } from 'node:vm'
 import { Binary, BSON, BSONRegExp, Decimal128, Long, ObjectId } from 'mongodb'
 import { describe, expect, it } from 'vitest'
 import { compose, validate } from '../filter.js'
@@ -259,6 +260,13 @@ describe('validate', () => {
       expect(() => validate(filter, { declaredFields: DECLARED })).toThrow(/regular expression/)
     })
 
+    it('rejects a RegExp from another realm, which the driver still encodes as a regex', () => {
+      const foreign: unknown = runInNewContext('/.*/')
+
+      expect(foreign).not.toBeInstanceOf(RegExp)
+      expect(() => validate({ tier: foreign }, { declaredFields: DECLARED })).toThrow(/regular expression/)
+    })
+
     it('allows a string that looks like a pattern', () => {
       expect(() => validate({ tier: '^gol.*$' }, { declaredFields: DECLARED })).not.toThrow()
       expect(() => validate({ tier: ['^gol', 'silver'] }, { declaredFields: DECLARED })).not.toThrow()
@@ -269,6 +277,50 @@ describe('validate', () => {
 
       expect(message).toContain('$ne')
       expect(message).not.toContain('regular expression')
+    })
+  })
+
+  describe('values the driver would not send as written', () => {
+    const DECLARED = ['tier', 'scope', 'store_name']
+
+    it.each([
+      ['undefined', undefined],
+      ['function', () => 1],
+      ['symbol', Symbol('gold')],
+    ])('rejects a value of type %s, which the driver can drop so the term matches everything', (type, value) => {
+      const message = messageOf(() => validate({ tier: value }, { declaredFields: DECLARED }))
+
+      expect(message).toContain("'tier'")
+      expect(message).toContain(type)
+    })
+
+    it.each([
+      ['a nested object', { tier: { inner: undefined } }, "'tier.inner'"],
+      ['an array', { tier: ['gold', () => 1] }, "'tier[1]'"],
+      ['a Map', { tier: new Map([['inner', Symbol('x')]]) }, "'tier.inner'"],
+    ])('names the path of one inside %s', (_where, filter, path) => {
+      expect(messageOf(() => validate(filter, { declaredFields: DECLARED }))).toContain(path)
+    })
+
+    it('allows null, which matches a null or missing field', () => {
+      expect(() => validate({ tier: null }, { declaredFields: DECLARED })).not.toThrow()
+    })
+
+    it.each([
+      ['a value', { tier: { toBSON: () => ({ $ne: null }) } }, "'tier'"],
+      ['the filter itself', { toBSON: () => ({ tier: { $ne: null } }) }, 'the top level'],
+      ['a Date', { tier: Object.assign(new Date(0), { toBSON: () => ({ $ne: null }) }) }, "'tier'"],
+    ])('rejects toBSON on %s, which the driver would encode in its place', (_where, filter, path) => {
+      const message = messageOf(() => validate(filter, { declaredFields: DECLARED }))
+
+      expect(message).toContain('toBSON')
+      expect(message).toContain(path)
+    })
+
+    it('reports an operator key before a dropped value', () => {
+      const message = messageOf(() => validate({ tier: undefined, scope: { $ne: 1 } }, { declaredFields: DECLARED }))
+
+      expect(message).toContain('$ne')
     })
   })
 
