@@ -6,15 +6,14 @@ name: CI - TypeScript
 on:
   pull_request:
     paths:
-      # Every file a test in typescript/ reads or runs. The interop tier runs the Python package.
+      # Every file a test in typescript/ reads or runs: the conventions test reads every Markdown file in
+      # the repository, and the interop tier runs the Python package.
       - 'typescript/**'
       - '.github/workflows/ci-typescript.yml'
       - '.github/workflows/release-typescript.yml'
       - 'python/src/strands_mongodb/**'
       - 'python/pyproject.toml'
-      - 'README.md'
-      - 'AGENTS.md'
-      - 'CONTRIBUTING.md'
+      - '**.md'
   push:
     branches: [ main ]
     paths:
@@ -23,9 +22,7 @@ on:
       - '.github/workflows/release-typescript.yml'
       - 'python/src/strands_mongodb/**'
       - 'python/pyproject.toml'
-      - 'README.md'
-      - 'AGENTS.md'
-      - 'CONTRIBUTING.md'
+      - '**.md'
   schedule:
     - cron: '0 6 * * 1'
   workflow_dispatch:
