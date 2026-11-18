@@ -1,5 +1,5 @@
 import { type Logger, StorageError } from '@strands-agents/sdk'
-import type { Collection, CollectionInfo, Document } from 'mongodb'
+import { type Collection, type CollectionInfo, type Document, MongoError } from 'mongodb'
 import { COLLECTION_ABSENT, failure, guard, namespaceOf, serverCode } from './driver-errors.js'
 import { SIMPLE_LOCALE } from './index-specs.js'
 import { logFields } from './logging.js'
@@ -51,7 +51,7 @@ export function searchSupport(collection: Collection): Promise<SearchSupport> {
  *
  * @param collection - Any collection on the deployment. Need not exist
  * @param logger - Receives the `rank_fusion_probe_failed` event when `buildInfo` fails
- * @returns `true` for major version 8 or later; `false` on any failure, since a wrong `true` fails every search
+ * @returns `true` for major version 8 or later; `false` on any driver failure, since a wrong `true` fails every search
  */
 export function rankFusionSupport(collection: Collection, logger: Logger): Promise<boolean> {
   return span('strands_mongodb.indexes.probe', probeAttributes(collection, 'rank_fusion'), async () => {
@@ -59,10 +59,10 @@ export function rankFusionSupport(collection: Collection, logger: Logger): Promi
     try {
       buildInfo = await collection.db.command({ buildInfo: 1 })
     } catch (error) {
+      if (!(error instanceof MongoError)) throw error
       const namespace = namespaceOf(collection)
-      const reason = error instanceof Error ? error.message : String(error)
       logger.debug(
-        `strands_mongodb: buildInfo failed on ${namespace}, so $rankFusion is treated as unsupported: ${reason} | ${logFields('rank_fusion_probe_failed', { namespace })}`
+        `strands_mongodb: buildInfo failed on ${namespace}, so $rankFusion is treated as unsupported: ${error.message} | ${logFields('rank_fusion_probe_failed', { namespace })}`
       )
       return false
     }

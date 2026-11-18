@@ -1,6 +1,12 @@
 import { SpanStatusCode } from '@opentelemetry/api'
 import { type Logger, StorageError } from '@strands-agents/sdk'
-import type { Collection, Document, IndexDescription, MongoServerError } from 'mongodb'
+import {
+  type Collection,
+  type Document,
+  type IndexDescription,
+  MongoNetworkTimeoutError,
+  type MongoServerError,
+} from 'mongodb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FakeCollection } from '../__fixtures__/fake-mongo.js'
 import { oneSpan, recordSpans, spansNamed } from '../__fixtures__/spans.js'
@@ -410,7 +416,7 @@ describe('ensure', () => {
 
     it('surfaces a collection creation that never reached the server', async () => {
       const collection = fakeCollection()
-      collection.db.createCollectionError = new Error('socket timed out')
+      collection.db.createCollectionError = new MongoNetworkTimeoutError('socket timed out')
 
       const error = await rejectionOf(ensureSearch(collection, [vectorSpec()]))
 
@@ -673,7 +679,7 @@ describe('ensure', () => {
 
     it('surfaces a read that never reached the server with the cause chained', async () => {
       const collection = fakeCollection()
-      collection.failListSearchIndexes(new Error('socket timed out'))
+      collection.failListSearchIndexes(new MongoNetworkTimeoutError('socket timed out'))
 
       const error = await rejectionOf(ensureSearch(collection, [vectorSpec()]))
 

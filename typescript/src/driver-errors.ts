@@ -42,15 +42,15 @@ export function clientClosed(error: unknown): boolean {
 }
 
 /**
- * Wraps a failed driver call, chaining it as the cause.
+ * Turns what a driver call threw into what to throw: a driver error wrapped as its cause, anything else as it is.
  *
  * @param what - What was being done, such as `reading indexes on db.coll`
  * @param error - Whatever the driver call threw
- * @returns The error to throw
+ * @returns A `StorageError` for a `MongoError`, otherwise `error` itself
  */
-export function failure(what: string, error: unknown): StorageError {
-  const reason = error instanceof Error ? error.message : String(error)
-  return new StorageError(`strands_mongodb: ${what} failed: ${reason}`, { cause: error })
+export function failure(what: string, error: unknown): unknown {
+  if (!(error instanceof MongoError)) return error
+  return new StorageError(`strands_mongodb: ${what} failed: ${error.message}`, { cause: error })
 }
 
 /**
@@ -65,7 +65,6 @@ export async function guard<T>(work: Promise<T>, what: string): Promise<T> {
   try {
     return await work
   } catch (error) {
-    if (!(error instanceof MongoError)) throw error
     throw failure(what, error)
   }
 }

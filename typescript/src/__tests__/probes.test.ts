@@ -1,5 +1,5 @@
 import { type Logger, StorageError } from '@strands-agents/sdk'
-import type { Collection } from 'mongodb'
+import { type Collection, MongoNetworkTimeoutError } from 'mongodb'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeCollection } from '../__fixtures__/fake-mongo.js'
 import { recordSpans, spansNamed } from '../__fixtures__/spans.js'
@@ -54,13 +54,21 @@ describe('AT-053d: searchSupport', () => {
 
   it('raises on a probe that never reached the server, with the cause chained', async () => {
     const collection = fakeCollection()
-    const thrown = new Error('socket timed out')
+    const thrown = new MongoNetworkTimeoutError('socket timed out')
     collection.failListSearchIndexes(thrown)
 
     const error = await rejectionOf(searchSupport(driver(collection)))
 
     expect(error).toBeInstanceOf(StorageError)
     expect(error.cause).toBe(thrown)
+  })
+
+  it('rethrows what is not a driver error as it is', async () => {
+    const collection = fakeCollection()
+    const bug = new TypeError('not a driver error')
+    collection.failListSearchIndexes(bug)
+
+    expect(await rejectionOf(searchSupport(driver(collection)))).toBe(bug)
   })
 })
 
@@ -112,6 +120,14 @@ describe('AT-145: rankFusionSupport', () => {
     expect(line).toContain('not authorized')
     expect(line).toMatch(/\| event=rank_fusion_probe_failed, namespace=testdb\.memory$/)
     expect(logger.warn).not.toHaveBeenCalled()
+  })
+
+  it('rethrows a buildInfo failure that is not a driver error, so a bug is not cached as "unsupported"', async () => {
+    const collection = fakeCollection()
+    const bug = new TypeError('not a driver error')
+    collection.db.commandError = bug
+
+    expect(await rejectionOf(rankFusionSupport(driver(collection), silentLogger()))).toBe(bug)
   })
 
   it('logs nothing when buildInfo answers', async () => {
