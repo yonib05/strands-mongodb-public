@@ -16,6 +16,7 @@ rules:
       # The release workflow is the opposite case, and is digest-pinned throughout. A test asserts
       # that every action in a job holding `id-token: write` is pinned to a 40-character digest.
       - ci-python.yml
+      - ci-typescript.yml
   unpinned-uses:
     ignore:
       # The integration matrix's actions, referenced by version tag rather than commit digest.
@@ -34,3 +35,21 @@ rules:
       # Digest-pinning the whole matrix would mean a Dependabot PR per action per bump across a dozen
       # jobs, which is how pinning stops being read and starts being rubber-stamped.
       - ci-python.yml
+      # The same judgement, and the same digest-pinned `atlas` job.
+      - ci-typescript.yml
+  adhoc-packages:
+    ignore:
+      # `npm install @strands-agents/sdk@latest` in the `sdk-compat` job.
+      #
+      # The rule is right that an install outside the lockfile is unreviewed. Here that is the point:
+      # the job exists to find out whether the SDK release nobody has pinned yet still type-checks
+      # against this package. It holds no secret and publishes nothing.
+      - ci-typescript.yml
+  use-trusted-publishing:
+    ignore:
+      # `npm publish` with a token in the `publish` job.
+      #
+      # The rule is right that OIDC is better than a long-lived token. npm configures a trusted
+      # publisher on a package that already exists, and this one has not had its first release.
+      # typescript/RELEASING.md records the switch to make once it has.
+      - release-typescript.yml

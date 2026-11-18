@@ -39,12 +39,8 @@ prerelease, `npm install strands-mongodb` installs it until `0.1.0` is published
 The prerelease skips step 1 of [Before you tag](#before-you-tag): the changelog keeps
 `## [Unreleased]`. The pull request of that step for `0.1.0` renames it, and also deletes what
 describes the package as unpublished: the "Installing the TypeScript package before its first release"
-section of the root `CONTRIBUTING.md`, the sentence in the root `README.md` that links to it, and the
-words "is unreleased too, and" in the root `README.md`, leaving "It releases on its own `typescript-v`
-tag". `npm run check` stays green.
-
-While the repository is private, the links in `README.md` and the `repository`, `homepage` and `bugs`
-URLs in `package.json` do not resolve for npm users. Nothing in the package depends on them.
+section of the root `CONTRIBUTING.md`, and the sentence in the root `README.md` that links to it.
+`npm run check` stays green.
 
 ## Before you tag
 
@@ -83,9 +79,8 @@ The first two jobs run side by side. Each later job needs the ones before it.
 
 The publish job reads `NPM_TOKEN` as `NODE_AUTH_TOKEN`. No other job sees a secret.
 
-`--provenance` is off. Provenance needs a public source repository, and this one is private, so the
-flag would make the publish fail. Turning it on when the repository is public takes `--provenance` on
-both `npm publish` lines and `permissions: id-token: write` beside `contents: read` on the publish job.
+`--provenance` is off for now. Turning it on takes `--provenance` on both `npm publish` lines and
+`permissions: id-token: write` beside `contents: read` on the publish job.
 Two assertions in `test/__tests__/ci.test.ts` forbid exactly that today, and stay as they are until
 then: "grants read access only, and raises no permission on any job", and the `--provenance` line of
 "publishes only from the npm environment, after the gated tiers, without provenance". The commit that
