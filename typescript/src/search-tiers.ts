@@ -7,10 +7,10 @@ import { logFields } from './logging.js'
 import { annotate } from './telemetry.js'
 import type { ResolvedSearchType, SearchType, VectorMode } from './types.js'
 
-/** Delay in seconds before a search tier skipped under `auto` is tried again, inside the first store call after it. */
+/** Seconds before a search tier skipped under `auto` is tried again, inside the first store call after that. */
 export const TIER_RETRY_SECONDS = 60
 
-/** Ceiling in seconds on that delay, which doubles after each retry that still finds the tier missing. */
+/** Ceiling in seconds on that delay, which doubles after each retry that still finds a tier missing. */
 export const TIER_RETRY_MAX_SECONDS = 3600
 
 /** A configured score bound, which keeps `auto` off the hybrid tier because fused scores are on another scale. */
@@ -63,7 +63,7 @@ export class SearchTiers {
     this._specs = searchType === 'auto' || searchType === 'hybrid' ? all : all.filter(([tier]) => tier === searchType)
   }
 
-  /** The tiers that can answer, in preference order. Empty after `prepare()` means none is ready or there is no Atlas Search. */
+  /** The tiers that can answer, in preference order. Empty means none is ready, or there is no Atlas Search. */
   get prepared(): readonly ResolvedSearchType[] {
     return this._prepared
   }
@@ -125,22 +125,20 @@ export class SearchTiers {
     if (text !== undefined && vector !== undefined && !prepared.includes('hybrid')) {
       // Thrown rather than answered from one tier, which would silently ignore one of the two keys.
       throw new TypeError(
-        `strands_mongodb: this query sets both 'text' and 'vector', which only the hybrid tier reads, and the hybrid tier is not available on ${namespace}. The tiers that are: ${prepared.join(', ') || 'none'}. Drop one of the two keys to use one of them, or see the initialization log for why the fused tier was not offered.`
+        `strands_mongodb: this query sets both 'text' and 'vector', which only the hybrid tier reads, and ${namespace} offers: ${prepared.join(', ') || 'no tier'}. Set one of the two keys.`
       )
     }
 
     if (prepared.length === 0) {
-      const capabilities = this._capabilities
-      if (capabilities === undefined || !capabilities.search) {
-        // A phrase rather than a bare code, because with no cached probe there is no code to name.
-        const code = capabilities?.noSearchCode
-        const evidence = code === undefined ? 'no probe result cached' : `server error code ${code}`
+      if (this._capabilities?.search !== true) {
+        const code = this._capabilities?.noSearchCode
+        const evidence = code === undefined ? 'no probe result' : `server error code ${code}`
         throw new StorageError(
-          `strands_mongodb: cannot search ${namespace} because this deployment does not run Atlas Search. Its capability probe came back with ${evidence}, and this package has no tier that answers without a search process, so there is nothing to fall back to. Writes still work, which is why initialize() only warned. Point 'connectionString' at MongoDB Atlas, or at a local Atlas deployment started with 'atlas deployments setup --type local'.`
+          `strands_mongodb: cannot search ${namespace} because the deployment does not run Atlas Search (${evidence}). Point 'connectionString' at MongoDB Atlas or a local Atlas deployment.`
         )
       }
       throw new StorageError(
-        `strands_mongodb: 'searchType' is 'auto' and no search tier on ${namespace} was ready within 'indexReadyTimeout', so no query can be answered yet. Each tier's status is logged above. The tiers are retried with backoff, and searches raise until one is ready.`
+        `strands_mongodb: 'searchType' is 'auto' and no search tier on ${namespace} is ready. Searches throw until a retry finds one; the log has each tier's status.`
       )
     }
 
@@ -153,11 +151,11 @@ export class SearchTiers {
       if (tier === 'vector' && vectorKey !== undefined) return { tier, text, vector }
     }
 
-    const [needed, because] = mode.autoEmbed
-      ? ["'text'", 'the deployment embeds it on the Atlas AutoEmbeddings path']
-      : ["'vector'", "'embeddingDimensions' and 'similarity' select the manual-vector path"]
+    const vectorNeeds = mode.autoEmbed
+      ? "'text', which the deployment embeds (Atlas AutoEmbeddings)"
+      : "'vector', because 'embeddingDimensions' and 'similarity' are set"
     throw new TypeError(
-      `strands_mongodb: this query cannot be answered by any search tier prepared on ${namespace}, which is: ${prepared.join(', ')}. The text tier needs 'text' on the query. The vector tier needs ${needed}, because ${because}. Supply that key, or set 'searchType' to a tier this query fits.`
+      `strands_mongodb: this query fits no search tier prepared on ${namespace} (${prepared.join(', ')}). The text tier reads 'text', and the vector tier reads ${vectorNeeds}.`
     )
   }
 
@@ -181,7 +179,7 @@ export class SearchTiers {
   }
 
   // Every tier is waited on together, so a quick text build is not held behind a slow vector one. The losers are
-  // aborted once the first is ready, as Python cancels them, so no poll outlives the caller's interest.
+  // aborted once the first is ready, so no poll outlives the wait.
   private async _waitForTheFirstReady(collection: Collection): Promise<void> {
     const { create, timeout, logger } = this._options
     const losers = new AbortController()
@@ -230,7 +228,7 @@ export class SearchTiers {
     if (available.length === 0) {
       // Chained to the last failure so the reason reaches callers who do not log at `warn`.
       throw new StorageError(
-        `strands_mongodb: 'searchType' is 'auto' and no search tier could be prepared on ${namespace}, so no query can be answered. The last tier's failure is chained to this one and every tier's is logged above, each with the server's own reason.`,
+        `strands_mongodb: 'searchType' is 'auto' and no search tier could be prepared on ${namespace}. The last tier's failure is this error's cause, and the log has each tier's.`,
         { cause: refused }
       )
     }
@@ -241,14 +239,14 @@ export class SearchTiers {
       available.unshift('hybrid')
     } else if (searchType === 'hybrid') {
       throw new StorageError(
-        `strands_mongodb: 'searchType' is 'hybrid' but ${namespace} cannot run it. The hybrid tier is a $rankFusion over the vector and text pipelines, and that stage needs MongoDB 8.0 or later. Upgrade the deployment, or set 'searchType' to 'auto' to let this store resolve to the tiers it does have.`
+        `strands_mongodb: 'searchType' is 'hybrid' but ${namespace} did not report support for $rankFusion, which needs MongoDB 8.0 or later. Upgrade the deployment, or set 'searchType' to 'auto'.`
       )
     }
 
     if (searchType === 'auto' && available[0] === 'text' && !this._warnedBelowVector) {
       this._warnedBelowVector = true
       logger.warn(
-        `strands_mongodb: 'searchType' is 'auto' and the vector tier is not available on ${namespace}, so queries resolve to the text tier. Answers are lexical rather than semantic, which is a difference in what matches rather than only in ranking. | ${logFields('below_vector', { namespace, tier: 'text' })}`
+        `strands_mongodb: 'searchType' is 'auto' and the vector tier is not available on ${namespace}, so queries resolve to the text tier. Its matches are lexical, not semantic. | ${logFields('below_vector', { namespace, tier: 'text' })}`
       )
     }
     return available
@@ -257,7 +255,7 @@ export class SearchTiers {
   // `info` for a build nobody has waited out yet, which is every fresh store, else `warn`.
   private _logSkipped(tier: ResolvedSearchType, error: StorageError, afterTimeout: boolean): void {
     const { namespace, logger } = this._options
-    const message = `strands_mongodb: the ${tier} search tier is not available on ${namespace} and 'searchType' is 'auto', so it is skipped rather than fatal and any remaining tier answers queries instead. The '_searchType' key on every returned entry reports which one did. The server's own reason: ${error.message}`
+    const message = `strands_mongodb: the ${tier} search tier is not available on ${namespace} and 'searchType' is 'auto', so it is skipped. Reason: ${error.message}`
     if (error instanceof SearchIndexNotReady && !afterTimeout) {
       logger.info(`${message} | ${logFields('tier_building', { namespace, tier })}`)
       return
@@ -275,7 +273,7 @@ export class SearchTiers {
     // An explicit `hybrid` applies the bound on the fused scale, as documented, so it needs no warning.
     if (bound === undefined || searchType === 'hybrid') return true
     logger.warn(
-      `strands_mongodb: 'searchType' is 'auto' and ${namespace} can run the hybrid tier, but '${bound.name}' is set to ${bound.value} and the two are on different scales, so queries resolve to the vector tier as they did before hybrid existed. Reciprocal rank fusion scores sum to about 0.033 at best, while cosine scores land in roughly 0 to 1. Remove the bound to get fused ranking, or set 'searchType' to 'hybrid' to keep the bound and have it applied on the fusion's scale. | ${logFields('bound_declined_fusion', { namespace, tier: 'hybrid' })}`
+      `strands_mongodb: 'searchType' is 'auto' and ${namespace} can run the hybrid tier, but '${bound.name}' is set to ${bound.value} and fused scores are on a different scale, so queries resolve to the vector tier. Remove the bound, or set 'searchType' to 'hybrid' to apply it to fused scores. | ${logFields('bound_declined_fusion', { namespace, tier: 'hybrid' })}`
     )
     return false
   }

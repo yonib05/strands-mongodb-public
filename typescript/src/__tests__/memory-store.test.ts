@@ -1098,16 +1098,26 @@ describe('MongoDBMemoryStore', () => {
       expectUntouched(collection)
     })
 
-    it('rejects a limit below 1 in options or in a query with a RangeError, naming the key', async () => {
+    it.each([-1, 1.5, NaN, Infinity])(
+      'rejects a query limit of %d with a RangeError, naming the key',
+      async (limit) => {
+        const { store, collection } = setup()
+
+        const error = await rejectionOf(store.search({ text: 'dark mode', limit }))
+
+        expect(error).toBeInstanceOf(RangeError)
+        expect(error.message).toContain(`'limit' is ${limit}`)
+        expectUntouched(collection)
+      }
+    )
+
+    it('rejects a limit below 1 in options with a RangeError, naming the key', async () => {
       const { store, collection } = setup()
 
-      const options = await rejectionOf(store.search('dark mode', { maxSearchResults: 0 }))
-      const query = await rejectionOf(store.search({ text: 'dark mode', limit: -1 }))
+      const error = await rejectionOf(store.search('dark mode', { maxSearchResults: 0 }))
 
-      expect(options).toBeInstanceOf(RangeError)
-      expect(options.message).toContain("'maxSearchResults' is 0")
-      expect(query).toBeInstanceOf(RangeError)
-      expect(query.message).toContain("'limit' is -1")
+      expect(error).toBeInstanceOf(RangeError)
+      expect(error.message).toContain("'maxSearchResults' is 0")
       expectUntouched(collection)
     })
   })

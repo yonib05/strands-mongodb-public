@@ -28,7 +28,7 @@ import {
 } from './index-specs.js'
 import { defaultLogger, logFields } from './logging.js'
 import { checkQueryKeys, hybridStages, SCORE_FIELD, textStages, vectorStages } from './pipeline.js'
-import { type PickedTier, SearchTiers } from './search-tiers.js'
+import { type PickedTier, type ScoreBound, SearchTiers } from './search-tiers.js'
 import { annotate, type SpanBase, traced } from './telemetry.js'
 import {
   DEFAULT_MAX_SEARCH_RESULTS,
@@ -47,19 +47,19 @@ export const DEFAULT_COLLECTION = 'memory'
 export const UNSCOPED = '__unscoped__'
 
 const MISSING_CONFIG =
-  "strands_mongodb: the memory store configuration has no 'config'. Set it to the MongoDBConfig naming the 'database' and a 'connectionString' or 'client'."
+  "strands_mongodb: the memory store configuration has no 'config'. Set it to a MongoDBConfig with 'database' and a 'connectionString' or 'client'."
 
 const MISSING_DATABASE =
-  "strands_mongodb: the connection config has no 'database'. Set it to the name of the database holding this store's collection."
+  "strands_mongodb: the connection config has no 'database'. Set it to the database holding this store's collection."
 
 const EMBEDDER_ON_AUTO_EMBED =
-  "strands_mongodb: 'embedder' is set, but this store is on the Atlas AutoEmbeddings path, where the deployment embeds the text. Remove 'embedder', or set 'embeddingDimensions' and 'similarity' in the connection config to embed client-side."
+  "strands_mongodb: 'embedder' is set, but without 'embeddingDimensions' and 'similarity' the deployment embeds the text (Atlas AutoEmbeddings). Remove 'embedder', or set both keys to embed client-side."
 
 // The server's code for a unique index violation, which a concurrent upsert losing the insert race reports.
 const DUPLICATE_KEY = 11000
 
 function notWritable(name: string, call: string): string {
-  return `strands_mongodb: the memory store '${name}' is not writable, so it does not accept ${call}. Set 'writable': true in its configuration to enable writes. It defaults to false so that a store built for retrieval does not start accepting model-distilled extraction writes, or deletions, that nobody asked for.`
+  return `strands_mongodb: the memory store '${name}' is not writable, so it does not accept ${call}. Set 'writable': true in its configuration to enable writes.`
 }
 
 // TypeScript's types do not reach a JavaScript caller, and an operator object here would become part of a query.
@@ -80,76 +80,24 @@ function objectId(memoryId: unknown): ObjectId {
   if (typeof memoryId !== 'string' || !/^[0-9a-f]{24}$/i.test(memoryId) || !ObjectId.isValid(memoryId)) {
     const rendered = typeof memoryId === 'string' ? `'${memoryId}'` : String(memoryId)
     throw new TypeError(
-      `strands_mongodb: 'memoryId' is ${rendered}, which is not a 24-character hex ObjectId. Pass the '_id' a search result carries in its metadata, which is where a deletable id comes from.`
+      `strands_mongodb: 'memoryId' is ${rendered}, which is not a 24-character hex ObjectId. Pass the '_id' from a search result's metadata.`
     )
   }
   return new ObjectId(memoryId)
 }
 
-/**
- * Merges a document's stored metadata with this package's reserved keys, the reserved keys winning.
- *
- * @param caller - `metadata` as the document carries it, or `undefined` when it carries none
- * @param reserved - The reserved keys and their values for this result
- * @param context - The store and namespace named in the collision log, and the logger it goes to
- * @returns A new object holding only JSON: stored BSON values are rendered as relaxed EJSON
- */
-export function mergeMetadata(
-  caller: Document | undefined,
-  reserved: Record<string, JSONValue>,
-  context: { storeName: string; namespace: string; logger: Logger }
-): Record<string, JSONValue> {
-  // Relaxed EJSON, so a stored `Date` or `ObjectId` reaches the caller as JSON rather than as an object the type cannot hold.
-  const merged = BSON.EJSON.serialize(caller ?? {}, { relaxed: true }) as Record<string, JSONValue>
-  const collisions = Object.keys(reserved)
-    .filter((key) => Object.hasOwn(merged, key))
-    .sort()
-  if (collisions.length > 0) {
-    context.logger.warn(
-      `strands_mongodb: metadata key(s) ${collisions.map((key) => `'${key}'`).join(', ')} on a document in the memory store '${context.storeName}' collide with the keys this package sets on every result, so the stored value(s) were dropped from the returned entry and this package's own value(s) kept. Rename them in whatever wrote them; a stored '_scope' that won would make a document report a scope it was not stored in. | ${logFields('reserved_key_collision', { namespace: context.namespace })}`
-    )
-  }
-  return { ...merged, ...reserved }
-}
-
-/** Where a search limit may come from, highest priority first. */
-export interface Limits {
-  /** `limit` from a `MongoDBSearchQuery`, if one was passed. */
-  query?: number | undefined
-  /** `maxSearchResults` from this call's `SearchOptions`. */
-  options?: number | undefined
-  /** The store's own `maxSearchResults`. */
-  instance?: number | undefined
-}
-
-/**
- * Resolves the result limit for one search. Every supplied value is checked, not only the winner.
- *
- * @param limits - The candidates; `query` ranks above `options` because it only arrives on a direct call
- * @returns The highest-priority value supplied, or `DEFAULT_MAX_SEARCH_RESULTS`
- * @throws RangeError if any supplied value is below 1, naming the key it came from
- */
-export function resolveLimit(limits: Limits): number {
-  const supplied: Array<[string, number | undefined]> = [
-    ['limit', limits.query],
-    ['maxSearchResults', limits.options],
-    ['maxSearchResults', limits.instance],
-  ]
-  for (const [name, value] of supplied) {
-    if (value !== undefined && value < 1) {
-      throw new RangeError(
-        `strands_mongodb: '${name}' is ${value}, and a search limit must be at least 1. A limit below 1 cannot return anything, so it is rejected here rather than sent to a server that would reject it.`
-      )
+// Every supplied limit is checked, not only the one that wins. The key names are the caller's, in priority order.
+function resolveLimit(limits: Array<[key: string, value: number | undefined]>): number {
+  for (const [key, value] of limits) {
+    if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+      throw new RangeError(`strands_mongodb: '${key}' is ${value} and must be an integer of at least 1.`)
     }
   }
-  return limits.query ?? limits.options ?? limits.instance ?? DEFAULT_MAX_SEARCH_RESULTS
+  return limits.find(([, value]) => value !== undefined)?.[1] ?? DEFAULT_MAX_SEARCH_RESULTS
 }
 
 /**
- * A Strands `MemoryStore` backed by MongoDB Atlas Vector Search and Atlas Search.
- *
- * Every read, write and delete is limited to this store's `scope` and `name`, which the package stamps and
- * filters itself and never takes from caller input. A store accepts writes only when `writable` is `true`.
+ * A Strands `MemoryStore` on MongoDB Atlas Vector Search and Atlas Search, limited to its own `scope` and `name`.
  *
  * @example
  * ```typescript
@@ -169,7 +117,6 @@ export class MongoDBMemoryStore implements MemoryStore {
   readonly maxScore?: number
   readonly ttlSeconds?: number
   // Non-enumerable, so `util.inspect` and `JSON.stringify` of a store never render the connection string.
-  declare private readonly _config: MongoDBMemoryStoreConfig
   declare private readonly _connectionConfig: MongoDBConfig
   private readonly _databaseName: string
   private readonly _collectionName: string
@@ -178,20 +125,22 @@ export class MongoDBMemoryStore implements MemoryStore {
   private readonly _searchType: SearchType
   private readonly _declaredFields: string[]
   private readonly _mode: VectorMode
-  private readonly _embedder: Embedder | undefined
+  // Set only on the manual-vector path, with the length its index declares.
+  private readonly _embedding: { embedder: Embedder; dimensions: number } | undefined
   private readonly _indexNames: { vector: string; text: string }
   // Whether a query may set both `text` and `vector`: only on the manual path, where `vector` has a meaning.
   private readonly _fusionPossible: boolean
+  private readonly _bound: ScoreBound | undefined
   private readonly _logger: Logger
   private readonly _tiers: SearchTiers
   private _initialized = false
 
   /**
    * @param config - The store's own fields plus the connection config under `config`
-   * @throws TypeError if `name`, `config` or `config.database` is missing, both score bounds are set, the
-   * configured `filter` is invalid, the vector keys contradict each other, or `embedder` is set on the
-   * AutoEmbeddings path
-   * @throws RangeError if `ttlSeconds` is negative or `maxSearchResults` is below 1
+   * @throws TypeError if `config` or `config.database` is missing, `name`, `scope` or `collection` is not a string,
+   * both score bounds are set, `filter` is invalid, the vector keys contradict each other, or `embedder` is set on
+   * the AutoEmbeddings path
+   * @throws RangeError if `ttlSeconds` is negative or `maxSearchResults` is not an integer of at least 1
    */
   constructor(config: MongoDBMemoryStoreConfig) {
     // Every check runs before `resolve`, so a config that fails leaves no connection pool behind.
@@ -213,12 +162,14 @@ export class MongoDBMemoryStore implements MemoryStore {
     if (config.maxScore !== undefined) this.maxScore = config.maxScore
     if (config.ttlSeconds !== undefined) this.ttlSeconds = config.ttlSeconds
     checkTtl(this.ttlSeconds)
-    resolveLimit({ instance: this.maxSearchResults })
+    resolveLimit([['maxSearchResults', this.maxSearchResults]])
     if (this.minScore !== undefined && this.maxScore !== undefined) {
       throw new TypeError(
-        `strands_mongodb: 'minScore' is ${this.minScore} and 'maxScore' is ${this.maxScore}, and the two are mutually exclusive: a floor and a ceiling on one similarity score describe a band, and this package applies one bound rather than a range. Keep whichever one you meant and remove the other.`
+        `strands_mongodb: 'minScore' is ${this.minScore} and 'maxScore' is ${this.maxScore}, and only one bound can be set. Remove one of them.`
       )
     }
+    if (this.minScore !== undefined) this._bound = { name: 'minScore', value: this.minScore }
+    else if (this.maxScore !== undefined) this._bound = { name: 'maxScore', value: this.maxScore }
 
     this._databaseName = connection.database
     this._collectionName = config.collection ?? DEFAULT_COLLECTION
@@ -227,27 +178,20 @@ export class MongoDBMemoryStore implements MemoryStore {
     this._searchType = connection.searchType || 'auto'
     // The index definition decides what is filterable, so configured and per-query filters share one list.
     this._declaredFields = declaredFilterFields(connection.filterFields ?? [])
-    if (this.filter !== undefined && Object.keys(this.filter).length > 0) {
-      validate(this.filter, { declaredFields: this._declaredFields })
-    }
+    if (this.filter !== undefined) validate(this.filter, { declaredFields: this._declaredFields })
 
     this._mode = vectorMode(connection)
-    this._embedder = config.embedder
-    if (this._embedder !== undefined && this._mode.autoEmbed) throw new TypeError(EMBEDDER_ON_AUTO_EMBED)
+    if (config.embedder !== undefined) {
+      if (this._mode.autoEmbed) throw new TypeError(EMBEDDER_ON_AUTO_EMBED)
+      this._embedding = { embedder: config.embedder, dimensions: this._mode.dimensions }
+    }
     const [vector, text] = memorySearchSpecs(connection)
     this._indexNames = { vector: vector.name, text: text.name }
     const searchType = this._searchType
     this._fusionPossible = !this._mode.autoEmbed && (searchType === 'auto' || searchType === 'hybrid')
 
-    Object.defineProperty(this, '_config', { value: config, enumerable: false })
     Object.defineProperty(this, '_connectionConfig', { value: connection, enumerable: false })
     this._logger = connection.logger ?? defaultLogger
-    const bound =
-      this.minScore !== undefined
-        ? { name: 'minScore' as const, value: this.minScore }
-        : this.maxScore !== undefined
-          ? { name: 'maxScore' as const, value: this.maxScore }
-          : undefined
     this._tiers = new SearchTiers({
       namespace: this._target,
       searchType,
@@ -255,7 +199,7 @@ export class MongoDBMemoryStore implements MemoryStore {
       specs: { vector, text },
       create: this._ensureIndexes,
       timeout: this._indexReadyTimeout,
-      bound,
+      bound: this._bound,
       logger: this._logger,
     })
     // Called only to fail fast on a config with no client or connection string.
@@ -263,12 +207,12 @@ export class MongoDBMemoryStore implements MemoryStore {
   }
 
   /**
-   * Probes the deployment and creates this store's indexes. Idempotent and safe to call concurrently; after
-   * the first call it returns at once unless a tier skipped under `auto` is due for a retry.
+   * Probes the deployment and prepares this store's indexes. Every operation calls it, so calling it is optional.
    *
-   * Under `auto` this never waits for an index build: building tiers are skipped and retried with backoff.
-   * A named `searchType` waits for its index, up to `indexReadyTimeout`. On a deployment without Atlas Search
-   * this logs a warning once per connection, and writes still work.
+   * @remarks
+   * Idempotent and safe to call concurrently. Calls on one connection run one at a time, and a named `searchType`
+   * holds its turn while it waits for its index, up to `indexReadyTimeout`. Under `auto` a building index is
+   * skipped instead and retried inside a later call: after 60 seconds, then at doubling intervals up to an hour.
    *
    * @throws StorageError if a driver call fails, the collection's collation is not binary, an existing index
    * conflicts, an index is missing and `ensureIndexes` is `false`, or `searchType` names a tier the deployment
@@ -291,11 +235,10 @@ export class MongoDBMemoryStore implements MemoryStore {
    */
   add(content: string, metadata?: Record<string, JSONValue>): Promise<MongoDBAddResult> {
     return this._run('add', 'adding a memory to', async () => {
-      // Before `initialize()`, so a read-only store rejects a write without connecting or creating an index.
       if (!this.writable) throw new TypeError(notWritable(this.name, 'add()'))
       await this.initialize()
       // Before the upsert, so a failed embedding stores nothing rather than a memory no vector search finds.
-      const vector = this._embedder === undefined ? undefined : await this._embed(content)
+      const vector = this._embedding === undefined ? undefined : await this._embed(this._embedding, content)
 
       // The server copies a selector's equality fields, `$eq` included, onto an inserted document; they are also the
       // unique index's key.
@@ -331,12 +274,17 @@ export class MongoDBMemoryStore implements MemoryStore {
   /**
    * Returns the memories that best match a query, most relevant first, from the first prepared tier that fits it.
    *
+   * @remarks
+   * Under `auto`, the first search on a store whose indexes are all still building waits for one, up to
+   * `indexReadyTimeout`. If none is ready by then, this and every later search throws `StorageError` until a retry
+   * inside `initialize()` finds one, which can be up to an hour after the build finishes.
+   *
    * @param query - A plain string, or a `MongoDBSearchQuery` carrying `text`, `vector`, `filter`, `limit`, `oversamplingFactor`
    * @param options - The SDK's per-call options; a query's `limit` wins over `maxSearchResults`
    * @returns Up to the resolved limit of entries, each with `_id`, `_relevanceScore`, `_searchType` and `_scope` in its metadata
    * @throws TypeError if the query sets neither or both vector keys where nothing fuses them, the filter is invalid,
    * or no prepared tier fits the query's shape
-   * @throws RangeError if a limit is below 1, or the candidate count is out of bounds
+   * @throws RangeError if a limit is not an integer of at least 1, or the candidate count is out of bounds
    * @throws StorageError if the deployment cannot search, no tier is ready, `initialize()` fails, or a driver call fails
    */
   search(query: string | MongoDBSearchQuery, options?: SearchOptions): Promise<MemoryEntry[]> {
@@ -346,37 +294,33 @@ export class MongoDBMemoryStore implements MemoryStore {
       const parts: MongoDBSearchQuery = typeof query === 'string' ? { text: query } : query
       let queryText = parts.text
       let queryVector = parts.vector
-      const callerFilter = parts.filter
 
-      const limit = resolveLimit({
-        query: parts.limit,
-        options: options?.maxSearchResults,
-        instance: this.maxSearchResults,
-      })
+      // A query's `limit` ranks above `options` because it only arrives on a direct call.
+      const limit = resolveLimit([
+        ['limit', parts.limit],
+        ['maxSearchResults', options?.maxSearchResults],
+        ['maxSearchResults', this.maxSearchResults],
+      ])
       // Only the mode-independent check; `vectorStages` runs the rest once the tier is known.
       checkQueryKeys({ queryText, queryVector, fusionPossible: this._fusionPossible })
-      if (callerFilter !== undefined && Object.keys(callerFilter).length > 0) {
-        validate(callerFilter, { declaredFields: this._declaredFields })
-      }
-      const queryFilter = compose([this.filter, callerFilter], { scope: this.scope, storeName: this.name })
+      if (parts.filter !== undefined) validate(parts.filter, { declaredFields: this._declaredFields })
+      const queryFilter = compose([this.filter, parts.filter], { scope: this.scope, storeName: this.name })
 
       await this.initialize()
       await this._tiers.waitForFirst(this._collection())
       const prepared = this._tiers.prepared
-      // Embedded only when the first tier is one that reads a vector and the caller supplied none.
       if (
-        this._embedder !== undefined &&
+        this._embedding !== undefined &&
         queryText !== undefined &&
         queryVector === undefined &&
         (prepared[0] === 'hybrid' || prepared[0] === 'vector')
       ) {
-        queryVector = await this._embed(queryText)
+        queryVector = await this._embed(this._embedding, queryText)
         // Kept for hybrid, which feeds `text` to `$search`; anywhere else both keys would be refused.
         if (!prepared.includes('hybrid')) queryText = undefined
       }
       const picked = this._tiers.pick(queryText, queryVector)
-      const { tier } = picked
-      annotate('strands_mongodb.search.tier', tier)
+      annotate('strands_mongodb.search.tier', picked.tier)
       const stages = this._stages(picked, { queryFilter, limit, oversamplingFactor: parts.oversamplingFactor })
 
       const documents = await this._collection().aggregate(stages).toArray()
@@ -384,15 +328,16 @@ export class MongoDBMemoryStore implements MemoryStore {
         // `?? 0`: a stage that projected nothing yields `null`, which would break the bound comparison.
         const score = Number(document[SCORE_FIELD] ?? 0)
         // `_scope` comes from this store, never from the document, so a document cannot report another scope.
-        const metadata = mergeMetadata(
-          document.metadata,
-          { _id: String(document._id), _relevanceScore: score, _searchType: tier, _scope: this.scope },
-          { storeName: this.name, namespace: this._target, logger: this._logger }
-        )
+        const metadata = this._metadata(document.metadata, {
+          _id: String(document._id),
+          _relevanceScore: score,
+          _searchType: picked.tier,
+          _scope: this.scope,
+        })
         return [score, { content: String(document[CONTENT_FIELD] ?? ''), storeName: this.name, metadata }]
       })
 
-      const results = this._withinBounds(scored)
+      const results = this._withinBound(scored)
       annotate('strands_mongodb.result_count', results.length)
       return results
     })
@@ -408,7 +353,6 @@ export class MongoDBMemoryStore implements MemoryStore {
    */
   delete(memoryId: string): Promise<number> {
     return this._run('delete', 'deleting a memory from', async () => {
-      // Writability first, so a read-only store says "not writable" rather than complaining about the id.
       if (!this.writable) throw new TypeError(notWritable(this.name, 'delete()'))
       const _id = objectId(memoryId)
 
@@ -442,15 +386,19 @@ export class MongoDBMemoryStore implements MemoryStore {
   /**
    * Returns the agent tools this store contributes, which is none.
    *
-   * @returns An empty array, which `MemoryManager` extends its tool list by
+   * @returns An empty array
    */
   getTools(): Tool[] {
     return []
   }
 
   /**
-   * Releases the connection shared by every store built from this config, closing the client only if this
-   * package created it. Idempotent; a later operation opens a fresh pool.
+   * Closes the pool shared by every store with the same connection identity, unless the client was injected.
+   *
+   * @remarks
+   * Idempotent, and not terminal: a later operation on any of those stores opens a fresh pool, which keeps the
+   * Node.js process alive until `close()` is called again. The store stays initialized, so that operation does not
+   * probe the deployment or check its indexes again.
    */
   close(): Promise<void> {
     return release(this._connectionConfig)
@@ -463,10 +411,8 @@ export class MongoDBMemoryStore implements MemoryStore {
     return { ids: document === null ? [] : [String(document._id)], inserted: 0, duplicates: 1 }
   }
 
-  private _embed(text: string): Promise<number[]> {
-    // The constructor refuses an embedder on the AutoEmbeddings path, so the mode here is the manual one.
-    const mode = this._mode as Extract<VectorMode, { autoEmbed: false }>
-    return embed(this._embedder!, text, { dimensions: mode.dimensions, setting: 'embeddingDimensions' })
+  private _embed(embedding: { embedder: Embedder; dimensions: number }, text: string): Promise<number[]> {
+    return embed(embedding.embedder, text, { dimensions: embedding.dimensions, setting: 'embeddingDimensions' })
   }
 
   private _stages(
@@ -482,33 +428,34 @@ export class MongoDBMemoryStore implements MemoryStore {
     if (picked.tier === 'hybrid') {
       return hybridStages({ ...vector, vectorIndexName, textIndexName, queryText: picked.text })
     }
-    // Both keys pass through: `vectorStages` checks the mode itself.
     return vectorStages({ ...vector, indexName: vectorIndexName, queryText: picked.text })
   }
 
-  // Client-side, because the tiers' scores are on different scales and a server-side bound would differ per tier.
-  private _withinBounds(scored: Array<[number, MemoryEntry]>): MemoryEntry[] {
-    const minimum = this.minScore
-    const maximum = this.maxScore
-    let name: 'minScore' | 'maxScore'
-    let bound: number
-    let kept: Array<[number, MemoryEntry]>
-    if (minimum !== undefined) {
-      name = 'minScore'
-      bound = minimum
-      kept = scored.filter(([score]) => score >= minimum)
-    } else if (maximum !== undefined) {
-      name = 'maxScore'
-      bound = maximum
-      kept = scored.filter(([score]) => score <= maximum)
-    } else {
-      return scored.map(([, entry]) => entry)
+  // The reserved keys win over a stored key of the same name, and stored BSON values become relaxed EJSON.
+  private _metadata(stored: Document | undefined, reserved: Record<string, JSONValue>): Record<string, JSONValue> {
+    const merged = BSON.EJSON.serialize(stored ?? {}, { relaxed: true }) as Record<string, JSONValue>
+    const collisions = Object.keys(reserved)
+      .filter((key) => Object.hasOwn(merged, key))
+      .sort()
+    if (collisions.length > 0) {
+      this._logger.warn(
+        `strands_mongodb: metadata key(s) ${collisions.map((key) => `'${key}'`).join(', ')} on a document in the memory store '${this.name}' are reserved, so the stored value(s) were left out of the returned entry. Rename them where they are written. | ${logFields('reserved_key_collision', { namespace: this._target })}`
+      )
     }
+    return { ...merged, ...reserved }
+  }
 
+  // Client-side, because the tiers' scores are on different scales and a server-side bound would differ per tier.
+  private _withinBound(scored: Array<[number, MemoryEntry]>): MemoryEntry[] {
+    const bound = this._bound
+    const kept =
+      bound === undefined
+        ? scored
+        : scored.filter(([score]) => (bound.name === 'minScore' ? score >= bound.value : score <= bound.value))
     // Logged only when the bound dropped something, so polling a corpus mongot has not indexed yet does not fill the log.
-    if (kept.length !== scored.length) {
+    if (bound !== undefined && kept.length !== scored.length) {
       this._logger.debug(
-        `strands_mongodb: ${name} ${bound} on ${this._target} kept ${kept.length} of ${scored.length} results (applied after the query). | ${logFields('score_bound_applied', { namespace: this._target })}`
+        `strands_mongodb: ${bound.name} ${bound.value} on ${this._target} kept ${kept.length} of ${scored.length} results (applied after the query). | ${logFields('score_bound_applied', { namespace: this._target })}`
       )
     }
     return kept.map(([, entry]) => entry)
