@@ -1784,16 +1784,17 @@ describe('MongoDBMemoryStore', () => {
   })
 
   describe('a client the driver closed after a failed first connection', () => {
-    it('replaces the client it built and initializes on the fresh one', async () => {
+    it('reconnects the client it built and initializes for every concurrent caller', async () => {
       const connection = { database: 'appdb', connectionString: freshUri(), logger: new RecordingLogger() }
       const store = new MongoDBMemoryStore({ name: 'facts', config: connection, writable: true })
       const dead = ConstructedMongoClient.built[0]!
       dead.db('appdb').collection('memory').db.listCollectionsError = new MongoTopologyClosedError()
 
+      await Promise.all([store.initialize(), store.initialize(), store.initialize()])
       await expect(store.add(CONTENT)).resolves.toMatchObject({ inserted: 1 })
 
-      expect(dead.closeCount).toBe(1)
-      expect(ConstructedMongoClient.built).toHaveLength(2)
+      expect(ConstructedMongoClient.built).toHaveLength(1)
+      expect(dead.closeCount).toBe(0)
       await close(connection)
     })
 

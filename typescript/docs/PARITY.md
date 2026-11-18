@@ -31,7 +31,7 @@ both languages.
 - `name`, `scope`, `collection`, `database` and the storage `prefix` are checked to be strings at construction, and a search query to be a string or an object, which Python's type hints do not enforce at runtime.
 - Numeric settings are checked for more than their range: `NaN`, `Infinity`, and a fraction where a count is needed are `RangeError`s. That includes a `limit` times `oversamplingFactor` that is not a whole number, which Python sends and the server refuses with code 8.
 - A filter value that is `undefined`, a function, a symbol, or an object with a `toBSON` method is a `TypeError`. The Node driver would leave the first three out of the query or send the result of `toBSON` in the object's place, neither of which pymongo can do.
-- The Node driver closes a client for good when its first connection fails, where pymongo selects a server again on every operation. A client this package built is replaced and the operation runs once more on the new one. An injected client is reported as closed in a `StorageError`, and its owner reopens it with `connect()`.
+- The Node driver closes a client when its first connection fails, where pymongo selects a server again on every operation. A client this package built is reconnected and the operation runs once more. An injected client is reported as closed in a `StorageError`, and its owner reopens it with `connect()`.
 - `search` picks its tier from one reading of the prepared tiers, taken before it embeds the query. Python reads them again after embedding, so a retry in between can leave it with keys no remaining tier accepts.
 
 ## Measurements

@@ -13,6 +13,7 @@ import {
   type Document,
   type MongoClient,
   MongoNetworkTimeoutError,
+  MongoNotConnectedError,
   MongoTopologyClosedError,
 } from 'mongodb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -1385,20 +1386,36 @@ describe('MongoDBStorage', () => {
   })
 
   describe('a client the driver closed after a failed first connection', () => {
-    it('replaces the client it built and answers from the fresh one', async () => {
+    it('reconnects the client it built and answers every concurrent caller', async () => {
       const config = { database: 'appdb', connectionString: freshUri() }
       const storage = new MongoDBStorage(config)
       const dead = ConstructedMongoClient.built[0]!
       dead.db('appdb').collection('storage').failure = new MongoTopologyClosedError()
 
-      await expect(storage.read('a/b')).resolves.toBeNull()
+      await expect(Promise.all([storage.read('a'), storage.read('b'), storage.read('c')])).resolves.toEqual([
+        null,
+        null,
+        null,
+      ])
 
-      expect(dead.closeCount).toBe(1)
-      expect(ConstructedMongoClient.built).toHaveLength(2)
+      expect(ConstructedMongoClient.built).toHaveLength(1)
+      expect(dead.closeCount).toBe(0)
       await close(config)
     })
 
-    it('replaces it when the closed topology surfaces inside a wrapped probe', async () => {
+    it('reconnects when the driver reports the client as not connected', async () => {
+      const config = { database: 'appdb', connectionString: freshUri() }
+      const storage = new MongoDBStorage(config)
+      const dead = ConstructedMongoClient.built[0]!
+      dead.db('appdb').collection('storage').failure = new MongoNotConnectedError('Client must be connected')
+
+      await expect(storage.read('a/b')).resolves.toBeNull()
+
+      expect(dead.connectCount).toBe(1)
+      await close(config)
+    })
+
+    it('reconnects when the closed topology surfaces inside a wrapped probe', async () => {
       const config = { database: 'appdb', connectionString: freshUri() }
       const storage = new MongoDBStorage(config)
       const dead = ConstructedMongoClient.built[0]!
@@ -1406,22 +1423,23 @@ describe('MongoDBStorage', () => {
 
       await storage.ensureIndexes()
 
-      expect(dead.closeCount).toBe(1)
-      expect(ConstructedMongoClient.built).toHaveLength(2)
+      expect(dead.connectCount).toBe(1)
       await close(config)
     })
 
-    it('reports the failure of the fresh client, not the closed topology', async () => {
+    it('reports why reconnecting failed to every concurrent caller, not the closed topology', async () => {
       const config = { database: 'appdb', connectionString: freshUri() }
       const storage = new MongoDBStorage(config)
       const dead = ConstructedMongoClient.built[0]!
       dead.db('appdb').collection('storage').failure = new MongoTopologyClosedError()
-      vi.spyOn(FakeCollection.prototype, 'findOne').mockRejectedValueOnce(networkFailure('still unreachable'))
+      dead.connectError = networkFailure('still unreachable')
 
-      const error = await rejectionOf(storage.read('a/b'))
+      const errors = await Promise.all(['a', 'b', 'c'].map((key) => rejectionOf(storage.read(key))))
 
-      expect(error).toBeInstanceOf(StorageError)
-      expect(error.message).toContain('still unreachable')
+      for (const error of errors) {
+        expect(error).toBeInstanceOf(StorageError)
+        expect(error.cause).toBe(dead.connectError)
+      }
       await close(config)
     })
 

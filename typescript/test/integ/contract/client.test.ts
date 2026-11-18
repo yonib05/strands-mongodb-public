@@ -3,6 +3,7 @@ import { type Document, MongoClient, MongoServerSelectionError } from 'mongodb'
 import { expect, it, vi } from 'vitest'
 import { rejectionOf } from '../../../src/__fixtures__/errors.js'
 import { close, resolve } from '../../../src/client.js'
+import { MongoDBMemoryStore } from '../../../src/memory-store.js'
 import { MongoDBStorage } from '../../../src/storage.js'
 import { PACKAGE_VERSION } from '../../../src/version.js'
 import { tierUri } from '../../env.js'
@@ -45,27 +46,38 @@ describeTier('contract', 'client', () => {
     }
   })
 
-  it('makes a fresh attempt after a failed first connection, which the driver alone answers with a closed topology', async () => {
-    const unreachable = new MongoDBStorage({
+  it('answers every caller with the connection error after a failed first connection, where the driver alone reports a closed client', async () => {
+    const config = {
       database: 'strands_mongodb_contract',
       connectionString: 'mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=300',
-    })
+    }
+    const storage = new MongoDBStorage(config)
+    const store = new MongoDBMemoryStore({ name: 'facts', config })
     const reachable = new MongoDBStorage({
       database: 'strands_mongodb_contract',
       connectionString: tierUri('contract')!,
     })
     try {
-      const first = await rejectionOf(unreachable.read('a'))
-      expect(first).toBeInstanceOf(StorageError)
-      expect(first.cause).toBeInstanceOf(MongoServerSelectionError)
-
+      const first = await rejectionOf(storage.read('a'))
+      const concurrent = await Promise.all(
+        [
+          storage.read('a'),
+          storage.read('b'),
+          storage.read('c'),
+          store.initialize(),
+          store.initialize(),
+          store.initialize(),
+        ].map(rejectionOf)
+      )
       await expect(reachable.read('absent')).resolves.toBeNull()
+      const later = await rejectionOf(store.initialize())
 
-      const second = await rejectionOf(unreachable.read('a'))
-      expect(second).toBeInstanceOf(StorageError)
-      expect(second.cause).toBeInstanceOf(MongoServerSelectionError)
+      for (const error of [first, ...concurrent, later]) {
+        expect(error).toBeInstanceOf(StorageError)
+        expect(error.cause).toBeInstanceOf(MongoServerSelectionError)
+      }
     } finally {
-      await Promise.all([unreachable.close(), reachable.close()])
+      await Promise.all([storage.close(), reachable.close()])
     }
   })
 })

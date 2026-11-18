@@ -510,6 +510,9 @@ export class FakeMongoClient {
   readonly options: { retryWrites: boolean; metadata: { driver: { name: string; version: string } } }
   readonly appended: DriverInfo[] = []
   closeCount = 0
+  connectCount = 0
+  /** Thrown by `connect()` once set, as a deployment that is still unreachable would. */
+  connectError: Error | undefined
 
   constructor(options: { retryWrites?: boolean } = {}) {
     this.options = {
@@ -544,6 +547,17 @@ export class FakeMongoClient {
         return collection
       },
     }
+  }
+
+  // Reopens the topology: drops the failures a test planted to model a closed one.
+  async connect(): Promise<this> {
+    this.connectCount += 1
+    if (this.connectError !== undefined) throw this.connectError
+    for (const collection of this.collections.values()) {
+      collection.failure = undefined
+      collection.db.listCollectionsError = undefined
+    }
+    return this
   }
 
   async close(): Promise<void> {

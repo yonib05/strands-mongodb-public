@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { type Logger, StorageError } from '@strands-agents/sdk'
 import { type Collection, MongoClient, type MongoClientOptions } from 'mongodb'
-import { clientClosed, namespaceOf } from './driver-errors.js'
+import { clientClosed, guard, namespaceOf } from './driver-errors.js'
 import { defaultLogger, logFields } from './logging.js'
 import { rankFusionSupport, requireBinaryComparison, searchSupport } from './probes.js'
 import { event } from './telemetry.js'
@@ -154,15 +154,15 @@ export async function close(config: MongoDBConfig): Promise<void> {
 }
 
 /**
- * Runs `work`, and once more on a fresh client when the one this package built turns out to be closed.
+ * Runs `work`, and once more after reconnecting when the client this package built turns out to be closed.
  *
  * @remarks
- * The driver closes a client for good when its first connection fails, where pymongo selects a server again.
+ * The driver closes a client when its first connection fails, where pymongo selects a server again.
  *
  * @param config - The configuration `work` resolves its connection from, on every run
  * @param work - The operation
  * @returns Whatever `work` resolves to
- * @throws StorageError if the closed client was injected, since only its owner can reopen it
+ * @throws StorageError if reconnecting fails, or the closed client was injected, since only its owner can reopen it
  */
 export async function onLiveClient<T>(config: MongoDBConfig, work: () => Promise<T>): Promise<T> {
   const connection = resolve(config)
@@ -171,14 +171,10 @@ export async function onLiveClient<T>(config: MongoDBConfig, work: () => Promise
   } catch (error) {
     if (!clientClosed(error)) throw error
     if (config.client !== undefined) throw new StorageError(INJECTED_CLIENT_CLOSED, { cause: error })
-    const key = identity(config.connectionString ?? '', config.clientOptions)
-    const registered = constructed.get(key)
-    // Absent after `close()`: the caller released the pool, so nothing reopens it here.
-    if (registered === undefined) throw error
-    if (registered === connection) {
-      constructed.delete(key)
-      await connection.client.close()
-    }
+    // No longer registered after `close()`: the caller released the pool, so nothing reopens it here.
+    if (constructed.get(identity(config.connectionString ?? '', config.clientOptions)) !== connection) throw error
+    // Concurrent callers share one attempt, and each sees why it failed.
+    await guard(connection.client.connect(), 'reconnecting')
     return work()
   }
 }

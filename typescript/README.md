@@ -124,9 +124,9 @@ one client and pool when their configs hold the same `client`, or equal `connect
 print the connection string. Each client is registered once through the driver's `appendMetadata`, so
 server logs show the driver as `nodejs|Strands-MongoDB`. Your own `driverInfo` and `appName` are kept.
 
-The driver closes a client for good when its first connection fails. A client the package built is
-replaced, so the next operation connects again. An injected client is yours to reopen with `connect()`:
-until then every operation throws a `StorageError` saying it is closed.
+The driver closes a client when its first connection fails. The package reconnects a client it built,
+so the next operation tries the deployment again. An injected client is yours to reopen with
+`connect()`: until then every operation throws a `StorageError` saying it is closed.
 
 Authentication is the driver's. `mongodb` 7 accepts `MONGODB-AWS`, `MONGODB-OIDC`, `MONGODB-X509`,
 `GSSAPI`, `PLAIN`, `SCRAM-SHA-1` and `SCRAM-SHA-256`, as `authMechanism` in the connection string or in

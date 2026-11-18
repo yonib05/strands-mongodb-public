@@ -41,7 +41,7 @@ The modules under `typescript/src/`:
 | `checks.ts` | The string and number checks every configuration key goes through |
 | `embedding.ts` | Calling an `Embedder` and checking the vector's length |
 | `keys.ts` | Key normalization and the tokenizer, copied from the SDK |
-| `client.ts` | The shared connections, keyed by connection identity, and the replacement of one the driver closed |
+| `client.ts` | The shared connections, keyed by connection identity, and the reconnecting of one the driver closed |
 | `driver-errors.ts` | Turning a driver error into a `StorageError` |
 | `telemetry.ts`, `logging.ts` | Spans and attributes, and the log line's fields |
 | `types.ts`, `version.ts` | The public types and constants, and the package version, which `npm run build` writes from `package.json` |
