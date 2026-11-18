@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { StorageError } from '@strands-agents/sdk'
 import { Binary, type Db, type Document, MongoClient } from 'mongodb'
 import { afterAll, beforeAll, expect, it } from 'vitest'
-import { close } from '../../../src/client.js'
+import { close, resolve } from '../../../src/client.js'
 import { EXPIRES_FIELD } from '../../../src/index-specs.js'
 import { tokenize } from '../../../src/keys.js'
 import { MAX_DOCUMENT_BYTES, MongoDBStorage } from '../../../src/storage.js'
@@ -130,6 +130,25 @@ describeTier('contract', 'storage', () => {
     expect(await storage.list('sessions/')).toEqual([])
   })
 
+  it('AT-027: lists by code point, a key holding U+FFFF before one holding U+1F600', async () => {
+    const storage = store('codepoints')
+    await storage.write('a/\u{1f600}', bytes('astral'))
+    await storage.write('a/\uffff', bytes('bmp'))
+
+    expect(await storage.list('a/')).toEqual(['a/\uffff', 'a/\u{1f600}'])
+  })
+
+  it('AT-025, AT-031: list and deletePrefix take a string prefix, so user1 also reaches user10', async () => {
+    const storage = store('stringprefix')
+    for (const key of ['user1/a', 'user10/a', 'user2/a']) await storage.write(key, bytes('payload'))
+
+    expect(await storage.list('user1')).toEqual(['user1/a', 'user10/a'])
+    expect(await storage.list('user1/')).toEqual(['user1/a'])
+    expect(await storage.deletePrefix('user1')).toBe(2)
+    expect(await storage.deletePrefix('')).toBe(1)
+    expect(await storage.list('')).toEqual([])
+  })
+
   it('AT-030, AT-229: a namespaced store prefixes writes, strips them from list, scores without its prefix and cannot see a sibling', async () => {
     const storage = store('namespace')
     const name = created.at(-1)!
@@ -178,6 +197,20 @@ describeTier('contract', 'storage', () => {
       { key: 'sessions/s1/state.json', score: 1 },
     ])
     expect(await storage.search('needle')).toEqual([])
+  })
+
+  it('AT-032b: the server lowercases ASCII only, so a key word holding a non-ASCII capital matches no query', async () => {
+    const storage = store('asciilower')
+    await storage.write('ÉCOLE/notes', bytes('payload'))
+    await storage.write('école/lower', bytes('payload'))
+
+    const [lowered] = await db
+      .aggregate([{ $documents: [{}] }, { $project: { text: { $toLower: 'ÉCOLE' } } }])
+      .toArray()
+    expect(lowered?.text).toBe('École')
+    expect(await storage.search('école')).toEqual([{ key: 'école/lower', score: 1 }])
+    expect(await storage.search('École')).toEqual([{ key: 'école/lower', score: 1 }])
+    expect(await storage.search('NOTES')).toEqual([{ key: 'ÉCOLE/notes', score: 1 }])
   })
 
   it('AT-032e: the search scan is covered by the _id index and fetches no documents', async () => {
@@ -238,12 +271,12 @@ describeTier('contract', 'storage', () => {
     const target = `${DATABASE}.${created.at(-1)!}`
 
     expect(await storage.read('absent')).toBeNull()
-    expect(storage['_connection'].binaryKeys.has(target)).toBe(false)
+    expect(resolve(config).binaryKeys.has(target)).toBe(false)
 
     await storage.write('k', bytes('v'))
     expect(await storage.read('k')).toEqual(bytes('v'))
 
-    expect(storage['_connection'].binaryKeys.has(target)).toBe(true)
+    expect(resolve(config).binaryKeys.has(target)).toBe(true)
   })
 
   it('AT-029, AT-038b: an oversized payload is refused before the driver sees it, naming both sizes', async () => {
