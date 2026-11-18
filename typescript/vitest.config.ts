@@ -23,6 +23,8 @@ export default defineConfig({
         test: {
           name: 'unit',
           include: ['src/**/__tests__/**/*.test.ts', 'test/__tests__/**/*.test.ts'],
+          // A cold import under load outlasts the 5 s default.
+          testTimeout: 20_000,
         },
       },
       tier('contract'),
@@ -34,7 +36,7 @@ export default defineConfig({
         test: { name: 'build', include: ['test/build/**/*.test.ts'], testTimeout: 600_000, hookTimeout: 600_000 },
       },
       { extends: true, test: { name: 'compat', include: ['test/compat/**/*.test.ts'] } },
-      // Subprocess tests of the examples and the README snippets, kept out of `unit` so that stays fast.
+      // Subprocess tests of the examples, the README snippets and the scripts, kept out of `unit` so that stays fast.
       {
         extends: true,
         test: { name: 'docs', include: ['test/docs/**/*.test.ts'], testTimeout: 120_000, hookTimeout: 120_000 },

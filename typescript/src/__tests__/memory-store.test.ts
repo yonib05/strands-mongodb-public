@@ -44,6 +44,9 @@ const MONGO_7 = { version: '7.0.12', versionArray: [7, 0, 12, 0] }
 
 const NO_SEARCH_CODE = 31082
 
+// At least one interval of the readiness poll.
+const POLL_MS = 5000
+
 const SPECS = Object.fromEntries(memorySearchSpecs({ database: 'appdb' }).map((spec) => [spec.name, spec]))
 
 // The query for every vector-tier test, aligned with the seeded vectors on the first axis.
@@ -737,7 +740,10 @@ describe('MongoDBMemoryStore', () => {
       reporting(collection, 'PENDING', 'text_index')
 
       const settled = rejectionOf(store.initialize())
-      await vi.advanceTimersByTimeAsync((READY_TIMEOUT_SECONDS + 1) * 1000)
+      // The clock jumps past the deadline between two polls, where stepping would run every poll of the default wait.
+      await vi.advanceTimersByTimeAsync(POLL_MS)
+      vi.setSystemTime(Date.now() + READY_TIMEOUT_SECONDS * 1000)
+      await vi.advanceTimersByTimeAsync(POLL_MS)
       const error = await settled
 
       expect(error.message).toContain(`waited ${READY_TIMEOUT_SECONDS}s`)

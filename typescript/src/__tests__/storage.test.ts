@@ -1272,7 +1272,10 @@ describe('MongoDBStorage', () => {
     async function timedOut(storage: MongoDBStorage, seconds: number): Promise<Error> {
       vi.useFakeTimers()
       const pending = rejectionOf(storage.ensureIndexes())
-      await vi.advanceTimersByTimeAsync(seconds * 1000)
+      // The clock jumps past the deadline between two polls, where stepping would run every poll of the wait.
+      await vi.advanceTimersByTimeAsync(5000)
+      vi.setSystemTime(Date.now() + seconds * 1000)
+      await vi.advanceTimersByTimeAsync(5000)
       return pending
     }
 
