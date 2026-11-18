@@ -73,7 +73,7 @@ describeTier('contract', 'storage', () => {
     await client.close()
   })
 
-  it('AT-020, AT-021, AT-023, AT-024: writes, reads and deletes round trip, empty payload and astral key included', async () => {
+  it('AT-020, AT-021, AT-023, AT-024: writes, reads and deletes round trip, empty and 1 MiB payloads and astral key included', async () => {
     const storage = store('roundtrip')
 
     await storage.write('a/b', bytes('first'))
@@ -82,12 +82,15 @@ describeTier('contract', 'storage', () => {
     await storage.write('a/😀', bytes('smile'))
     const every = new Uint8Array(256).map((_, index) => index)
     await storage.write('a/bytes', every)
+    const large = new Uint8Array(1024 * 1024).map((_, index) => index % 251)
+    await storage.write('a/large', large)
 
     expect(await storage.read('a/b')).toEqual(bytes('second'))
     expect(await storage.read('a/empty')).toEqual(new Uint8Array(0))
     expect((await storage.read('a/empty'))?.constructor).toBe(Uint8Array)
     expect(await storage.read('a/😀')).toEqual(bytes('smile'))
     expect(await storage.read('a/bytes')).toEqual(every)
+    expect(Buffer.compare((await storage.read('a/large'))!, large)).toBe(0)
     expect(await storage.read('never/written')).toBeNull()
     expect(await storage.list('a/😀')).toEqual(['a/😀'])
 
@@ -96,7 +99,7 @@ describeTier('contract', 'storage', () => {
     await storage.delete('a/b')
 
     expect(await storage.read('a/b')).toBeNull()
-    expect(await storage.list('')).toEqual(['a/bytes', 'a/empty', 'a/😀'])
+    expect(await storage.list('')).toEqual(['a/bytes', 'a/empty', 'a/large', 'a/😀'])
   })
 
   it('AT-022: a read the server refuses throws a StorageError chaining the driver error, rather than returning null', async () => {

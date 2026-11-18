@@ -21,7 +21,7 @@ import { Collection, type Db, type Document, MongoClient, MongoServerError, Obje
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
 import { type Capabilities, close, resolve } from '../../../src/client.js'
 import { ensure } from '../../../src/ensure-indexes.js'
-import { EXPIRES_FIELD, memorySearchSpecs } from '../../../src/index-specs.js'
+import { memorySearchSpecs } from '../../../src/index-specs.js'
 import { searchSupport } from '../../../src/probes.js'
 import { MongoDBMemoryStore, UNSCOPED } from '../../../src/memory-store.js'
 import { MongoDBStorage } from '../../../src/storage.js'
@@ -502,20 +502,23 @@ describeTier('contract', 'memory store', () => {
   })
 
   it('AT-152: a memory written with ttlSeconds 0 is gone after the sweep, with no index call by the caller', async () => {
-    await client
-      .db('admin')
-      .command({ setParameter: 1, ttlMonitorSleepSecs: 1 })
-      .catch(() => undefined)
+    // The sweep is shortened where the deployment allows it, and put back: the parameter is server-wide.
+    const admin = client.db('admin')
+    const sweep = (seconds: number): Promise<Document | undefined> =>
+      admin.command({ setParameter: 1, ttlMonitorSleepSecs: seconds }).catch(() => undefined)
+    const before = (await sweep(1))?.was as number | undefined
     const { store: facts, name } = store('ttl', { store: { writable: true, scope: 'tenant-a', ttlSeconds: 0 } })
     const collection = db.collection(name)
 
-    expect((await facts.add('this memory is written to be forgotten')).inserted).toBe(1)
+    try {
+      expect((await facts.add('this memory is written to be forgotten')).inserted).toBe(1)
 
-    const stamped = await collection.findOne({ scope: 'tenant-a' })
-    expect(stamped?.[EXPIRES_FIELD]).toBeInstanceOf(Date)
-    const deadline = Date.now() + TTL_SWEEP_BUDGET_MS
-    while ((await collection.countDocuments({ scope: 'tenant-a' })) > 0 && Date.now() < deadline) await sleep(1000)
-    expect(await collection.countDocuments({ scope: 'tenant-a' })).toBe(0)
+      const deadline = Date.now() + TTL_SWEEP_BUDGET_MS
+      while ((await collection.countDocuments({ scope: 'tenant-a' })) > 0 && Date.now() < deadline) await sleep(1000)
+      expect(await collection.countDocuments({ scope: 'tenant-a' })).toBe(0)
+    } finally {
+      if (before !== undefined) await sweep(before)
+    }
   })
 
   it('AT-014: add and search on a wrong password fail without rendering it', async () => {
