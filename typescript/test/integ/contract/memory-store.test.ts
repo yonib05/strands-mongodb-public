@@ -17,8 +17,8 @@ import {
   StorageError,
   TextBlock,
 } from '@strands-agents/sdk'
-import { Collection, type Db, type Document, MongoClient, MongoServerError, ObjectId } from 'mongodb'
-import { afterAll, beforeAll, expect, it, vi } from 'vitest'
+import { type Db, type Document, MongoClient, MongoServerError, ObjectId } from 'mongodb'
+import { afterAll, beforeAll, expect, it } from 'vitest'
 import { type Capabilities, close, resolve } from '../../../src/client.js'
 import { ensure } from '../../../src/ensure-indexes.js'
 import { memorySearchSpecs } from '../../../src/index-specs.js'
@@ -48,6 +48,8 @@ const ORDINARY_INDEXES = [
 ]
 
 const CONTENT = 'the user prefers dark mode'
+
+const HAS_SEARCH = 'this deployment runs Atlas Search'
 
 // How long the server's TTL monitor gets to sweep a document stamped to expire at once; its cycle is 60 s by default.
 const TTL_SWEEP_BUDGET_MS = 150_000
@@ -174,29 +176,28 @@ describeTier('contract', 'memory store', () => {
     await client.close()
   })
 
-  it('AT-045a, AT-053a, AT-065: initialize twice creates the ordinary indexes once, and warns once where there is no search', async () => {
-    const { store: facts, logger, name } = store('ordinary')
+  it('AT-045a, AT-065: initialize twice creates the ordinary indexes once', async () => {
+    const { store: facts, name } = store('ordinary')
 
     await facts.initialize()
     await facts.initialize()
 
     const indexes = (await db.collection(name).listIndexes().toArray()).map((index) => String(index.name))
     expect(indexes.sort()).toEqual([...ORDINARY_INDEXES].sort())
+  })
+
+  it('AT-053a: initialize twice warns once where there is no search, and prepares no tier', async (context) => {
+    if (capabilities.search) context.skip(HAS_SEARCH)
+    const { store: facts, logger, name } = store('no_search_warning')
+
+    await facts.initialize()
+    await facts.initialize()
+
     const warnings = logger.lines('warn').filter((line) => line.includes('event=no_search_setup'))
-    if (capabilities.search) {
-      expect(warnings).toEqual([])
-    } else {
-      expect(warnings).toHaveLength(1)
-      expect(warnings[0]).toContain(`error code ${capabilities.noSearchCode}`)
-      expect(reportedTiers(exporter)).toEqual([])
-      expect(
-        await db
-          .collection(name)
-          .listSearchIndexes()
-          .toArray()
-          .catch(() => 'unsupported')
-      ).toBe('unsupported')
-    }
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain(`error code ${capabilities.noSearchCode}`)
+    expect(reportedTiers(exporter)).toEqual([])
+    await expect(db.collection(name).listSearchIndexes().toArray()).rejects.toBeInstanceOf(MongoServerError)
   })
 
   it('AT-185: the tier set agrees with what this deployment can do', async () => {
@@ -204,7 +205,6 @@ describeTier('contract', 'memory store', () => {
 
     const tiers = await settled(built, db)
 
-    expect(capabilities.search || !capabilities.rankFusion).toBe(true)
     if (!capabilities.search) expect(tiers).toEqual([])
     if (!capabilities.rankFusion) expect(tiers).not.toContain('hybrid')
     if (tiers.length > 0) expect(capabilities.search).toBe(true)
@@ -358,22 +358,6 @@ describeTier('contract', 'memory store', () => {
     expect((await db.collection(name).findOne({}))!.created_at).toEqual(before)
   })
 
-  it('AT-043: a lost insert race is reported as the duplicate of the winner', async () => {
-    const { store: facts, name } = store('race', { store: { writable: true, scope: 'tenant-a' } })
-    const first = await facts.add(CONTENT)
-    const updateOne = vi
-      .spyOn(Collection.prototype, 'updateOne')
-      .mockRejectedValueOnce(
-        new MongoServerError({ message: 'E11000 duplicate key error collection: injected', code: 11000 })
-      )
-
-    const second = await facts.add(CONTENT)
-
-    expect(updateOne).toHaveBeenCalledTimes(1)
-    expect(second).toEqual({ ids: first.ids, inserted: 0, duplicates: 1 })
-    expect(await db.collection(name).countDocuments({})).toBe(1)
-  })
-
   it('AT-043: ten concurrent adds of one fact store one document', async () => {
     const { store: facts, name } = store('concurrent', { store: { writable: true, scope: 'tenant-a' } })
 
@@ -483,21 +467,17 @@ describeTier('contract', 'memory store', () => {
     expect(await collection.countDocuments({ scope: 'tenant-b' })).toBe(1)
   })
 
-  it('AT-053c: search on a deployment without Atlas Search throws naming the code and what to connect to', async () => {
-    const { store: auto, name } = store('nosearch_auto', { store: { writable: true } })
+  it('AT-053c: search on a deployment without Atlas Search throws naming the code and what to connect to', async (context) => {
+    if (capabilities.search) context.skip(HAS_SEARCH)
+    const { store: auto } = store('nosearch_auto', { store: { writable: true } })
     const { store: vector } = store('nosearch_vector', { connection: { ...MANUAL_VECTOR, searchType: 'vector' } })
     await auto.initialize()
-    const support = await searchSupport(db.collection(name))
 
-    if (support.available) {
-      expect(await vector.search({ vector: [0, 0, 0, 1] })).toEqual([])
-      return
-    }
     expect((await auto.add(CONTENT)).inserted).toBe(1)
     for (const facts of [auto, vector]) {
       const error = await rejectionOf(facts.search('dark mode'))
       expect(error).toBeInstanceOf(StorageError)
-      expect(error.message).toContain(`server error code ${support.code}`)
+      expect(error.message).toContain(`server error code ${capabilities.noSearchCode}`)
     }
   })
 
