@@ -47,9 +47,8 @@ export async function ensure(collection: Collection, options: EnsureOptions): Pr
     ...namespaceAttributes(collection),
     'strands_mongodb.indexes.mode': create ? 'ensure' : 'verify',
   }
-  // Rethrown outside the span, so the caller's lost interest is not recorded as an error.
-  let abandoned: WaitAbandoned | undefined
-  await span('strands_mongodb.indexes.ensure', attributes, async () => {
+  // Returned and rethrown outside the span, so the caller's lost interest is not recorded as an error.
+  const abandoned = await span('strands_mongodb.indexes.ensure', attributes, async () => {
     let created = 0
     try {
       if (ordinary.length > 0) created += await ensureOrdinary(collection, ordinary, create, logger)
@@ -67,10 +66,11 @@ export async function ensure(collection: Collection, options: EnsureOptions): Pr
         }
         await waitUntilReady(collection, [...building, ...missing], { timeout, logger, signal })
       }
+      return undefined
     } catch (error) {
       if (!(error instanceof WaitAbandoned)) throw error
       annotate('strands_mongodb.indexes.outcome', 'abandoned')
-      abandoned = error
+      return error
     } finally {
       annotate('strands_mongodb.indexes.created', created)
     }
@@ -316,8 +316,6 @@ interface Wait {
   spec: SearchIndexSpec
   span: OpenSpan
   status?: string
-  // How the span ends. `at` is set once the index is ready, so its span does not run on while siblings build.
-  end: SpanEnd
 }
 
 // Every pending index is read each round, so a failure or an abort surfaces within one interval.
@@ -329,8 +327,13 @@ async function waitUntilReady(
   const { timeout, logger, signal } = options
   const deadline = Date.now() + timeout * 1000
   const attributes = namespaceAttributes(collection)
-  const waits: Wait[] = specs.map((spec) => ({ spec, span: open('strands_mongodb.indexes.wait', attributes), end: {} }))
-  let pending = waits
+  let pending: Wait[] = specs.map((spec) => ({ spec, span: open('strands_mongodb.indexes.wait', attributes) }))
+  // How the spans still open end: with no outcome when a sibling's failure or an abort cuts them short.
+  let end: SpanEnd = {}
+  const settle = (wait: Wait, result: SpanEnd): void => {
+    wait.span.end(result)
+    pending = pending.filter((other) => other !== wait)
+  }
   try {
     for (;;) {
       checkAborted(
@@ -338,11 +341,17 @@ async function waitUntilReady(
         pending.map((wait) => wait.spec),
         signal
       )
-      for (const wait of pending) await poll(collection, wait, logger)
-      pending = pending.filter((wait) => wait.end.at === undefined)
+      for (const wait of pending) {
+        const ready = await isReady(collection, wait, logger).catch((error: unknown) => {
+          settle(wait, { error })
+          throw error
+        })
+        // Ended here, so a ready index's span does not run on while its siblings build.
+        if (ready) settle(wait, { attributes: { 'strands_mongodb.indexes.outcome': 'ready' } })
+      }
       if (pending.length === 0) return
       if (Date.now() >= deadline) {
-        for (const wait of pending) wait.end = { attributes: { 'strands_mongodb.indexes.outcome': 'timed_out' } }
+        end = { attributes: { 'strands_mongodb.indexes.outcome': 'timed_out' } }
         const stuck = pending.map((wait) => `${wait.spec.name} is ${wait.status}`).join(', ')
         throw new SearchIndexNotReady(
           `strands_mongodb: waited ${timeout}s for ${pending.length} search index(es) on ${namespaceOf(collection)} to report READY: ${stuck}. Retry to keep waiting, or read the status with db.${collection.collectionName}.getSearchIndexes().`
@@ -351,20 +360,7 @@ async function waitUntilReady(
       await sleep(POLL_INTERVAL_MS, signal)
     }
   } finally {
-    // The one place a wait span ends. One cut short by a sibling's failure or an abort ends with no outcome.
-    for (const wait of waits) wait.span.end(wait.end)
-  }
-}
-
-// Reads one index once, recording on `wait` how its span should end if this read settles it.
-async function poll(collection: Collection, wait: Wait, logger: Logger): Promise<void> {
-  try {
-    if (await isReady(collection, wait, logger)) {
-      wait.end = { attributes: { 'strands_mongodb.indexes.outcome': 'ready' }, at: Date.now() }
-    }
-  } catch (error) {
-    wait.end = { error }
-    throw error
+    for (const wait of pending) wait.span.end(end)
   }
 }
 

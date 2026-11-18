@@ -166,15 +166,6 @@ describe('open', () => {
       expect(recorded.status.code).toBe(SpanStatusCode.UNSET)
     })
 
-    it('ends at the time it is given', () => {
-      const at = Date.now() + 5000
-
-      open('strands_mongodb.indexes.wait', {}).end({ at })
-
-      const [seconds, nanoseconds] = one('strands_mongodb.indexes.wait').endTime
-      expect(seconds * 1000 + Math.floor(nanoseconds / 1e6)).toBe(at)
-    })
-
     it('marks a failure by class alone', () => {
       const wait = open('strands_mongodb.indexes.wait', {})
 

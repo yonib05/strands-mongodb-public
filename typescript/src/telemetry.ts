@@ -113,8 +113,6 @@ export interface SpanEnd {
   attributes?: Attributes
   /** Marks the span as failed by this error's class. */
   error?: unknown
-  /** End time in epoch milliseconds. Defaults to now. */
-  at?: number
 }
 
 /** A span ended by hand, for work that spans several rounds of a loop rather than one function. */
@@ -133,10 +131,10 @@ export interface OpenSpan {
 export function open(name: SpanName, attributes: Attributes): OpenSpan {
   const current = tracer().startSpan(name, { kind: SpanKind.INTERNAL, attributes })
   return {
-    end: ({ attributes: final = {}, error, at } = {}): void => {
+    end: ({ attributes: final = {}, error } = {}): void => {
       current.setAttributes(final)
       if (error !== undefined) mark(current, error)
-      current.end(at)
+      current.end()
     },
   }
 }
