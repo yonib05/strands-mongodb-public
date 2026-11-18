@@ -9,7 +9,8 @@ MongoDB storage and memory backends for the [Strands Agents](https://strandsagen
 
 Both classes are also exported from the package root. The documents and indexes are the ones the
 [Python package](https://github.com/mongodb/strands-mongodb/tree/main/python) writes, so both can share a
-collection.
+collection. [PARITY.md](https://github.com/mongodb/strands-mongodb/blob/main/typescript/docs/PARITY.md)
+lists where the two behave differently.
 
 ## Install
 
@@ -49,7 +50,10 @@ try {
 
 ### Memory
 
-Needs an Atlas cluster with an embedding model registered. Atlas embeds the text, so you handle no vectors.
+Needs an Atlas cluster with an embedding model registered: see
+[Automated Embedding](https://www.mongodb.com/docs/vector-search/crud-embeddings/automated-embedding/)
+in the Atlas documentation. Atlas embeds the text, so you handle no vectors. An Atlas CLI local deployment
+has no model to register: there, [supply your own vectors](#supplying-your-own-vectors).
 
 <!-- run: autoembed -->
 ```ts
@@ -120,6 +124,10 @@ one client and pool when their configs hold the same `client`, or equal `connect
 print the connection string. Each client is registered once through the driver's `appendMetadata`, so
 server logs show the driver as `nodejs|Strands-MongoDB`. Your own `driverInfo` and `appName` are kept.
 
+The driver closes a client for good when its first connection fails. A client the package built is
+replaced, so the next operation connects again. An injected client is yours to reopen with `connect()`:
+until then every operation throws a `StorageError` saying it is closed.
+
 Authentication is the driver's. `mongodb` 7 accepts `MONGODB-AWS`, `MONGODB-OIDC`, `MONGODB-X509`,
 `GSSAPI`, `PLAIN`, `SCRAM-SHA-1` and `SCRAM-SHA-256`, as `authMechanism` in the connection string or in
 the options of an injected client. `GSSAPI` needs the `kerberos` package and `MONGODB-AWS` needs
@@ -149,8 +157,9 @@ the options of an injected client. `GSSAPI` needs the `kerberos` package and `MO
 
 ### `MongoDBMemoryStoreConfig`
 
-The first five keys are the SDK's `MemoryStoreConfig`. `name`, `scope` and `collection` must be strings,
-or the constructor throws `TypeError`.
+The first five keys are the SDK's `MemoryStoreConfig`. `name`, `scope`, `collection` and the connection's
+`database` must be strings, or the constructor throws `TypeError`. A number that is `NaN` or infinite
+throws `RangeError`.
 
 <!-- keys: MongoDBMemoryStoreConfig -->
 | Key | Type | Required | Default | What it does |
@@ -163,7 +172,7 @@ or the constructor throws `TypeError`.
 | `config` | `MongoDBConfig` | yes | | The connection. |
 | `collection` | `string` | no | `memory` | Collection holding this store's documents. |
 | `scope` | `string` | no | `__unscoped__` | Tenant boundary, stored on every write and matched on every read. Absent or `''` is the shared scope `UNSCOPED`. |
-| `filter` | `Record<string, unknown>` | no | | Extra predicate for search and delete. It can only narrow. Paths must be in `filterFields`. |
+| `filter` | `Record<string, unknown>` | no | | Field paths mapped to the exact values they must equal, applied to search and delete. It can only narrow. Paths must be in `filterFields`, and operators such as `$gte` throw `TypeError`. |
 | `minScore` | `number` | no | | Drops results scoring below it, after the search. |
 | `maxScore` | `number` | no | | Drops results scoring above it. Excludes `minScore`. |
 | `ttlSeconds` | `number` | no | | Seconds a memory lives from its first `add`. `0` expires at the next TTL sweep. Negative throws `RangeError`. |
@@ -220,14 +229,20 @@ stored. `maxResults` and `oversamplingFactor` both default to 10.
 
 ### Methods
 
-`read()` returns `null` for an absent key. `list()` returns keys in ascending byte order.
-`deletePrefix()`, `delete()` and `deleteAll()` return the number of documents removed. `namespace(prefix)`
-returns a `MongoDBStorage` over the same collection, scoped under the prefix. `add()` returns a
-`MongoDBAddResult` with `ids`, `inserted` and `duplicates`: content already stored is a duplicate, not a
-second document.
+<!-- methods -->
+`MongoDBStorage`: `read()` returns `null` for an absent key, and `list()` returns keys in ascending byte
+order. `write()` and `delete()` return nothing. `deletePrefix()` returns the number of documents removed.
+`namespace(prefix)` returns a `MongoDBStorage` over the same collection, scoped under the prefix. An
+invalid key or prefix throws `StorageError`: at once from the constructor and `namespace()`, and after
+the collation check from an operation.
 
-A database failure throws the SDK's `StorageError`, with the namespace in the message and the driver's
-error as `cause`. An invalid argument throws `TypeError` or `RangeError` before anything is sent.
+`MongoDBMemoryStore`: `delete()` and `deleteAll()` return the number of documents removed. `add()`
+returns a `MongoDBAddResult` with `ids`, `inserted` and `duplicates`: content already stored is a
+duplicate, not a second document. An invalid option, query or `memoryId` throws `TypeError` or
+`RangeError`.
+
+A database failure in either class throws the SDK's `StorageError`, with the namespace in the message
+and the driver's error as `cause`.
 
 The root also exports the constants `DEFAULT_COLLECTION`, `DEFAULT_MAX_SEARCH_RESULTS`,
 `DEFAULT_OVERSAMPLING_FACTOR`, `TIER_RETRY_SECONDS`, `TIER_RETRY_MAX_SECONDS`, `MAX_KEY_BYTES`,
@@ -393,7 +408,7 @@ The collation check is required: a collection whose default collation is not bin
 | Document size | 16 MB. Larger throws `StorageError` before the write. | `MAX_DOCUMENT_BYTES` |
 | An empty result can hide a failure | `MemoryManager` logs a failed store search as a warning and returns the other stores' results. | `MongoDBMemoryStore.search()` |
 | Searches can fail after a slow index build | Under `auto`, if no tier is ready within `indexReadyTimeout` on the first search, searches throw `StorageError` until a retry finds one. Retries double from 60 seconds up to an hour. | `MongoDBMemoryStore.search()` |
-| Vector candidates per query | 10000. A `limit` times `oversamplingFactor` above it throws `RangeError`. | `oversamplingFactor` |
+| Vector candidates per query | 10000. A `limit` times `oversamplingFactor` above it, or not a whole number, throws `RangeError`. | `oversamplingFactor` |
 | Vector dimensions | 8192 when you supply the vectors. | `embeddingDimensions` |
 
 ## Observability

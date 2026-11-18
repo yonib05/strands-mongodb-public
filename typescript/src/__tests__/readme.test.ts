@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MemoryStoreConfig } from '@strands-agents/sdk'
 import { AuthMechanism } from 'mongodb'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
 import {
   blocks,
   EXECUTABLE_LANGUAGES,
@@ -28,9 +28,9 @@ import {
   VECTOR_FIELD,
 } from '../index-specs.js'
 import type { LogEvent } from '../logging.js'
-import { DEFAULT_COLLECTION, UNSCOPED } from '../memory-store.js'
+import { DEFAULT_COLLECTION, type MongoDBMemoryStore, UNSCOPED } from '../memory-store.js'
 import { RANK_FUSION_PENALTY } from '../pipeline.js'
-import { MAX_DOCUMENT_BYTES, MAX_KEY_BYTES } from '../storage.js'
+import { MAX_DOCUMENT_BYTES, MAX_KEY_BYTES, type MongoDBStorage } from '../storage.js'
 import { ATTRIBUTES, type EventName, type SpanName } from '../telemetry.js'
 import {
   DEFAULT_MAX_SEARCH_RESULTS,
@@ -341,6 +341,24 @@ describe('AT-095: the documented values are the values', () => {
     const passage = markedSection('manual-vectors')
     expect(passage).toContain(`\`${VECTOR_FIELD}\``)
     expect(passage).toContain('`embedder`')
+  })
+})
+
+describe('the Methods section states what the classes declare', () => {
+  // The type assertions run under `npm run type-check`, so a changed return type fails there.
+  it('says which methods return a count and which return nothing', () => {
+    const passage = markedSection('methods').replace(/\s+/g, ' ')
+
+    expectTypeOf<MongoDBStorage['write']>().returns.resolves.toBeVoid()
+    expectTypeOf<MongoDBStorage['delete']>().returns.resolves.toBeVoid()
+    expect(passage).toContain('`write()` and `delete()` return nothing')
+    expectTypeOf<MongoDBStorage['deletePrefix']>().returns.resolves.toBeNumber()
+    expect(passage).toContain('`deletePrefix()` returns the number of documents removed')
+    expectTypeOf<MongoDBMemoryStore['delete']>().returns.resolves.toBeNumber()
+    expectTypeOf<MongoDBMemoryStore['deleteAll']>().returns.resolves.toBeNumber()
+    expect(passage).toContain(
+      '`MongoDBMemoryStore`: `delete()` and `deleteAll()` return the number of documents removed'
+    )
   })
 })
 
