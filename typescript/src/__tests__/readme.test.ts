@@ -28,7 +28,7 @@ import {
   VECTOR_FIELD,
 } from '../index-specs.js'
 import type { LogEvent } from '../logging.js'
-import { DEFAULT_COLLECTION } from '../memory-store.js'
+import { DEFAULT_COLLECTION, UNSCOPED } from '../memory-store.js'
 import { RANK_FUSION_PENALTY } from '../pipeline.js'
 import { MAX_DOCUMENT_BYTES, MAX_KEY_BYTES } from '../storage.js'
 import { ATTRIBUTES, type EventName, type SpanName } from '../telemetry.js'
@@ -170,24 +170,21 @@ const LOG_EVENTS = {
   rank_fusion_probe_failed: true,
 } satisfies Record<LogEvent, true>
 
+// Limits rows that quote a value, by the name in their last column.
 const TRACEABLE_VALUES: Record<string, string[]> = {
   MAX_KEY_BYTES: [String(MAX_KEY_BYTES)],
   MAX_DOCUMENT_BYTES: [`${MAX_DOCUMENT_BYTES / 1024 / 1024} MB`, String(MAX_DOCUMENT_BYTES)],
-  DEFAULT_MAX_SEARCH_RESULTS: [String(DEFAULT_MAX_SEARCH_RESULTS)],
-  DEFAULT_OVERSAMPLING_FACTOR: [String(DEFAULT_OVERSAMPLING_FACTOR)],
-  MAX_DIMENSIONS: [String(MAX_DIMENSIONS)],
-  MAX_NUM_CANDIDATES: [String(MAX_NUM_CANDIDATES)],
-  READY_TIMEOUT_SECONDS: [String(READY_TIMEOUT_SECONDS)],
+  embeddingDimensions: [String(MAX_DIMENSIONS)],
+  oversamplingFactor: [String(MAX_NUM_CANDIDATES)],
 }
 
+// Limits rows about a behaviour, which no constant states.
 const TRACEABLE_IDS = new Set([
-  'MongoDBConfig',
-  'MongoDBStorage.close()',
-  'MongoDBMemoryStore.close()',
-  'MongoDBMemoryStore.add()',
-  'MongoDBMemoryStore.search()',
-  'Storage.list()',
+  'close()',
+  'MongoDBStorage.list()',
+  'MongoDBStorage.search()',
   'MongoDBStorage.ensureIndexes()',
+  'MongoDBMemoryStore.search()',
 ])
 
 function renderedCommands(): { create: string[]; drop: string[] } {
@@ -311,15 +308,19 @@ describe('AT-095: the documented values are the values', () => {
     }
   })
 
-  it('states every default a reader plans around', () => {
-    for (const value of [
-      DEFAULT_EMBEDDING_MODEL,
-      DEFAULT_VECTOR_INDEX_NAME,
-      DEFAULT_TEXT_INDEX_NAME,
-      DEFAULT_COLLECTION,
-    ]) {
-      expect(README).toContain(value)
-    }
+  it.each([
+    ['MongoDBConfig', 'indexReadyTimeout', READY_TIMEOUT_SECONDS],
+    ['MongoDBConfig', 'embeddingModel', DEFAULT_EMBEDDING_MODEL],
+    ['MongoDBConfig', 'vectorIndexName', DEFAULT_VECTOR_INDEX_NAME],
+    ['MongoDBConfig', 'textIndexName', DEFAULT_TEXT_INDEX_NAME],
+    ['MongoDBMemoryStoreConfig', 'collection', DEFAULT_COLLECTION],
+    ['MongoDBMemoryStoreConfig', 'maxSearchResults', DEFAULT_MAX_SEARCH_RESULTS],
+    ['MongoDBMemoryStoreConfig', 'scope', UNSCOPED],
+    ['MongoDBSearchQuery', 'limit', DEFAULT_MAX_SEARCH_RESULTS],
+    ['MongoDBSearchQuery', 'oversamplingFactor', DEFAULT_OVERSAMPLING_FACTOR],
+  ])('states the default of %s.%s', (marker, key, value) => {
+    const row = tableRows(`keys: ${marker}`).find((cells) => cells[0] === `\`${key}\``)
+    expect(row?.[3]).toBe(`\`${value}\``)
   })
 
   it('lists every reserved metadata key', () => {
