@@ -10,7 +10,7 @@ interface Job {
   needs?: string[]
   environment?: { name: string }
   permissions?: unknown
-  steps: { uses?: string; run?: string }[]
+  steps: { uses?: string; run?: string; with?: Record<string, unknown> }[]
 }
 
 interface Workflow {
@@ -91,6 +91,15 @@ describe('release-typescript.yml', () => {
 
     expect(uses.length).toBeGreaterThan(0)
     expect(uses.filter((action) => !/@[0-9a-f]{40}$/.test(action))).toEqual([])
+  })
+
+  it('refuses a tag whose commit is not on main, before any other job can publish it', () => {
+    const [first] = jobs(release)
+    const upstream = (job: Job): string[] => (job.needs ?? []).flatMap((id) => [id, ...upstream(release.jobs[id]!)])
+
+    expect(stepIndex(first!, 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main')).not.toBe(-1)
+    expect(first!.steps[0]).toMatchObject({ with: { 'fetch-depth': 0 } })
+    expect(upstream(release.jobs.publish!)).toContain(Object.keys(release.jobs)[0])
   })
 
   it('publishes only from the npm environment, after the gated tiers, without provenance', () => {
