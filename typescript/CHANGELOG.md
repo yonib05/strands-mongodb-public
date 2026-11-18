@@ -1,7 +1,7 @@
 # Changelog
 
 This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html). No version has been released yet.
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
@@ -21,8 +21,9 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Vers
   `MongoDBStorage` needs `ensureIndexes()` called once.
 - `ensureIndexes: false`, which verifies the indexes and reports a missing or conflicting one with the
   `db.runCommand` lines that fix it.
-- Runtime validation for JavaScript callers: `name`, `scope` and `collection` must be strings
-  (`TypeError`), and limits must be integers of at least 1 (`RangeError`).
+- Runtime validation for JavaScript callers: `name`, `scope`, `collection`, `database` and `prefix` must
+  be strings (`TypeError`), numeric settings must be finite, and counts must be integers (`RangeError`).
+- Recovery from a failed first connection: a client the package built is replaced on the next operation.
 - `Strands-MongoDB` and the package version in each client's handshake metadata. `appName` and
   `driverInfo` are left to the application.
 - OpenTelemetry spans for every public operation and the index work it causes, through

@@ -9,23 +9,30 @@ The Python package releases separately, on `python-v` tags. See
 ## The version comes from the tag
 
 `package.json` carries `0.0.1-development` on `main` and that never changes. The release run writes the
-version from the tag with `npm version --no-git-tag-version`: `typescript-v0.1.0` becomes `0.1.0`.
-Nothing is committed back.
+version from the tag with `npm version --no-git-tag-version`: `typescript-v0.1.0` becomes `0.1.0`. The
+build that follows copies it into `src/version.ts`, which is what the package reports in the driver
+handshake and the tracer scope. Nothing is committed back.
 
 ## The first release
 
-The first version is published by hand, because an npm token scoped to this package cannot be created
-before the package exists.
+The first version goes through the same workflow as every later one, so the tarball that is published
+is the one the jobs tested. Three things have to exist first.
 
-1. Create the `npm` environment in the repository settings, with required reviewers. A job that names a
-   missing environment makes GitHub create one with no reviewers.
-2. In the commit you tag, delete the "Installing the TypeScript package before its first release" section
-   from the root `CONTRIBUTING.md` and the sentence in the root `README.md` that links to it.
-   `npm run check` stays green.
-3. Follow [Before you tag](#before-you-tag), then [Publishing by hand](#publishing-by-hand).
-4. Create a granular npm token for `strands-mongodb` with publish rights and add it to the `npm`
-   environment as `NPM_TOKEN`. npm limits the lifetime of a write token, so check its expiry before each
-   later tag.
+1. The `npm` environment in the repository settings, with required reviewers. A job that names a missing
+   environment makes GitHub create one with no reviewers.
+2. `NPM_TOKEN` in that environment. A granular token cannot be scoped to a package that does not exist,
+   so create a short-lived one with read and write access to all packages of the account or
+   organisation that is to own `strands-mongodb`. After the first publish, replace it with one scoped to
+   the package. npm limits the lifetime of a write token, so check its expiry before each later tag.
+3. The name. `strands-mongodb` is unclaimed on npm today (`npm view strands-mongodb` answers E404), and
+   the first publish claims it for the token's owner. Anyone can take it until then. To claim it before
+   `0.1.0` is ready, tag a prerelease such as `typescript-v0.1.0-rc.1`: it runs the same workflow and
+   lands on the `next` dist-tag.
+
+In the commit you tag, delete what describes the package as unpublished: the "Installing the TypeScript
+package before its first release" section of the root `CONTRIBUTING.md`, the sentence in the root
+`README.md` that links to it, and the words "is unreleased too, and" in the root `README.md`, leaving
+"It releases on its own `typescript-v` tag". `npm run check` stays green. Then follow [Before you tag](#before-you-tag) and [Tagging](#tagging).
 
 While the repository is private, the links in `README.md` and the `repository`, `homepage` and `bugs`
 URLs in `package.json` do not resolve for npm users. Nothing in the package depends on them.
@@ -66,23 +73,13 @@ The first two jobs run side by side. Each later job needs the ones before it.
 The publish job reads `NPM_TOKEN` as `NODE_AUTH_TOKEN`. No other job sees a secret.
 
 `--provenance` is off. Provenance needs a public source repository, and this one is private, so the
-flag would make the publish fail. Turn it on in the publish step when the repository is public. Trusted
-publishing over OIDC can replace the token once the package exists on npm.
-
-## Publishing by hand
-
-From a clean checkout of the tag, in `typescript/`, after the steps under [Before you tag](#before-you-tag):
-
-```bash
-npm ci
-npm version --no-git-tag-version 0.1.0
-STRANDS_MONGODB_BUILD_TIER=1 npm run test:build
-npm publish
-git checkout package.json package-lock.json
-```
-
-`publishConfig` in `package.json` sends the publish to the public registry with public access, whatever
-the machine's default registry is. A prerelease needs `--tag next`.
+flag would make the publish fail. Turning it on when the repository is public takes `--provenance` on
+both `npm publish` lines and `permissions: id-token: write` beside `contents: read` on the publish job.
+Two assertions in `test/__tests__/ci.test.ts` forbid exactly that: "grants read access only, and raises
+no permission on any job", and the `--provenance` line of "publishes only from the npm environment,
+after the gated tiers, without provenance". Change both in the same commit as the workflow, so they
+allow `id-token: write` on the publish job and nowhere else. Trusted publishing over OIDC, which can
+replace the token once the package exists on npm, needs the same permission and the same two changes.
 
 ## When it goes wrong
 
