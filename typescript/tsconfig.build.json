@@ -3,7 +3,8 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "declaration": true
+    "declaration": true,
+    "stripInternal": true
   },
   "include": ["src"],
   "exclude": ["**/__tests__/**", "**/__fixtures__/**"]

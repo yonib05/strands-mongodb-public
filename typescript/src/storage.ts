@@ -18,7 +18,7 @@ export const MAX_KEY_BYTES = 1024
 export const MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 
 const MISSING_DATABASE =
-  "strands_mongodb: the configuration has no 'database'. Set it to the name of the database holding this store's collection."
+  "strands_mongodb: the configuration has no 'database'. Set it to the database holding this store's collection."
 
 // Not `\w+`: MongoDB's `\w` is ASCII-only, so `münchen` would split and `日本語` would vanish. This is the SDK tokenizer's class.
 const WORD = '[\\p{L}\\p{N}_]+'
@@ -31,7 +31,7 @@ export interface MongoDBStorageOptions {
   prefix?: string
   /** Lifetime of written documents in seconds. Stamps `expires_at` only; `ensureIndexes()` creates the index that acts on it. */
   ttlSeconds?: number | undefined
-  /** What `search` runs instead of the default key-only scan. */
+  /** What `search` runs instead of scoring keys. Without one, payloads are never searched. */
   searchStrategy?: SearchStrategy<MongoDBStorage> | undefined
 }
 
@@ -47,14 +47,8 @@ function reason(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function hasIndexSpec(strategy: unknown): strategy is { indexSpec(): SearchIndexSpec } {
-  return (
-    typeof strategy === 'object' &&
-    strategy !== null &&
-    'indexSpec' in strategy &&
-    typeof strategy.indexSpec === 'function'
-  )
-}
+// A strategy may declare the search index it queries, as `MongoDBVectorSearchStrategy` does.
+type IndexedStrategy = SearchStrategy<MongoDBStorage> & { indexSpec?(): SearchIndexSpec }
 
 /**
  * A `Storage` backed by a MongoDB collection: one document per key, the prefixed key in `_id`.
@@ -75,11 +69,11 @@ export class MongoDBStorage implements Storage {
   private readonly _collectionName: string
   private readonly _prefix: string
   private readonly _ttlSeconds: number | undefined
-  private readonly _searchStrategy: SearchStrategy<MongoDBStorage> | undefined
+  private readonly _searchStrategy: IndexedStrategy | undefined
   private readonly _logger: Logger
 
   /**
-   * @param config - Connection and deployment settings; instances sharing a config share one pool
+   * @param config - Connection and deployment settings; instances with the same connection identity share one pool
    * @param options - Collection, prefix, TTL and search strategy
    * @throws TypeError if `config` has no `database`, or neither `client` nor `connectionString`
    * @throws RangeError if `ttlSeconds` is negative
@@ -113,7 +107,7 @@ export class MongoDBStorage implements Storage {
    * @param key - The key to write under; `a//b` and `a/b` are one key
    * @param data - The bytes to store, round-tripped unchanged including an empty payload
    * @throws StorageError if the key is invalid or too long, the document exceeds {@link MAX_DOCUMENT_BYTES}, the
-   * collation is not binary, the write fails, or the search strategy fails to index the (already stored) value
+   * collation is not binary, the write fails, or the search strategy fails to index the already stored value
    */
   write(key: string, data: Uint8Array): Promise<void> {
     return this._run('write', 'writing', key, async () => {
@@ -159,7 +153,7 @@ export class MongoDBStorage implements Storage {
       if (document === null) return null
       // The driver hands back a `Binary` by default and a `Buffer` under `promoteBuffers`; both become one type here.
       const data: unknown = document.data
-      return new Uint8Array(data instanceof Binary ? data.buffer : (data as Uint8Array))
+      return new Uint8Array(data instanceof Binary ? data.value() : (data as Uint8Array))
     })
   }
 
@@ -178,7 +172,10 @@ export class MongoDBStorage implements Storage {
   }
 
   /**
-   * Returns every key under the prefix `query`, in ascending byte order, without this instance's prefix.
+   * Returns every key that starts with `query`, in ascending byte order, without this instance's prefix.
+   *
+   * @remarks
+   * A string prefix, not a path: `user1` also matches `user10/a`. End the prefix with `/` to match one path segment.
    *
    * @param query - A key prefix; `''` matches everything
    * @returns Full keys, not the part after `query`
@@ -199,8 +196,13 @@ export class MongoDBStorage implements Storage {
   }
 
   /**
-   * Ranks stored keys by how many of the query's tokens they contain, unless a `searchStrategy` is set.
-   * Only keys are scored, never payloads, in exchange for one covered aggregation.
+   * Runs the `searchStrategy`, or without one ranks stored keys by how many of the query's tokens they contain.
+   *
+   * @remarks
+   * Without a strategy only keys are scored, never payloads. The server lowercases ASCII letters only, so a key
+   * word holding a non-ASCII capital, such as `ÉCOLE`, matches no query. Because this method exists, SDK consumers
+   * such as `FileMemoryStore` call it in place of their own content keyword search: pass a `searchStrategy` to
+   * search content.
    *
    * @param query - A natural-language string; one that tokenizes to nothing returns `[]` without a round trip
    * @returns Matched keys with scores, highest first, ties in ascending key order; `data` is left unset
@@ -225,9 +227,14 @@ export class MongoDBStorage implements Storage {
   }
 
   /**
-   * Removes every key under `prefix` in one call. Not part of the `Storage` interface.
+   * Removes every key that starts with `prefix`, in one call. Not part of the `Storage` interface.
    *
-   * @param prefix - The key prefix to remove; `''` empties this instance's key space
+   * @remarks
+   * A string prefix, not a path: `deletePrefix('user1')` also removes `user10/a`. End the prefix with `/` to remove
+   * one path segment. `deletePrefix('')` removes every key under this instance's prefix: the whole collection when
+   * it has none.
+   *
+   * @param prefix - The key prefix to remove
    * @returns How many documents were removed
    * @throws StorageError if the prefix is invalid, the collation is not binary, or the delete fails
    */
@@ -260,8 +267,10 @@ export class MongoDBStorage implements Storage {
   }
 
   /**
-   * Creates the TTL index that makes `ttlSeconds` take effect, or verifies it when `ensureIndexes` is `false`.
-   * Nothing in this package calls it; call it once at startup. Idempotent.
+   * Creates, or with `ensureIndexes: false` verifies, the TTL index and the search index the strategy declares.
+   *
+   * @remarks
+   * Nothing in this package calls it, and without it `ttlSeconds` expires nothing. Call it once at startup. Idempotent.
    *
    * @throws StorageError if the collation is not binary, an index conflicts, something is missing in verify mode,
    * a strategy's search index fails or does not finish in time, or a driver call fails
@@ -269,10 +278,10 @@ export class MongoDBStorage implements Storage {
   ensureIndexes(): Promise<void> {
     return traced('storage', 'ensure_indexes', this._spanBase(), async () => {
       await this._requireBinaryKeys()
-      const strategy = this._searchStrategy
+      const spec = this._searchStrategy?.indexSpec?.()
       await ensure(this._collection(), {
         ordinary: storageSpecs(),
-        search: hasIndexSpec(strategy) ? [strategy.indexSpec()] : [],
+        search: spec === undefined ? [] : [spec],
         create: this._config.ensureIndexes ?? true,
         timeout: this._config.indexReadyTimeout ?? READY_TIMEOUT_SECONDS,
         logger: this._logger,
@@ -281,15 +290,18 @@ export class MongoDBStorage implements Storage {
   }
 
   /**
-   * Releases the pool shared by every instance built from this config, closing the client only if this package
-   * created it. Idempotent; a later operation opens a fresh pool.
+   * Closes the pool shared by every store with the same connection identity, unless the client was injected.
+   *
+   * @remarks
+   * Idempotent, and not terminal: a later operation on any of those stores opens a fresh pool, which keeps the
+   * Node.js process alive until `close()` is called again.
    */
   close(): Promise<void> {
     return release(this._config)
   }
 
   /**
-   * Returns the live collection, resolved through the registry on each call. For this package's search strategies.
+   * Returns the live collection, for this package's search strategies.
    *
    * @internal
    */
@@ -328,7 +340,7 @@ export class MongoDBStorage implements Storage {
 
   private _searchPipeline(tokens: Set<string>): Document[] {
     const stages: Document[] = []
-    // Bounded by the instance prefix, not the query: a covered IXSCAN on `_id_` instead of a COLLSCAN.
+    // With an instance prefix, bounded by it: a covered IXSCAN on `_id_` instead of a COLLSCAN.
     const range = this._rangeFor('')
     if (Object.keys(range).length > 0) stages.push({ $match: range })
     // Score the key the caller wrote, without the prefix. `$substrCP` counts code points, as `Array.from` does.
@@ -351,7 +363,6 @@ export class MongoDBStorage implements Storage {
     return stages
   }
 
-  // Only a verified collection is cached: an absent one may yet be created with any collation.
   private async _requireBinaryKeys(): Promise<void> {
     await this._connection.requireBinaryKeys(this._collection())
   }
@@ -379,7 +390,7 @@ export class MongoDBStorage implements Storage {
     const encoded = Buffer.byteLength(id, 'utf8')
     if (encoded > MAX_KEY_BYTES) {
       throw new StorageError(
-        `strands_mongodb: the key '${abbreviate(id)}' encodes to ${encoded} bytes, over the ${MAX_KEY_BYTES}-byte limit this package applies to keys in ${this._target}. The limit is counted in UTF-8 bytes rather than characters.`
+        `strands_mongodb: the key '${abbreviate(id)}' encodes to ${encoded} bytes, over the ${MAX_KEY_BYTES}-byte limit for keys in ${this._target}. The limit counts UTF-8 bytes, not characters.`
       )
     }
     return id

@@ -10,8 +10,8 @@ import { DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_OVERSAMPLING_FACTOR, type VectorSim
 /** Vector index name when none is given. Distinct from the memory store's `vector_index`. */
 export const DEFAULT_STORAGE_VECTOR_INDEX_NAME = 'storage_vector_index'
 
-/** Every `/`-terminated ancestor of a document's `_id`. `$vectorSearch` cannot filter on an `_id` range. */
-export const PREFIXES_FIELD = 'prefixes'
+// Holds every `/`-terminated ancestor of a document's `_id`, because `$vectorSearch` cannot filter on an `_id` range.
+const PREFIXES_FIELD = 'prefixes'
 
 /** Options for {@link MongoDBVectorSearchStrategy}. */
 export interface MongoDBVectorSearchStrategyOptions {
@@ -29,13 +29,8 @@ export interface MongoDBVectorSearchStrategyOptions {
   oversamplingFactor?: number
 }
 
-/**
- * Lists every `/`-terminated prefix of `documentId`, shortest first.
- *
- * @param documentId - A prefixed `_id`
- * @returns `a/` and `a/b/` for `a/b/c`
- */
-export function prefixesOf(documentId: string): string[] {
+// `a/` and `a/b/` for `a/b/c`.
+function prefixesOf(documentId: string): string[] {
   const parts = documentId.split('/').slice(0, -1)
   return parts.map((_, depth) => `${parts.slice(0, depth + 1).join('/')}/`)
 }
@@ -80,18 +75,21 @@ export class MongoDBVectorSearchStrategy implements SearchStrategy<MongoDBStorag
   constructor(options: MongoDBVectorSearchStrategyOptions) {
     const { embedder, dimensions, similarity, indexName = DEFAULT_STORAGE_VECTOR_INDEX_NAME } = options
     const { maxResults = DEFAULT_MAX_SEARCH_RESULTS, oversamplingFactor = DEFAULT_OVERSAMPLING_FACTOR } = options
-    if (!(dimensions >= 1 && dimensions <= MAX_DIMENSIONS)) {
-      throw new RangeError(`strands_mongodb: 'dimensions' is ${dimensions} and must be within 1..${MAX_DIMENSIONS}.`)
+    if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > MAX_DIMENSIONS) {
+      throw new RangeError(
+        `strands_mongodb: 'dimensions' is ${dimensions} and must be an integer within 1..${MAX_DIMENSIONS}.`
+      )
     }
     if (!(SIMILARITIES as readonly string[]).includes(similarity)) {
       throw new TypeError(
         `strands_mongodb: 'similarity' is '${String(similarity)}' and must be one of ${SIMILARITIES.join(', ')}.`
       )
     }
-    if (maxResults < 1 || oversamplingFactor < 1) {
-      throw new RangeError(
-        `strands_mongodb: 'maxResults' (${maxResults}) and 'oversamplingFactor' (${oversamplingFactor}) must both be at least 1.`
-      )
+    if (!Number.isInteger(maxResults) || maxResults < 1) {
+      throw new RangeError(`strands_mongodb: 'maxResults' is ${maxResults} and must be an integer of at least 1.`)
+    }
+    if (!(oversamplingFactor >= 1)) {
+      throw new RangeError(`strands_mongodb: 'oversamplingFactor' is ${oversamplingFactor} and must be at least 1.`)
     }
     const numCandidates = maxResults * oversamplingFactor
     if (numCandidates > MAX_NUM_CANDIDATES) {
@@ -111,6 +109,7 @@ export class MongoDBVectorSearchStrategy implements SearchStrategy<MongoDBStorag
    * Returns the vector index this strategy searches, for `MongoDBStorage.ensureIndexes`.
    *
    * @returns A `vectorSearch` index over `embedding` with `prefixes` declared filterable
+   * @internal
    */
   indexSpec(): SearchIndexSpec {
     return new SearchIndexSpec({
@@ -126,7 +125,7 @@ export class MongoDBVectorSearchStrategy implements SearchStrategy<MongoDBStorag
   }
 
   /**
-   * Embeds `data` and stores the vector on the document `storage.write` just replaced. Empty and non-UTF-8 data is skipped.
+   * Embeds `data` and stores the vector on the document `storage.write` just replaced. Skips empty and non-UTF-8 data.
    *
    * @param storage - The storage the value was written to
    * @param key - The normalized key, relative to `storage`
@@ -171,7 +170,7 @@ export class MongoDBVectorSearchStrategy implements SearchStrategy<MongoDBStorag
       return {
         key: String(document._id).slice(prefix.length),
         score: Number(document[SCORE_FIELD] ?? 0),
-        data: new Uint8Array(data instanceof Binary ? data.buffer : (data as Uint8Array)),
+        data: new Uint8Array(data instanceof Binary ? data.value() : (data as Uint8Array)),
       }
     })
   }

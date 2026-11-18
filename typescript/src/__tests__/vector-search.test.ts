@@ -10,7 +10,6 @@ import {
   DEFAULT_STORAGE_VECTOR_INDEX_NAME,
   MongoDBVectorSearchStrategy,
   type MongoDBVectorSearchStrategyOptions,
-  prefixesOf,
 } from '../vector-search.js'
 
 vi.mock('mongodb', async (importOriginal) => ({
@@ -83,8 +82,11 @@ describe('MongoDBVectorSearchStrategy', () => {
       [{ dimensions: 0 }, RangeError, "'dimensions' is 0"],
       [{ dimensions: MAX_DIMENSIONS + 1 }, RangeError, `'dimensions' is ${MAX_DIMENSIONS + 1}`],
       [{ similarity: 'manhattan' }, TypeError, "'similarity' is 'manhattan'"],
-      [{ maxResults: 0 }, RangeError, "'maxResults' (0)"],
-      [{ oversamplingFactor: 0 }, RangeError, "'oversamplingFactor' (0)"],
+      [{ dimensions: 1.5 }, RangeError, "'dimensions' is 1.5"],
+      [{ maxResults: 0 }, RangeError, "'maxResults' is 0"],
+      [{ maxResults: NaN }, RangeError, "'maxResults' is NaN"],
+      [{ oversamplingFactor: 0 }, RangeError, "'oversamplingFactor' is 0"],
+      [{ oversamplingFactor: NaN }, RangeError, "'oversamplingFactor' is NaN"],
       [{ maxResults: 101, oversamplingFactor: 100 }, RangeError, 'numCandidates would be 10100'],
     ])('rejects %o', (overrides, type, message) => {
       const error = errorOf(() => strategy(undefined, overrides as Partial<MongoDBVectorSearchStrategyOptions>))
@@ -185,8 +187,12 @@ describe('MongoDBVectorSearchStrategy', () => {
       ['k', []],
       ['a/k', ['a/']],
       ['a/b/c', ['a/', 'a/b/']],
-    ])('lists every slash-terminated prefix of %s, shortest first', (documentId, expected) => {
-      expect(prefixesOf(documentId)).toEqual(expected)
+    ])('stores every slash-terminated prefix of %s, shortest first', async (key, expected) => {
+      const { storage, collection } = setup(strategy())
+
+      await storage.write(key, bytes('dark'))
+
+      expect(stored(collection, key).prefixes).toEqual(expected)
     })
   })
 
