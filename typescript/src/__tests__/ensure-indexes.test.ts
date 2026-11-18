@@ -1,6 +1,6 @@
 import { SpanStatusCode } from '@opentelemetry/api'
 import { type Logger, StorageError } from '@strands-agents/sdk'
-import { type Collection, type Document, type IndexDescription } from 'mongodb'
+import type { Collection, Document, IndexDescription, MongoServerError } from 'mongodb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FakeCollection } from '../__fixtures__/fake-mongo.js'
 import { oneSpan, recordSpans, spansNamed } from '../__fixtures__/spans.js'
@@ -745,6 +745,20 @@ describe('ensure', () => {
 
       expect(error.message).toContain('does not cover')
       expect(collection.createdSearchIndexes).toHaveLength(1)
+    })
+
+    it('reports a name another creator took between the read and the create, with the refusal as the cause', async () => {
+      const collection = fakeCollection()
+      vi.spyOn(collection.db, 'createCollection').mockImplementation(async () => {
+        collection.exists = true
+        collection.addSearchIndex({ ...vectorSpec().toDescription(), definition: DRIFTED })
+      })
+
+      const error = await rejectionOf(ensureSearch(collection, [vectorSpec()]))
+
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain('testdb.memory')
+      expect((error.cause as MongoServerError).code).toBe(68)
     })
 
     it('accepts a build whose definition still covers, reading nothing the poll was not already reading', async () => {

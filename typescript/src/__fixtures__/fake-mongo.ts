@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer'
 import { randomBytes } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import type { Document, DriverInfo, IndexDescription, MongoClientOptions, SearchIndexDescription } from 'mongodb'
 
 type Filter = Record<string, unknown>
@@ -366,9 +367,19 @@ export class FakeCollection {
   async createSearchIndex(description: SearchIndexDescription): Promise<string> {
     // The server answers code 26 here; the package must create the collection first.
     if (!this.exists) throw new Error(`FakeCollection: createSearchIndex on absent ${this.collectionName}`)
+    const name = description.name ?? 'default'
+    const present = this.searchIndexes.get(name)
+    // As atlas-local 8 answers a name already taken: the same definition changes nothing, another is code 68. The
+    // code 2 of two concurrent creates is pinned by the two-client test in test/integ/integration/memory-store.test.ts.
+    if (present !== undefined && isDeepStrictEqual(present.latestDefinition, description.definition)) return name
+    if (present !== undefined) {
+      // Imported here: a static runtime import would cycle through the tests that mock `MongoClient` with this file.
+      const { MongoServerError } = await import('mongodb')
+      throw new MongoServerError({ code: 68, message: `Index ${name} already exists with a different definition.` })
+    }
     this.createdSearchIndexes.push(description)
     this.addSearchIndex(description)
-    return description.name ?? 'default'
+    return name
   }
 
   async findOne(filter: Filter = {}, options: { projection?: Document } = {}): Promise<Document | null> {

@@ -103,6 +103,24 @@ describeTier('integration', 'indexes', () => {
     expect((error as MongoServerError).code).toBe(26)
   })
 
+  it('a create under a name already taken by another definition is refused with code 68, and ensure reports the conflict', async () => {
+    const collection = fresh('taken')
+    const [vector] = memorySearchSpecs(MANUAL)
+    await db.createCollection(collection.collectionName)
+    await collection.createSearchIndex({
+      ...vector!.toDescription(),
+      definition: { fields: [{ type: 'filter', path: 'scope' }] },
+    })
+
+    const refused = await rejectionOf(collection.createSearchIndex(vector!.toDescription()))
+    const conflict = await rejectionOf(search(collection, [vector!]))
+
+    expect((refused as MongoServerError).code).toBe(68)
+    expect(conflict).toBeInstanceOf(StorageError)
+    expect(conflict.message).toContain(`${collection.dbName}.${collection.collectionName}`)
+    expect(conflict.message).toContain(vector!.dropCommand(collection.collectionName))
+  })
+
   it('AT-062b: an index caught building is waited out rather than reported missing or ready', async (context) => {
     const spec = memorySearchSpecs(MANUAL)[0]!
     for (let attempt = 0; attempt < 3; attempt += 1) {

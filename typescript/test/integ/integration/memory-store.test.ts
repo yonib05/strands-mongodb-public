@@ -442,6 +442,7 @@ describeTier('integration', 'memory store', () => {
       for (const outcome of outcomes) {
         if (outcome.status === 'fulfilled') continue
         expect(outcome.reason).toBeInstanceOf(StorageError)
+        expect((outcome.reason as Error).message).toContain(`${DATABASE}.${name}`)
         expect(((outcome.reason as Error).cause as MongoServerError).code).toBe(2)
       }
       expect(outcomes.map((outcome) => outcome.status)).toContain('fulfilled')
