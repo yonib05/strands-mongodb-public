@@ -1,71 +1,34 @@
 # Changelog
 
-This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with one deviation the
-format does not cover: **no version below carries a date, because none of them has been released.**
-
-The repository's landing page publishes a version table saying what `0.0.1` and `0.1.0` contain, and
-this package follows it: the same two versions, with the same contents, published to npm instead of
-PyPI. Versions are `MAJOR.MINOR.PATCH` per [Semantic Versioning](https://semver.org/spec/v2.0.0.html),
-and a release is cut by pushing a `typescript-v` tag. [RELEASING.md](RELEASING.md) is the procedure.
+This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). No version has been released yet.
 
 ## [Unreleased]
 
-Work that has landed on `main` and is not yet inside a tagged version. Entries move down into a
-version heading when that version is tagged.
-
 ### Added
 
-- `MongoDBStorage`, implementing the SDK's `Storage` interface plus `namespace()`, `deletePrefix()` and
-  `ensureIndexes()`, so an `Agent` given one gets sessions, context offloading and context history.
-  Keys live in `_id`, so storage needs no index the server does not create.
-- `MongoDBMemoryStore`, implementing the SDK's `MemoryStore` interface with `initialize()`, `add()`,
-  `search()`, `delete()`, `deleteAll()` and `getTools()`. `addMessages` is absent on purpose, so the
-  SDK's `MemoryManager` keeps extraction.
-- Three search tiers behind `MongoDBMemoryStore.search()`: `vector`, `text`, and `hybrid` fusing the
-  two with `$rankFusion`. `auto` picks among them, skips a tier whose index is still building, and
+- `MongoDBStorage`, the SDK's `Storage` interface on a MongoDB collection, plus `namespace()`,
+  `deletePrefix()` and `ensureIndexes()`. Keys are stored in `_id`, so no extra index is needed.
+- `MongoDBMemoryStore`, the SDK's `MemoryStore` interface, with `initialize()`, `add()`, `search()`,
+  `delete()`, `deleteAll()` and `getTools()`. It has no `addMessages`, so the SDK's `MemoryManager` runs
+  extraction.
+- Three memory search tiers: `vector`, `text`, and `hybrid`, which fuses the two with `$rankFusion`.
+  `searchType: 'auto'` uses the best tier that is ready, skips a tier whose index is still building, and
   retries it after 60 seconds, then at doubling intervals up to an hour.
-- `MongoDBVectorSearchStrategy`: Atlas Vector Search for `MongoDBStorage`, taking any SDK `Embedder`.
-- `embedder` on `MongoDBMemoryStore`'s manual-vector path, so `add()` and string `search()` embed.
-- Record expiry, armed differently on each surface: `MongoDBMemoryStore.initialize()` provisions the
-  TTL index itself, while `MongoDBStorage` leaves it to an explicit `await storage.ensureIndexes()` at
-  startup. A negative `ttlSeconds` is rejected at construction.
-- Index verification under `ensureIndexes: false`, where a missing index is reported with the
-  `db.runCommand` lines that create it, and an existing index that conflicts is reported with the
-  lines that drop and recreate it.
-- Driver attribution in the connection handshake: every client carries `Strands-MongoDB` and the
-  package version in its driver metadata. `appName` is left to the application.
-- OpenTelemetry spans for every public operation of both stores, and for the index work they cause,
-  through `@opentelemetry/api` on the application's tracer provider. The names and attributes are the
-  Python package's. Keys, content, queries, scopes and credentials are never recorded.
-- Structured log lines through the `logger` in `MongoDBConfig`, shaped
-  `strands_mongodb: <sentence> | event=<name>, namespace=<db.coll>, tier=<tier>`, with the Python
-  package's event names.
-- The `strands-mongodb`, `strands-mongodb/storage` and `strands-mongodb/memory` entry points, as ES
-  modules loadable from CommonJS on Node 22.12 and later.
-- Two runnable examples in `examples/`, ported from `python/examples/`: `memory-recall.ts` recalls in a
-  second process a fact the first stored, and `unified-storage.ts` puts sessions, context and file memory
-  in one collection and resumes the session in a new process.
-- CI for every change: the contract tier against `mongo:8` and the Atlas local image, the integration
-  tier on the latter, and the unit tier against the declared peer floors. Weekly, the compat and contract
-  tiers against the latest `@strands-agents/sdk`, and the integration and autoembed tiers against a
-  throwaway Atlas cluster.
-- `.github/workflows/release-typescript.yml`: a `typescript-v*` tag runs the gate and the contract
-  tier, writes the version from the tag, packs and verifies the tarball, and publishes it to npm once
-  the `npm` environment's reviewers approve.
-
-### Changed
-
-- `npm run build` empties `dist/` first, so a file whose source was deleted cannot ship.
-
-## [0.1.0]
-
-The first version with working code in it. Planned, not released. Its contents are the `Unreleased`
-entries above, which move here when the version is tagged.
-
-## [0.0.1]
-
-Package metadata only: the package name, the three entry points and the public names, with no backend
-behind them. Planned, not released.
-
-<!-- No link reference definitions below. Keep a Changelog puts compare links here; this repository
-     has no typescript-v tags to compare yet. They go in with the first release, alongside its date. -->
+- `MongoDBVectorSearchStrategy`, Atlas Vector Search for `MongoDBStorage`, taking any SDK `Embedder`.
+- `embedder` on `MongoDBMemoryStore`, so `add()` and string `search()` embed when you supply the vectors.
+- `ttlSeconds` on both stores. `MongoDBMemoryStore.initialize()` creates its TTL index.
+  `MongoDBStorage` needs `ensureIndexes()` called once.
+- `ensureIndexes: false`, which verifies the indexes and reports a missing or conflicting one with the
+  `db.runCommand` lines that fix it.
+- Runtime validation for JavaScript callers: `name`, `scope` and `collection` must be strings
+  (`TypeError`), and limits must be integers of at least 1 (`RangeError`).
+- `Strands-MongoDB` and the package version in each client's handshake metadata. `appName` and
+  `driverInfo` are left to the application.
+- OpenTelemetry spans for every public operation and the index work it causes, through
+  `@opentelemetry/api`. Keys, content, queries, scopes and credentials are never recorded.
+- Log lines through the `logger` in `MongoDBConfig`, shaped
+  `strands_mongodb: <sentence> | event=<name>, namespace=<db.coll>, tier=<tier>`.
+- The entry points `strands-mongodb`, `strands-mongodb/storage` and `strands-mongodb/memory`, as ES
+  modules that Node 22.12 and later can also load with `require()`.
+- Two examples in `examples/`: `memory-recall.ts` and `unified-storage.ts`.

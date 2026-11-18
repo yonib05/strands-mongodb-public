@@ -1,42 +1,47 @@
 # Releasing
 
-A release is one push of one tag. Everything before it can be undone; the upload at the end cannot be:
-a version published to npm can be deprecated or, within 72 hours, unpublished, never replaced. This
-document gives the order of the steps, and the settings that must exist before the first one.
+A release is one push of one tag. `.github/workflows/release-typescript.yml` runs on a `typescript-v*`
+tag, and a published version cannot be replaced: it can be deprecated, or unpublished within 72 hours.
 
-The procedure is `.github/workflows/release-typescript.yml`, which runs on a `typescript-v*` tag.
-The Python half of this repository releases from `release-python.yml` on `python-v` tags, and
-[`python/RELEASING.md`](../python/RELEASING.md) is the model this one follows.
+The Python package releases separately, on `python-v` tags. See
+[`python/RELEASING.md`](../python/RELEASING.md).
 
-## What a release is made of
+## The version comes from the tag
 
-`package.json` carries `0.0.1-development` and that value never changes on `main`. The version is
-written at publish time from the tag: `typescript-v0.1.0` becomes `0.1.0` through
-`npm version --no-git-tag-version`, run on the checkout the tag points at, inside the release run or
-the maintainer's shell. Nothing is committed back, so there is no version bump commit and nothing to keep
-in sync. A tarball built from a tree with no tag applied carries `0.0.1-development`, which cannot be
-mistaken for a release.
+`package.json` carries `0.0.1-development` on `main` and that never changes. The release run writes the
+version from the tag with `npm version --no-git-tag-version`: `typescript-v0.1.0` becomes `0.1.0`.
+Nothing is committed back.
 
-The tag is the whole decision: tag the commit you mean, because the artifact is built from it and from
-nothing else.
+## The first release
+
+The first version is published by hand, because an npm token scoped to this package cannot be created
+before the package exists.
+
+1. Create the `npm` environment in the repository settings, with required reviewers. A job that names a
+   missing environment makes GitHub create one with no reviewers.
+2. In the commit you tag, delete the "Installing the TypeScript package before its first release" section
+   from the root `CONTRIBUTING.md` and the sentence in the root `README.md` that links to it.
+   `npm run check` stays green.
+3. Follow [Before you tag](#before-you-tag), then [Publishing by hand](#publishing-by-hand).
+4. Create a granular npm token for `strands-mongodb` with publish rights and add it to the `npm`
+   environment as `NPM_TOKEN`. npm limits the lifetime of a write token, so check its expiry before each
+   later tag.
+
+While the repository is private, the links in `README.md` and the `repository`, `homepage` and `bugs`
+URLs in `package.json` do not resolve for npm users. Nothing in the package depends on them.
 
 ## Before you tag
 
-1. **Be on `main`, at the commit you intend to release.** `git log -1` and read it.
-2. **Update [CHANGELOG.md](CHANGELOG.md).** Move everything under `## [Unreleased]` into a heading for
-   the version you are about to tag, and give that heading the release date. Nothing else in the
-   repository records what a version contains.
-3. **If this is the first release ever**, remove the
-   `<!-- skip: these reach npm for a package that is not published yet -->` marker from
-   `README.md` here and from the npm block in the repository-root `README.md`, in the same commit.
-4. **Run the gate locally.** `npm run check` is the whole of it: formatting, lint, types, the unit tier
-   with both coverage floors, and the release gate over the recorded results. Then
-   `STRANDS_MONGODB_BUILD_TIER=1 npm run test:build`, which packs the tarball and installs it into
-   empty ES module and CommonJS projects.
-5. **Run the tiers that need a deployment.** `npm run test:contract` and `npm run test:integration`
-   against an Atlas CLI local deployment, and `npm run test:autoembed` against an Atlas cluster with a
-   registered embedding model. The last one is the package's default search mode and nothing runs it on
-   a merge.
+1. Be on `main`, at the commit you intend to release.
+2. Update [CHANGELOG.md](CHANGELOG.md): rename `## [Unreleased]` to `## [<version>] - <date>` and add an
+   empty `## [Unreleased]` above it.
+3. Run `npm run check`, then `STRANDS_MONGODB_BUILD_TIER=1 npm run test:build`. CI runs both on every
+   pull request, so this confirms the commit, not the branch.
+4. Run the release gate against an Atlas CLI local deployment (`mongodb/mongodb-atlas-local:8`), with
+   `MONGODB_URI` and `MONGODB_ATLAS_URI` set to it:
+   `npm run test:contract && npm run test:integration && npm run test:gate:release`.
+5. Run `npm run test:autoembed` against an Atlas cluster with a registered embedding model. No workflow
+   runs it on a tag, and it covers the default search mode.
 
 ## Tagging
 
@@ -45,55 +50,48 @@ git tag typescript-v0.1.0
 git push origin typescript-v0.1.0
 ```
 
-The `typescript-v` prefix is what distinguishes this package's releases. A `python-v` tag releases the
-Python package and nothing here; a plain `v0.1.0` tag does nothing. The two packages share one history
-and version independently, which is the reason for the prefixes.
+A `python-v` tag releases only the Python package. A plain `v0.1.0` tag does nothing.
 
-## What runs, in order
+## What the workflow runs
 
-The workflow runs four jobs. The first two run side by side, and each later job starts only after the
-ones before it succeed. To publish by hand instead, run the same steps from `typescript/` in the same order.
+The first two jobs run side by side. Each later job needs the ones before it.
 
 | Job | What it does |
 |---|---|
 | `Release gate` | `npm ci`, then `npm run check` |
-| `Contract tier` | `npm run test:contract` against a `mongo:8` service container, then `npm run test:gate` over that run, then checks the working tree is still clean. No secret |
-| `Build and verify the artifact` | Checks that the tag carries a semantic version, runs `npm version --no-git-tag-version "${GITHUB_REF_NAME#typescript-v}"` so `package.json` says what the tag says, and checks that `npm pack --dry-run --json` reports that version. Then `npm run build`, `npm run test:build` against a packed tarball, and `npm pack`, uploading the tarball for the next job |
-| `Publish to npm` | Waits for approval in the `npm` environment, downloads that tarball and runs `npm publish` on it. A prerelease version such as `0.1.0-rc.1` goes to the `next` dist-tag rather than `latest` |
+| `Contract tier` | Against a `mongodb/mongodb-atlas-local:8` service container: `npm run test:contract`, `npm run test:integration`, then `npm run test:gate:release`, which fails unless every release-gate item passed in those two tiers. Then checks the working tree is clean |
+| `Build and verify the artifact` | Checks the tag carries a semantic version, writes it into `package.json`, and checks `npm pack` reports it. Packs the tarball once, runs `npm run test:build` on that tarball, and uploads it |
+| `Publish to npm` | Waits for approval in the `npm` environment, downloads the tarball and runs `npm publish`. A prerelease such as `0.1.0-rc.1` goes to the `next` dist-tag |
 
-`--provenance` is off. npm provenance links a published package to a public source repository and a
-public workflow run, and this repository is private; turning it on before the repository is public makes
-the publish fail. The workflow carries that condition as a comment on the publish step, and the flag goes
-on there when the repository goes public.
+The publish job reads `NPM_TOKEN` as `NODE_AUTH_TOKEN`. No other job sees a secret.
 
-## The approval
+`--provenance` is off. Provenance needs a public source repository, and this one is private, so the
+flag would make the publish fail. Turn it on in the publish step when the repository is public. Trusted
+publishing over OIDC can replace the token once the package exists on npm.
 
-`Publish to npm` is bound to the `npm` environment, with required reviewers, so a tag does not publish: the
-run stops and waits for a human to approve the deployment in the Actions UI. That pause is the last stop
-before the irreversible step, and it is the one part of this process you cannot discover by reading the
-repository: the environment and its reviewer list live in repository settings, not in a file.
+## Publishing by hand
 
-**Configure it before the first tag.** Create the `npm` environment in the repository settings, add the
-required reviewers, and add the `NPM_TOKEN` secret to it. A job naming an environment that does not exist
-makes GitHub create one with no reviewers, so the publish would start unapproved and then fail for want
-of a token.
+From a clean checkout of the tag, in `typescript/`, after the steps under [Before you tag](#before-you-tag):
 
-## Credentials
+```bash
+npm ci
+npm version --no-git-tag-version 0.1.0
+STRANDS_MONGODB_BUILD_TIER=1 npm run test:build
+npm publish
+git checkout package.json package-lock.json
+```
 
-Trusted publishing is not configured. The publish uses a granular npm access token scoped to this
-package and to publishing, created by a maintainer with two-factor authentication on the account and
-stored as the `npm` environment's `NPM_TOKEN` secret. The publish step reads it as `NODE_AUTH_TOKEN`, and
-no other job sees it. Trusted publishing over OIDC replaces it once the repository is public and the
-package exists on npm to bind a publisher to.
+`publishConfig` in `package.json` sends the publish to the public registry with public access, whatever
+the machine's default registry is. A prerelease needs `--tag next`.
 
 ## When it goes wrong
 
-| Symptom | What happened | What to do |
+| Symptom | Cause | What to do |
 |---|---|---|
-| No run started | The tag did not match `typescript-v*` | Delete the tag locally and on the remote, tag again with the prefix |
-| The gate is red | The commit was not releasable | Fix on `main`, delete the tag from the remote, tag the new commit |
-| `The tag must be a semantic version` is red | The text after `typescript-v` is not a version npm accepts | Delete the tag locally and on the remote, tag again. Nothing was published |
-| `The packed version must equal the tag` is red | `npm version` did not write the tag's version into `package.json` | Read the step's log. Nothing was published |
-| `npm publish` refused with ENEEDAUTH or E401 | The `npm` environment has no `NPM_TOKEN`, or the token expired | Add or replace the secret, then re-run the failed job |
-| `npm publish` refused with E403 | The token lacks publish rights, or the version already exists | Fix the token, or release a new patch. A published version is permanent |
-| Wrong artifact published | It is on npm | `npm deprecate` it with a message pointing at the fix, publish a new patch. Unpublishing is possible for 72 hours only and leaves the version number burned |
+| No run started | The tag did not match `typescript-v*` | Delete the tag locally and on the remote, and tag again |
+| `Release gate` or `Contract tier` is red | The commit is not releasable | Fix on `main`, delete the tag on the remote, tag the new commit |
+| `The tag must be a semantic version` is red | The text after `typescript-v` is not a version | Delete the tag and tag again. Nothing was published |
+| `The packed version must equal the tag` is red | `npm version` did not write the version | Read the step's log. Nothing was published |
+| `npm publish` fails with ENEEDAUTH or E401 | `NPM_TOKEN` is missing or expired | Replace the secret and re-run the failed job |
+| `npm publish` fails with E403 | The token cannot publish, or the version exists | Fix the token, or release a new patch |
+| The wrong artifact was published | It is on npm | `npm deprecate` it and publish a new patch. Unpublishing is possible for 72 hours and burns the version number |

@@ -94,6 +94,27 @@ The Node driver surfaces `NamespaceNotFound` (code 26) from `listIndexes` on a c
 
 ## Behaviours shared with Python that a user may trip on
 
-Kept for parity on shared collections, and candidates to raise upstream for both languages.
+Kept so both packages behave the same on a shared collection. Each is a candidate to raise upstream for
+both languages.
 
+- `close()` on one store closes the client and pool shared by every store with the same connection identity (the same injected client, or equal connection string and client options). A later operation on any of them opens a fresh pool.
+- One lock per connection serialises `initialize()` across every store on it. A named `searchType` holds the lock while it waits for its index, up to `indexReadyTimeout`.
+- Under `auto`, when the first search's wait times out with no tier ready, searches throw until a retry finds one. Retries start 60 seconds later and double up to 3600 seconds, so a tier can stay unused for up to an hour after its index finishes building.
+- `MongoDBStorage.search` without a search strategy scores keys only. Payloads are never read, and SDK consumers such as `FileMemoryStore` get key matches in place of content matches.
+- In key-only search the query is lowercased fully, but the server's `$toLower` lowercases ASCII only (MongoDB 8.0.4: `ÉCOLE` becomes `École`). A key word with a non-ASCII capital letter therefore matches no query.
+- `list` and `deletePrefix` are string-prefix ranges, not path matches: `user1` also matches `user10/a`. `deletePrefix('')` removes every key under the instance's prefix, and the whole collection when it has none.
+- An empty `scope` falls back to the shared `__unscoped__` scope instead of being rejected.
+- The `$rankFusion` probe reads any `buildInfo` failure as "not supported" and caches it for the connection, so a transient failure disables the hybrid tier until the process restarts.
 - The text tier filters `scope` and `store_name` in a `$match` after `$search`, because the text index maps only `content`: a query in a small scope pays for every lexical hit in the collection. Pre-filtering inside `$search` needs `token` mappings and a `compound` stage, which changes the index definition and the stage both languages send.
+- Two processes creating the same search index at once can make one `createSearchIndexes` fail with server code 2 (`duplicate index names for the same collection`). A named `searchType` surfaces it as a `StorageError` from `initialize()`, and a second call succeeds. `auto` logs `tier_unavailable` and skips the tier until the next retry, although the index exists and is building.
+- The upsert in `add` copies `scope`, `store_name` and `content_hash` from the selector onto the new document in an order the server chooses. The field set and values are stable. The field order is not.
+
+## Where TypeScript knowingly differs from Python
+
+- Result metadata keys are camelCase: `_relevanceScore` and `_searchType`, where Python returns `_relevance_score` and `_search_type`. `_id` and `_scope` are the same. Stored documents are identical.
+- Log fields ride in the message tail (`| event=<name>, namespace=<db.coll>, tier=<tier>`), because the SDK's `Logger` has no `extra`. Python passes them as `strands_mongodb_event`, `strands_mongodb_namespace` and `strands_mongodb_tier`.
+- `rank_fusion_probe_failed` is logged at `debug` when `buildInfo` fails. Python logs nothing there.
+- The key-only search pipeline carries `hint: { _id: 1 }`. Without it an unprefixed store plans a COLLSCAN that reads every payload (measured on MongoDB 8.0.4: 50 of 50 documents examined, against 0 with the hint). Python sends no hint and has the COLLSCAN: worth raising upstream.
+- `add` matches `scope` and `store_name` with `$eq` in the upsert selector, so a non-string value from a JavaScript caller cannot act as a query operator. The server copies `$eq` terms onto the inserted document exactly as it copies bare ones.
+- Errors are `TypeError` for a wrong type or an invalid combination, `RangeError` for a number out of bounds, and the SDK's `StorageError` for a database failure. Python raises `ValueError` for the first two and the SDK's `StorageError` for the third.
+- `name`, `scope` and `collection` are checked to be strings at construction, which Python's type hints do not enforce at runtime.
