@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { StorageError } from '@strands-agents/sdk'
 import type { Embedder } from '@strands-agents/sdk/storage/search'
+import { Binary as OtherBinary } from 'bson'
 import { Binary, type Document, type MongoClient } from 'mongodb'
 import { describe, expect, it, vi } from 'vitest'
 import { type FakeCollection, FakeMongoClient } from '../__fixtures__/fake-mongo.js'
@@ -230,6 +231,13 @@ describe('MongoDBVectorSearchStrategy', () => {
       collection.searchResults = [{ _id: 'a', data: new Binary(bytes('x')) }]
 
       expect(await storage.search('dark')).toEqual([{ key: 'a', score: 0, data: bytes('x') }])
+    })
+
+    it('returns the bytes of a payload decoded by another copy of bson', async () => {
+      const { storage, collection } = setup(strategy())
+      collection.searchResults = [{ _id: 'a', data: new OtherBinary(bytes('x')), score: 1 }]
+
+      expect(await storage.search('dark')).toEqual([{ key: 'a', score: 1, data: bytes('x') }])
     })
 
     it.each(['', '   '])('embeds and sends nothing for the blank query %j', async (query) => {

@@ -1,11 +1,11 @@
 import { TextDecoder } from 'node:util'
 import type { Embedder, SearchStrategy, StorageSearchResult } from '@strands-agents/sdk/storage/search'
 import { Binary, type Document } from 'mongodb'
-import { requireNumber } from './checks.js'
+import { requireNumber, requireOneOf, requireString } from './checks.js'
 import { embed } from './embedding.js'
 import { MAX_DIMENSIONS, SearchIndexSpec, SIMILARITIES, VECTOR_FIELD } from './index-specs.js'
 import { candidateCount, SCORE_FIELD, VECTOR_SCORE_META } from './pipeline.js'
-import type { MongoDBStorage } from './storage.js'
+import { type MongoDBStorage, payloadBytes } from './storage.js'
 import { DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_OVERSAMPLING_FACTOR, type VectorSimilarity } from './types.js'
 
 /** Vector index name when none is given. Distinct from the memory store's `vector_index`. */
@@ -71,17 +71,14 @@ export class MongoDBVectorSearchStrategy implements SearchStrategy<MongoDBStorag
    *
    * @param options - Embedder, vector shape, index name and result bounds
    * @throws RangeError if `dimensions`, `maxResults`, `oversamplingFactor` or their product is out of range
-   * @throws TypeError if `similarity` is not one the server supports
+   * @throws TypeError if `similarity` is not one the server supports, or `indexName` is not a string
    */
   constructor(options: MongoDBVectorSearchStrategyOptions) {
     const { embedder, dimensions, similarity, indexName = DEFAULT_STORAGE_VECTOR_INDEX_NAME } = options
     const { maxResults = DEFAULT_MAX_SEARCH_RESULTS, oversamplingFactor = DEFAULT_OVERSAMPLING_FACTOR } = options
     requireNumber('dimensions', dimensions, { min: 1, max: MAX_DIMENSIONS, integer: true })
-    if (!(SIMILARITIES as readonly string[]).includes(similarity)) {
-      throw new TypeError(
-        `strands_mongodb: 'similarity' is '${String(similarity)}' and must be one of ${SIMILARITIES.join(', ')}.`
-      )
-    }
+    requireOneOf('similarity', similarity, SIMILARITIES)
+    requireString('indexName', indexName)
     this._embedder = embedder
     this._dimensions = dimensions
     this._similarity = similarity
@@ -136,6 +133,7 @@ export class MongoDBVectorSearchStrategy implements SearchStrategy<MongoDBStorag
    * @param query - A natural-language string; a blank one returns `[]` without embedding
    * @returns Up to `maxResults` results, best first, with the stored bytes as `data`
    * @throws RangeError if the embedder returns a vector whose length is not `dimensions`
+   * @throws StorageError if a matched document holds no binary payload
    */
   async search(storage: MongoDBStorage, query: string): Promise<StorageSearchResult[]> {
     if (!query.trim()) return []
@@ -151,11 +149,11 @@ export class MongoDBVectorSearchStrategy implements SearchStrategy<MongoDBStorag
     const pipeline = [{ $vectorSearch: stage }, { $project: { data: 1, [SCORE_FIELD]: { $meta: VECTOR_SCORE_META } } }]
     const documents = await storage._collection().aggregate(pipeline).toArray()
     return documents.map((document) => {
-      const data: unknown = document.data
+      const id = String(document._id)
       return {
-        key: String(document._id).slice(prefix.length),
+        key: id.slice(prefix.length),
         score: Number(document[SCORE_FIELD] ?? 0),
-        data: new Uint8Array(data instanceof Binary ? data.value() : (data as Uint8Array)),
+        data: payloadBytes(document.data, id),
       }
     })
   }

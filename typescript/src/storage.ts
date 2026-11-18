@@ -48,6 +48,26 @@ function reason(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * Copies a stored payload out of the `Binary` any copy of bson decoded, or the `Buffer` `promoteBuffers` yields.
+ *
+ * @param data - The document's `data` field
+ * @param id - The document's `_id`, for the message
+ * @returns The bytes as a plain `Uint8Array`
+ * @throws StorageError if `data` is neither
+ * @internal
+ */
+export function payloadBytes(data: unknown, id: string): Uint8Array {
+  if (data instanceof Uint8Array) return new Uint8Array(data)
+  // By tag, not `instanceof`: an injected client may come from a second installed copy of the driver.
+  if (typeof data === 'object' && data !== null && Reflect.get(data, '_bsontype') === 'Binary') {
+    return new Uint8Array((data as Binary).value())
+  }
+  throw new StorageError(
+    `strands_mongodb: the document '${abbreviate(id)}' holds no binary payload in 'data'. Write the key again with write().`
+  )
+}
+
 // A strategy may declare the search index it queries, as `MongoDBVectorSearchStrategy` does.
 type IndexedStrategy = SearchStrategy<MongoDBStorage> & { indexSpec?(): SearchIndexSpec }
 
@@ -152,17 +172,15 @@ export class MongoDBStorage implements Storage {
    *
    * @param key - The key to read
    * @returns The stored bytes as a `Uint8Array`, or `null` when the key is absent
-   * @throws StorageError if the key is invalid or too long, the collation is not binary, or the read fails
+   * @throws StorageError if the key is invalid or too long, the collation is not binary, the read fails, or the
+   * document holds no binary payload
    */
   read(key: string): Promise<Uint8Array | null> {
     return this._run('read', 'reading', key, async () => {
       await this._requireBinaryKeys()
       const document = await this._typed().findOne({ _id: this._idFor(key) })
       annotate('strands_mongodb.found', document !== null)
-      if (document === null) return null
-      // The driver hands back a `Binary` by default and a `Buffer` under `promoteBuffers`; both become one type here.
-      const data: unknown = document.data
-      return new Uint8Array(data instanceof Binary ? data.value() : (data as Uint8Array))
+      return document === null ? null : payloadBytes(document.data, document._id)
     })
   }
 

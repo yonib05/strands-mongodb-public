@@ -16,6 +16,7 @@ import {
   MongoNotConnectedError,
   MongoTopologyClosedError,
 } from 'mongodb'
+import { Binary as OtherBinary } from 'bson'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConstructedMongoClient, FakeCollection, FakeMongoClient, freshUri } from '../__fixtures__/fake-mongo.js'
 import { oneSpan, recordSpans, spansNamed } from '../__fixtures__/spans.js'
@@ -576,6 +577,25 @@ describe('MongoDBStorage', () => {
       collection.docs.push({ _id: 'a/b', data: new Binary(Buffer.from('payload'), 2) })
 
       expect(await storage.read('a/b')).toEqual(bytes('payload'))
+    })
+
+    it('reads a payload decoded by another copy of bson, whose Binary is not this one', async () => {
+      const { storage, collection } = setup()
+      const foreign = new OtherBinary(Buffer.from('payload'))
+      collection.docs.push({ _id: 'a/b', data: foreign })
+
+      expect(foreign).not.toBeInstanceOf(Binary)
+      expect(await storage.read('a/b')).toEqual(bytes('payload'))
+    })
+
+    it('throws a StorageError for a stored payload that is not binary', async () => {
+      const { storage, collection } = setup()
+      collection.docs.push({ _id: 'a/b', data: 'payload' })
+
+      const error = await rejectionOf(storage.read('a/b'))
+
+      expect(error).toBeInstanceOf(StorageError)
+      expect(error.message).toContain("'a/b'")
     })
 
     it('reads a payload a promoteBuffers client decoded to a Buffer', async () => {
