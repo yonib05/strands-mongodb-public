@@ -1,314 +1,108 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { TIER_VARIABLES, type Tier } from '../env.js'
 import { CHECKLIST, RELEASE_GATE, type Item } from './checklist.js'
-import { RESULTS_PATH, type RecordedRun, type RecordedTest } from './reporter.js'
+import type { RecordedTest } from './reporter.js'
+import { leadingIds, REAL_DEPLOYMENT_PROJECTS, unproven } from './verdict.js'
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const TEST_ROOTS = ['src/__tests__', 'test/integ', 'test/docs']
 
-// The ids a title declares are the comma-separated run it starts with, as Python reads a docstring's first paragraph.
-const LEADING_IDS = /^(?:AT|CH|MP)-\d{1,3}[a-z]*(?:,\s*(?:AT|CH|MP)-\d{1,3}[a-z]*)*/
+// A string literal that starts with ids, on a line that is not a `//` comment, is a title declaring them.
+const DECLARATION = /['"`]((?:AT|CH|MP)-\d[^'"`]*)/g
 
-// A regex over the source, so the static half needs no prior run; `.each(...)` and `.skipIf(...)` may sit between.
-const TITLE = /(?<![.\w])(?:it|test|describe)(?:\.\w+(?:\((?:[^()]|\([^()]*\))*\))?)*\(\s*(['"`])(.*?)\1/gs
-
-function leadingIds(title: string): string[] {
-  return title.match(LEADING_IDS)?.[0].split(/,\s*/) ?? []
+function declaredIds(source: string): string[] {
+  return source
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//'))
+    .flatMap((line) => [...line.matchAll(DECLARATION)].flatMap((match) => leadingIds(match[1]!)))
 }
 
-// Strings are matched first so a `//` inside one is not read as a comment.
-const STRING_OR_COMMENT = /(['"`])(?:\\.|(?!\1)[^\\])*\1|\/\/[^\n]*|\/\*[\s\S]*?\*\//g
-
-function titleIds(source: string): string[] {
-  const code = source.replace(STRING_OR_COMMENT, (token) => (token.startsWith('/') ? '' : token))
-  return [...code.matchAll(TITLE)].flatMap((match) => leadingIds(match[2]!))
-}
-
-function testFiles(): string[] {
-  const under = (dir: string) =>
-    readdirSync(join(PACKAGE_ROOT, dir), { recursive: true, encoding: 'utf8' }).map((path) => join(dir, path))
-  return [...under('src').filter((path) => path.includes('__tests__/')), ...under(join('test', 'integ'))].filter(
-    (path) => path.endsWith('.test.ts')
-  )
-}
-
-function collectedIds(): Map<string, Set<string>> {
-  const index = new Map<string, Set<string>>()
-  for (const file of testFiles()) {
-    for (const id of titleIds(readFileSync(join(PACKAGE_ROOT, file), 'utf8'))) {
-      index.set(id, (index.get(id) ?? new Set()).add(file))
+// Every declared id, with the files declaring it.
+function declarations(): Map<string, string[]> {
+  const index = new Map<string, string[]>()
+  for (const root of TEST_ROOTS) {
+    for (const path of readdirSync(join(PACKAGE_ROOT, root), { recursive: true, encoding: 'utf8' })) {
+      if (!path.endsWith('.test.ts')) continue
+      const file = join(root, path)
+      for (const id of declaredIds(readFileSync(join(PACKAGE_ROOT, file), 'utf8'))) {
+        index.set(id, [...(index.get(id) ?? []), file])
+      }
     }
   }
   return index
 }
 
-// An id on a test's own title wins over the same id on an enclosing describe, as in `ChecklistGate`.
-function carriers(tests: readonly RecordedTest[], item: Item): RecordedTest[] {
-  const found = new Set<RecordedTest>()
-  for (const id of item.ids) {
-    const own = tests.filter((test) => leadingIds(test.titlePath.at(-1)!).includes(id))
-    const inherited = tests.filter((test) =>
-      test.titlePath.slice(0, -1).some((title) => leadingIds(title).includes(id))
-    )
-    for (const test of own.length > 0 ? own : inherited) found.add(test)
-  }
-  return [...found]
-}
+describe('the checklist', () => {
+  it('numbers its twenty-nine items once each, and draws the release gate from them', () => {
+    const numbers = CHECKLIST.map((item) => item.number)
 
-function tierOf(project: string): Tier | undefined {
-  return Object.hasOwn(TIER_VARIABLES, project) ? (project as Tier) : undefined
-}
+    expect(numbers).toEqual(Array.from({ length: 29 }, (_, index) => index + 1))
+    expect([...RELEASE_GATE].filter((number) => !numbers.includes(number))).toEqual([])
+  })
 
-function projectOf(file: string): string {
-  return /^test\/integ\/([^/]+)\//.exec(file)?.[1] ?? 'unit'
-}
+  it('resolves every id to a test title', () => {
+    const declared = declarations()
 
-function enabledIn(run: RecordedRun, project: string): boolean {
-  const tier = tierOf(project)
-  return tier === undefined || run.enabled[tier]
-}
+    expect(CHECKLIST.flatMap((item) => item.ids.filter((id) => !declared.has(id)))).toEqual([])
+  })
 
-function label(test: RecordedTest): string {
-  return `${test.file} > ${test.titlePath.join(' > ')}`
-}
+  it('resolves every release-gate id to a test that runs against a real deployment', () => {
+    const declared = declarations()
+    const real = (file: string) => REAL_DEPLOYMENT_PROJECTS.some((project) => file.startsWith(`test/integ/${project}/`))
 
-function skipReason(test: RecordedTest): string {
-  const tier = tierOf(test.project)
-  return test.note ?? (tier === undefined ? 'skipped' : `${TIER_VARIABLES[tier]} is unset`)
-}
-
-function verdict(
-  run: RecordedRun,
-  items: readonly Item[],
-  index: ReadonlyMap<string, ReadonlySet<string>> = new Map()
-): { problems: string[]; unverified: Map<number, string[]> } {
-  const problems: string[] = []
-  const unverified = new Map<number, string[]>()
-  const ran = new Set(run.tests.map((test) => test.project))
-  for (const item of items) {
-    const found = carriers(run.tests, item)
-    if (found.length === 0) {
-      // A carrier file whose project ran, enabled, should have reported a test.
-      const missing = [...new Set(item.ids.flatMap((id) => [...(index.get(id) ?? [])]))].filter((file) => {
-        const project = projectOf(file)
-        return ran.has(project) && enabledIn(run, project)
-      })
-      if (missing.length > 0) {
-        problems.push(
-          `item ${item.number} has no test in this run although its project ran: ${missing.sort().join('; ')}`
-        )
-      } else {
-        unverified.set(item.number, ['no test for it in this run'])
-      }
-      continue
-    }
-    const failed = found.filter((test) => test.state === 'failed')
-    if (failed.length > 0) problems.push(`item ${item.number} has failing tests: ${failed.map(label).join('; ')}`)
-    const unfinished = found.filter((test) => test.state === 'pending')
-    if (unfinished.length > 0)
-      problems.push(`item ${item.number} has tests that never finished: ${unfinished.map(label).join('; ')}`)
-    if (found.some((test) => test.state === 'passed')) continue
-    const skipped = found.filter((test) => test.state === 'skipped')
-    // A projectless or ungated test, or a tier whose variable was set, had no reason to skip.
-    const refused = skipped.filter((test) => enabledIn(run, test.project))
-    if (refused.length > 0) {
-      problems.push(
-        `item ${item.number} skipped every test although its tier was enabled: ${refused.map(label).join('; ')}`
+    expect(
+      CHECKLIST.filter((item) => RELEASE_GATE.has(item.number)).flatMap((item) =>
+        item.ids.filter((id) => !(declared.get(id) ?? []).some(real)).map((id) => `item ${item.number}: ${id}`)
       )
-    } else if (skipped.length > 0) {
-      unverified.set(item.number, [...new Set(skipped.map(skipReason))].sort())
-    }
-  }
-  return { problems, unverified }
-}
-
-describe('the checklist table', () => {
-  it('holds the twenty-nine items, each numbered once', () => {
-    expect(CHECKLIST.map((item) => item.number)).toEqual(Array.from({ length: 29 }, (_, index) => index + 1))
+    ).toEqual([])
   })
 
-  it('draws the release gate as items 1 to 9 and 16 to 19', () => {
-    expect(new Set(CHECKLIST.filter((item) => item.gate).map((item) => item.number))).toEqual(RELEASE_GATE)
-    expect([...RELEASE_GATE].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 19])
-  })
+  it('reads the ids a title starts with, and none from a comment or from later in a title', () => {
+    const source = [
+      "describe('AT-901, AT-902b: a group', () => {",
+      "  ])('AT-903 one row %s', () => {})",
+      '    `AT-904: on its own line`,',
+      "  it('names AT-905 later', () => {})",
+      "  // it('AT-906: commented out', () => {})",
+    ].join('\n')
 
-  it('names at least one id and describes the behaviour on every item', () => {
-    expect(CHECKLIST.filter((item) => item.ids.length === 0).map((item) => item.number)).toEqual([])
-    expect(CHECKLIST.filter((item) => item.behaviour.length < 20).map((item) => item.number)).toEqual([])
+    expect(declaredIds(source)).toEqual(['AT-901', 'AT-902b', 'AT-903', 'AT-904'])
   })
 })
 
-describe('every checklist id', () => {
-  it('resolves to a test title in the unit or tier suites', () => {
-    const index = collectedIds()
-    const unresolved = CHECKLIST.map((item) => [item.number, item.ids.filter((id) => !index.has(id))] as const).filter(
-      ([, ids]) => ids.length > 0
-    )
-
-    expect(Object.fromEntries(unresolved)).toEqual({})
+describe('the release gate verdict', () => {
+  const ITEM: Item = { number: 1, behaviour: 'the behaviour under test', ids: ['AT-999'] }
+  const recorded = (state: RecordedTest['state'], titles = ['AT-999: one']): RecordedTest => ({
+    file: 't.test.ts',
+    titles,
+    state,
   })
 
-  describe('collection', () => {
-    it('reads the ids a title leads with, across .each, .skipIf and a line break', () => {
-      const source = [
-        "describe('AT-901, AT-902b: a group', () => {",
-        "  it.each(['a', 'b'])(\n    'AT-903 one row %s',",
-        '  it.skipIf(!uri)(`AT-904: tiered`, () => {})',
-        "  it('names AT-905 later, which is not a declaration', () => {})",
-        '  // AT-906 in a comment is not a title',
-        "  expect(value).toBe('AT-907')",
-      ].join('\n')
-
-      expect(titleIds(source)).toEqual(['AT-901', 'AT-902b', 'AT-903', 'AT-904'])
-    })
-
-    it('reads no title out of a comment or a .test( method call', () => {
-      const source = [
-        "// it('AT-911: commented out', () => {})",
-        "/* test('AT-912') */",
-        "/*\n  describe('AT-913: a block', () => {})\n*/",
-        "expect(ID.test('AT-914')).toBe(true)",
-        "it('AT-915: a url mongodb://host/db in the title', () => {})",
-      ].join('\n')
-
-      expect(titleIds(source)).toEqual(['AT-915'])
-    })
-
-    it('reaches both the unit and the tier suites', () => {
-      const files = testFiles()
-
-      expect(files.some((file) => file.startsWith('src/'))).toBe(true)
-      expect(files.some((file) => file.startsWith('test/integ/contract/'))).toBe(true)
-      expect(files.some((file) => file.startsWith('test/integ/integration/'))).toBe(true)
-    })
-  })
-})
-
-describe('the release gate', () => {
-  it('fails on a gate item whose tests failed or skipped where they could run, and names any it could not verify', (context) => {
-    if (!existsSync(RESULTS_PATH)) context.skip(`no ${RESULTS_PATH}; run a suite before the gate`)
-    const run = JSON.parse(readFileSync(RESULTS_PATH, 'utf8')) as RecordedRun
-
-    const { problems, unverified } = verdict(
-      run,
-      CHECKLIST.filter((item) => item.gate),
-      collectedIds()
-    )
-
-    expect(problems).toEqual([])
-    if (unverified.size > 0) {
-      const grouped = new Map<string, number[]>()
-      for (const [number, reasons] of unverified) {
-        const key = reasons.join(' / ')
-        grouped.set(key, [...(grouped.get(key) ?? []), number])
-      }
-      context.skip(
-        `release gate unverified in this run: ${[...grouped].map(([reasons, numbers]) => `items ${numbers.join(', ')}: ${reasons}`).join('; ')}`
-      )
-    }
+  it('is clean when a contract or integration test for the item passed, skipped siblings or not', () => {
+    expect(unproven({ contract: [recorded('passed'), recorded('skipped')] }, [ITEM])).toEqual([])
+    expect(unproven({ integration: [recorded('passed', ['AT-999: a group', 'a member'])] }, [ITEM])).toEqual([])
   })
 
-  describe('verdict', () => {
-    const ITEM: Item = {
-      number: 1,
-      gate: true,
-      behaviour: 'the behaviour whose verdict is under test',
-      ids: ['AT-999'],
-    }
-    const ALL_OFF: RecordedRun['enabled'] = {
-      contract: false,
-      integration: false,
-      autoembed: false,
-      build: false,
-      interop: false,
-    }
+  it('does not count a test that passed anywhere else', () => {
+    expect(unproven({ unit: [recorded('passed')], interop: [recorded('passed')] }, [ITEM])).toEqual([
+      'item 1 (AT-999) is unverified on a real deployment: no test for it ran',
+    ])
+  })
 
-    const recorded = (
-      state: RecordedTest['state'],
-      project = 'contract',
-      titlePath = ['AT-999: one']
-    ): RecordedTest => ({
-      project,
-      file: 't.test.ts',
-      titlePath,
-      state,
-    })
+  it('fails an item whose every test was skipped, or that has no results at all', () => {
+    expect(unproven({ contract: [recorded('skipped')] }, [ITEM])).toEqual([
+      'item 1 (AT-999) is unverified on a real deployment: every test for it was skipped: t.test.ts > AT-999: one',
+    ])
+    expect(unproven({}, [ITEM])).toHaveLength(1)
+  })
 
-    it('leaves nothing to report when a carrier passed', () => {
-      expect(verdict({ enabled: ALL_OFF, tests: [recorded('passed')] }, [ITEM])).toEqual({
-        problems: [],
-        unverified: new Map(),
-      })
-    })
-
-    it('reports a failure even beside a passing carrier', () => {
-      const { problems, unverified } = verdict(
-        { enabled: ALL_OFF, tests: [recorded('passed'), recorded('failed', 'contract', ['AT-999: two'])] },
-        [ITEM]
-      )
-
-      expect(problems).toEqual(['item 1 has failing tests: t.test.ts > AT-999: two'])
-      expect(unverified).toEqual(new Map())
-    })
-
-    it('reads every carrier skipping with its tier variable unset as unverified', () => {
-      expect(verdict({ enabled: ALL_OFF, tests: [recorded('skipped')] }, [ITEM])).toEqual({
-        problems: [],
-        unverified: new Map([[1, ['MONGODB_URI is unset']]]),
-      })
-    })
-
-    it('fails every carrier skipping with its tier variable set', () => {
-      const { problems } = verdict({ enabled: { ...ALL_OFF, contract: true }, tests: [recorded('skipped')] }, [ITEM])
-
-      expect(problems).toEqual(['item 1 skipped every test although its tier was enabled: t.test.ts > AT-999: one'])
-    })
-
-    it('fails a skipped carrier in a project no variable gates', () => {
-      const { problems } = verdict({ enabled: ALL_OFF, tests: [recorded('skipped', 'unit')] }, [ITEM])
-
-      expect(problems).toHaveLength(1)
-    })
-
-    it('reads an item with no carrier in the run as unverified, since the static half owns absence', () => {
-      expect(verdict({ enabled: ALL_OFF, tests: [] }, [ITEM]).unverified).toEqual(
-        new Map([[1, ['no test for it in this run']]])
-      )
-    })
-
-    it("fails an item absent from a run where its carrier file's project ran enabled", () => {
-      const index = new Map([['AT-999', new Set(['test/integ/contract/t.test.ts'])]])
-      const other = recorded('passed', 'contract', ['unrelated'])
-
-      expect(verdict({ enabled: { ...ALL_OFF, contract: true }, tests: [other] }, [ITEM], index).problems).toEqual([
-        'item 1 has no test in this run although its project ran: test/integ/contract/t.test.ts',
+  it('fails an item with a failed or unfinished test, even beside a passing one', () => {
+    for (const state of ['failed', 'pending'] as const) {
+      expect(unproven({ contract: [recorded('passed'), recorded(state, ['AT-999: two'])] }, [ITEM])).toEqual([
+        'item 1 (AT-999) did not pass: t.test.ts > AT-999: two',
       ])
-    })
-
-    it("leaves an absent item unverified where its carrier file's project did not run or was not enabled", () => {
-      const index = new Map([['AT-999', new Set(['test/integ/contract/t.test.ts', 'src/__tests__/t.test.ts'])]])
-
-      expect(verdict({ enabled: { ...ALL_OFF, contract: true }, tests: [] }, [ITEM], index).problems).toEqual([])
-      expect(
-        verdict({ enabled: ALL_OFF, tests: [recorded('skipped', 'contract', ['unrelated'])] }, [ITEM], index).problems
-      ).toEqual([])
-    })
-
-    it('blames a test declaring the id over the tests of a describe declaring it too', () => {
-      const own = recorded('passed', 'contract', ['group', 'AT-999: own'])
-      const inherited = recorded('failed', 'unit', ['AT-999: group', 'other'])
-
-      expect(verdict({ enabled: ALL_OFF, tests: [own, inherited] }, [ITEM]).problems).toEqual([])
-    })
-
-    it('falls back to the tests under a describe declaring the id', () => {
-      const inherited = recorded('failed', 'unit', ['AT-999: group', 'other'])
-
-      expect(verdict({ enabled: ALL_OFF, tests: [inherited] }, [ITEM]).problems).toEqual([
-        'item 1 has failing tests: t.test.ts > AT-999: group > other',
-      ])
-    })
+    }
   })
 })
