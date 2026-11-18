@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -55,6 +55,16 @@ describeTier('build', 'package', () => {
       expect(extra).toEqual([])
       expect(paths).toEqual(expect.arrayContaining(['LICENSE', 'NOTICE', 'package.json', 'dist/index.js']))
       expect(paths.filter((path) => /__tests__|__fixtures__|\.test\.|\.map$/.test(path))).toEqual([])
+    })
+  })
+
+  describe('published types', () => {
+    it('carry no member marked @internal', () => {
+      const types = (file: string) => readFileSync(join(PACKAGE_ROOT, 'dist', file), 'utf8')
+
+      expect(types('storage.d.ts')).toContain('deletePrefix(')
+      expect(types('storage.d.ts')).not.toContain('_collection(')
+      expect(types('vector-search.d.ts')).not.toContain('indexSpec(')
     })
   })
 
