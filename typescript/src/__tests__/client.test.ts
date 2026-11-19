@@ -15,6 +15,7 @@ vi.mock('mongodb', async () => ({
   MongoClient: (await import('../__fixtures__/fake-mongo.js')).ConstructedMongoClient,
 }))
 
+const PASSWORD = 'SUPERSECRET'
 const exporter = recordSpans()
 
 const resolved: MongoDBConfig[] = []
@@ -353,14 +354,14 @@ describe('resolve', () => {
   describe('AT-014: the password never leaves the config', () => {
     it('keeps the password out of the logs and the connection state', () => {
       const logger = silentLogger()
-      const connectionString = 'mongodb://user:SUPERSECRET@127.0.0.1:1/?retryWrites=false'
+      const connectionString = `mongodb://user:${PASSWORD}@127.0.0.1:1/?retryWrites=false`
 
       const connection = track({ database: 'appdb', connectionString, logger })
 
       const logged = Object.values(logger).flatMap((method) => vi.mocked(method).mock.calls.flat().map(String))
-      expect(logged.join('\n')).not.toContain('SUPERSECRET')
+      expect(logged.join('\n')).not.toContain(PASSWORD)
       const { client: _client, ...state } = connection
-      expect(inspect(state, { depth: 5 })).not.toContain('SUPERSECRET')
+      expect(inspect(state, { depth: 5 })).not.toContain(PASSWORD)
     })
   })
 
@@ -375,7 +376,7 @@ describe('resolve', () => {
     }
 
     it('records a constructed client as not injected, once per connection', async () => {
-      const config = { database: 'appdb', connectionString: 'mongodb://user:SUPERSECRET@127.0.0.1:1/' }
+      const config = { database: 'appdb', connectionString: `mongodb://user:${PASSWORD}@127.0.0.1:1/` }
 
       const events = await eventsOf(() => {
         track(config)
@@ -385,7 +386,7 @@ describe('resolve', () => {
       expect(events).toEqual([
         { name: 'strands_mongodb.client.acquired', attributes: { 'strands_mongodb.client.injected': false } },
       ])
-      expect(JSON.stringify(exporter.getFinishedSpans()[0]?.events)).not.toContain('SUPERSECRET')
+      expect(JSON.stringify(exporter.getFinishedSpans()[0]?.events)).not.toContain(PASSWORD)
     })
 
     it('records an injected client as injected, once per connection', async () => {

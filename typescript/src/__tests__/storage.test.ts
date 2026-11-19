@@ -36,7 +36,8 @@ vi.mock('mongodb', async (importOriginal) => ({
 const exporter = recordSpans()
 
 // A URI whose password must not appear in any message or rendering this module produces.
-const LEAKY_URI = 'mongodb://appuser:SUPERSECRET@db.example.com:27017/appdb'
+const PASSWORD = 'SUPERSECRET'
+const LEAKY_URI = `mongodb://appuser:${PASSWORD}@db.example.com:27017/appdb`
 
 // Reported the way `listCollections` resolves a case-folding collation.
 const CASE_INSENSITIVE = {
@@ -917,8 +918,8 @@ describe('MongoDBStorage', () => {
 
       const error = await rejectionOf(call(storage, operation))
 
-      expect(error.message).not.toContain('SUPERSECRET')
-      expect(inspect(error, { depth: 2 })).not.toContain('SUPERSECRET')
+      expect(error.message).not.toContain(PASSWORD)
+      expect(inspect(error, { depth: 2 })).not.toContain(PASSWORD)
     })
 
     it('renders neither the password nor the host from the store or its namespaced view', () => {
@@ -930,7 +931,7 @@ describe('MongoDBStorage', () => {
         JSON.stringify(storage),
         JSON.stringify(storage.namespace('tenant-a')),
       ]) {
-        expect(rendered).not.toContain('SUPERSECRET')
+        expect(rendered).not.toContain(PASSWORD)
         expect(rendered).not.toContain('db.example.com')
       }
     })
@@ -946,7 +947,7 @@ describe('MongoDBStorage', () => {
       const error = await rejectionOf(storage.write(key, payload))
 
       expect(error).toBeInstanceOf(StorageError)
-      expect(error.message).not.toContain('SUPERSECRET')
+      expect(error.message).not.toContain(PASSWORD)
     })
   })
 

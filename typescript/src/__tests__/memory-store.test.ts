@@ -32,7 +32,8 @@ vi.mock('mongodb', async (importOriginal) => ({
 const exporter = recordSpans()
 
 // A URI whose password must not appear in any message or rendering this module produces.
-const LEAKY_URI = 'mongodb://appuser:SUPERSECRET@db.example.com:27017/appdb'
+const PASSWORD = 'SUPERSECRET'
+const LEAKY_URI = `mongodb://appuser:${PASSWORD}@db.example.com:27017/appdb`
 
 const CASE_INSENSITIVE = { locale: 'en', strength: 2 }
 
@@ -566,7 +567,7 @@ describe('MongoDBMemoryStore', () => {
       })
 
       for (const rendered of [inspect(store, { depth: 5 }), JSON.stringify(store)]) {
-        expect(rendered).not.toContain('SUPERSECRET')
+        expect(rendered).not.toContain(PASSWORD)
         expect(rendered).not.toContain('db.example.com')
         expect(rendered).toContain('tenant-a')
       }
@@ -583,8 +584,8 @@ describe('MongoDBMemoryStore', () => {
       const error = await rejectionOf(store.initialize())
 
       expect(error).toBeInstanceOf(StorageError)
-      expect(error.message).not.toContain('SUPERSECRET')
-      expect(inspect(error, { depth: 3 })).not.toContain('SUPERSECRET')
+      expect(error.message).not.toContain(PASSWORD)
+      expect(inspect(error, { depth: 3 })).not.toContain(PASSWORD)
     })
   })
 
@@ -1871,7 +1872,7 @@ describe('MongoDBMemoryStore', () => {
         expect(error.cause).toBe(failure)
         expect(error.message).not.toContain(CONTENT)
         for (const rendered of [error.message, inspect(error, { depth: 4 }), inspect(store, { depth: 5 })]) {
-          expect(rendered).not.toContain('SUPERSECRET')
+          expect(rendered).not.toContain(PASSWORD)
         }
       }
     )
